@@ -1,0 +1,4 @@
+# Diagnostic-only reference environment. The Git commit is the approved v0.5.1 tag target.
+numpy==2.3.5
+onnxruntime==1.24.3
+openwakeword @ git+https://github.com/dscripka/openWakeWord.git@1eec2158c5c54150ac5f4c15065adacb1003b1e7
