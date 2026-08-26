@@ -2025,24 +2025,106 @@ AEC/NS
 
 ### Steps
 
-- [ ] Create bare React Native Android project.
-- [ ] Implement native microphone capture.
-- [ ] Normalize audio to the model-required format.
-- [ ] Add AEC/NS feature detection.
-- [ ] Load openWakeWord-compatible ONNX/TFLite model assets.
-- [ ] Run wake-word inference on a background/native worker thread.
-- [ ] Load Silero VAD with ONNX Runtime.
-- [ ] Add a ring buffer.
-- [ ] Emit wake/VAD events to React Native.
-- [ ] Test screen-off/background behavior required by the product.
-- [ ] Measure battery/CPU.
-- [ ] Test quiet room, TV/music, traffic, multiple voices, speaker playback.
-- [ ] Measure false accepts and false rejects.
-- [ ] Verify no audio gaps at wake transition.
+- [x] Create bare React Native Android project.
+- [x] Implement native microphone capture with Android `AudioRecord`.
+- [x] Enforce the model-required 16 kHz, mono, signed PCM16 format. The current proof of concept rejects an incompatible device format instead of resampling it.
+- [x] Add AEC/NS feature detection, audio-session attachment, enable/disable controls, and status reporting.
+- [x] Load pinned openWakeWord-compatible ONNX model assets and validate their hashes and tensor contracts.
+- [x] Run wake-word inference on a bounded background/native worker thread.
+- [x] Load Silero VAD with ONNX Runtime on a bounded native worker.
+- [x] Add a bounded 500 ms PCM ring buffer with drop/error counters.
+- [x] Emit semantic wake/VAD events and status to React Native without sending raw PCM over the bridge.
+- [ ] **LEFT:** Test and implement the required screen-off/background behavior. There is currently no foreground microphone service or wake-lock strategy.
+- [ ] **LEFT:** Measure active-session CPU, battery drain, and release-build memory on representative devices. The initial debug-build idle snapshot is not an acceptance measurement.
+- [ ] **PARTIAL:** Diagnostic controls exist for quiet distance, TV/music, background noise, speaker playback, different voices, and the AEC/NS matrix. The complete controlled environment/device test matrix is not yet executed or recorded.
+- [ ] **PARTIAL:** FAR/FRR/TAR calculation exists, but a correctly timed and sufficiently large positive/negative calibration set has not yet been completed.
+- [ ] **PARTIAL:** Continuous core PCM delivery was verified with equal written/consumed frame counts and zero PCM-ring overflow. Wake-transition continuity cannot be accepted until wake detection works.
+
+### Device verification status — 2026-08-25
+
+Representative device used for the initial run:
+
+```text
+Samsung SM-M336BU
+Android API 36
+arm64-v8a
+```
+
+Verified working:
+
+```text
+React Native Android app installation and launch
+microphone permission and native AudioRecord capture
+16 kHz mono signed PCM16 framing
+bounded native PCM producer/consumer pipeline
+Android ONNX Runtime 1.24.3 loading
+Silero VAD model loading and inference
+openWakeWord mel, embedding, and classifier model loading
+openWakeWord tensor-contract validation and continuous inference
+AEC/NS availability detection and audio-session attachment
+clean worker, AudioRecord, AEC, and NS shutdown
+no application crash or ANR during the recorded sessions
+```
+
+Recorded evidence:
+
+```text
+long capture session:
+  11,503 frames written / 11,503 consumed
+  0 PCM ring overflows
+  0 invalid PCM inputs
+  0 PCM processing errors
+
+effects-disabled controlled session:
+  843 frames written / 843 consumed
+  0 PCM ring overflows
+  0 Silero drops or inference failures
+  6 Silero speech-start/stop segments
+```
+
+Known limitations requiring follow-up:
+
+```text
+openWakeWord recognition is not yet working reliably:
+  observed controlled result = 0 detections from 5 spoken attempts
+  model/runtime continued without drops or runtime errors
+
+AEC + NS are technically available and attach successfully, but on the tested
+Samsung device the enabled effects suppressed/altered speech enough that Silero
+produced no confirmed speech segment in the controlled comparison. Silero worked
+when both effects were disabled. Test AEC-only and NS-only separately before
+selecting a production mode.
+
+the simple energy VAD threshold is not reliable for this device and needs measured
+tuning or removal in favor of Silero
+
+the first calibration run retained only one positive and one negative trial; the
+positive utterance arrived at the edge of/outside its three-second window, so its
+near-zero classifier score is not a valid threshold-selection dataset
+
+screen-off/background behavior, battery drain, active CPU, the full acoustic
+matrix, and a valid FAR/FRR dataset remain unverified
+```
+
+### Conditional continuation decision
+
+Phase 1 and other non-wake-dependent foundation work may proceed using this temporary development path:
+
+```text
+manual Start Microphone action
+AEC disabled
+NS disabled
+Silero VAD
+continuous native PCM pipeline
+```
+
+This decision allows repository, backend, authentication, WebSocket, STT, LLM, and TTS foundation work to continue without treating Phase 0 as approved. Hands-free activation, always-on/background listening, assistant playback barge-in, and production voice UX must not depend on the current wake/AEC/NS behavior until the remaining Phase 0 work passes.
 
 ### Gate
 
-Do not proceed to a full product build until wake word + VAD + capture works reliably on representative Android hardware.
+**Status: NOT PASSED / PARTIALLY IMPLEMENTED.**
+
+Core capture and inference infrastructure is stable enough for conditional downstream development with manual activation and effects disabled. Do not approve the full voice-product gate until wake word + VAD + capture + AEC/NS behavior works reliably on representative Android hardware and the remaining measurements above are recorded.
 
 ---
 

@@ -7,7 +7,11 @@
     "ios": "react-native run-ios",
     "lint": "eslint .",
     "start": "react-native start",
-    "test": "jest"
+    "test": "jest",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write package.json README.md .github/workflows/ci.yml docker-compose.yml backend/README.md",
+    "format:check": "prettier --check package.json README.md .github/workflows/ci.yml docker-compose.yml backend/README.md",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test -- --runInBand"
   },
   "dependencies": {
     "react": "19.2.3",

@@ -1,6 +1,9 @@
 pluginManagement { includeBuild("../node_modules/@react-native/gradle-plugin") }
 plugins { id("com.facebook.react.settings") }
-extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autolinkLibrariesFromCommand() }
+def reactNativeCliCommand = org.gradle.internal.os.OperatingSystem.current().isWindows() ? "npx.cmd" : "npx"
+extensions.configure(com.facebook.react.ReactSettingsExtension){ ex ->
+    ex.autolinkLibrariesFromCommand([reactNativeCliCommand, "@react-native-community/cli", "config"])
+}
 rootProject.name = 'VoiceAIPOC'
 include ':app'
 includeBuild('../node_modules/@react-native/gradle-plugin')

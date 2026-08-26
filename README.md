@@ -1,97 +1,264 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Voice Assistance
 
-# Getting Started
+This repository contains the React Native Android proof of concept and the
+Phase 1 backend/infrastructure foundation with the Phase 2 authentication and
+user/device foundation.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+Current gates:
 
-## Step 1: Start Metro
-
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
-
-To start the Metro dev server, run the following command from the root of your React Native project:
-
-```sh
-# Using npm
-npm start
-
-# OR using Yarn
-yarn start
+```text
+PHASE 0: FAIL (unchanged; acoustic acceptance is not complete)
+PHASE 1: PASS
+PHASE 2: IN PROGRESS
 ```
 
-## Step 2: Build and run your app
+Phase 1 and Phase 2 do not change the Android microphone, AEC/NS, VAD,
+wake-word model, threshold, cooldown, or native audio pipeline. Phase 2 adds
+backend authentication, device/session ownership, security audit records, an
+authenticated WebSocket foundation, and a standalone Android Keystore-backed
+token-storage abstraction.
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
+## Repository structure
 
-### Android
-
-```sh
-# Using npm
-npm run android
-
-# OR using Yarn
-yarn android
+```text
+android/                 Existing React Native Android project
+backend/app/             FastAPI application, auth, ownership, and infrastructure clients
+backend/migrations/      Async Alembic environment and schema migrations
+backend/tests/           Backend unit, integration, and isolation tests
+docker/                  Backend image and PostgreSQL initialization
+docker-compose.yml       PostgreSQL, Redis, and backend services
+scripts/bootstrap.ps1    Windows developer bootstrap
+src/                     Existing React Native TypeScript code
+docs/                    Project records and phase reports
 ```
 
-### iOS
+## Prerequisites
 
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
+For the Phase 1/2 backend:
 
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
+- Python 3.12
+- PostgreSQL with the `vector` extension available
+- Redis
+- Node.js required by the existing React Native project (currently Node >= 22.11.0)
+- npm
 
-```sh
-bundle install
+Docker Desktop is optional for local development. No GPU, Android device, STT
+server, TTS server, LLM server, or model server is required for Phase 1.
+
+## Quick start on Windows
+
+From the repository root in PowerShell:
+
+```powershell
+.\scripts\bootstrap.ps1
 ```
 
-Then, and every time you update your native dependencies, run:
+The script validates Python 3.12, creates `.env` only when it does not exist,
+creates or reuses `.venv`, installs `backend[dev]`, checks the PostgreSQL and
+Redis URLs from `.env`, and runs Alembic only when PostgreSQL is reachable. It
+does not require Docker, start containers, remove volumes, or overwrite `.env`.
+It reports a clear error when native PostgreSQL or Redis is unavailable.
 
-```sh
-bundle exec pod install
+Review `.env` after it is copied from [.env.example](.env.example). The
+example contains safe local-development placeholders only. Never commit real
+credentials.
+
+`DATABASE_URL` and `REDIS_URL` are the connection settings for the local
+backend. Replace `YOUR_PASSWORD` in `.env` with the local PostgreSQL password;
+never commit that file. Set `JWT_SECRET_KEY` to a unique random value of at
+least 32 characters; never use the example value outside a disposable local
+test. `/ready` requires both native services to be reachable.
+
+## Manual backend setup
+
+```powershell
+python3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".\backend[dev]"
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+
+# Edit .env with the local PostgreSQL password, service URLs, and a unique JWT secret.
+Set-Location backend
+..\.venv\Scripts\python.exe -m alembic upgrade head
+..\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir . --reload
 ```
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+In a separate PowerShell window, verify the endpoints:
 
-```sh
-# Using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
+```powershell
+Invoke-WebRequest http://localhost:8000/health
+Invoke-WebRequest http://localhost:8000/ready
 ```
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+If `.env` already exists, do not overwrite it. The backend loads `.env`, while
+direct environment variables take precedence over values from that file.
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
+## Optional Docker Compose
 
-## Step 3: Modify your app
+Docker remains available as an optional non-GPU stack. It contains:
 
-Now that you have successfully run the app, let's make changes!
+- `postgres`: `pgvector/pgvector:pg16`, persistent named volume, healthcheck,
+  and automatic `vector` extension initialization;
+- `redis`: Redis 7.4, persistent named volume, and healthcheck;
+- `backend`: Python 3.12 FastAPI image with a healthcheck.
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
+Start or rebuild it with:
 
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
+```powershell
+docker compose up -d --build
+```
 
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
+Stop containers while preserving data:
 
-## Congratulations! :tada:
+```powershell
+docker compose stop
+docker compose down
+```
 
-You've successfully run and modified your React Native App. :partying_face:
+Do not use `docker compose down -v` unless you intentionally want to destroy
+the local database and Redis volumes.
 
-### Now what?
+## API and migrations
 
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
+The service exposes:
 
-# Troubleshooting
+````text
+GET /health  -> 200 {"status":"ok"}
+GET /ready   -> 200 {"status":"ready"} when both dependencies respond; otherwise 503
 
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
+Phase 2 protected endpoints include:
 
-# Learn More
+```text
+POST /auth/register
+POST /auth/login
+POST /auth/refresh
+POST /auth/logout
+GET  /auth/me
+GET  /auth/sessions
+POST /auth/sessions/{session_id}/revoke
+POST /devices/register
+GET  /devices
+POST /devices/{device_id}/revoke
+WS   /ws
+````
 
-To learn more about React Native, take a look at the following resources:
+Protected HTTP requests use `Authorization: Bearer <access-token>`. The WebSocket
+uses the same header during the handshake. WebSocket identity is derived only
+from the authenticated token; a client-supplied `user_id` cannot change scope.
+Refresh tokens are rotated and stored only as SHA-256 hashes. Access tokens are
+short-lived and validated against the active user, session, and device.
 
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+````
+
+Example checks:
+
+```powershell
+Invoke-WebRequest http://localhost:8000/health
+Invoke-WebRequest http://localhost:8000/ready
+````
+
+Run migrations from the backend directory:
+
+```powershell
+Set-Location backend
+alembic upgrade head
+alembic downgrade -1
+```
+
+Migration `0001_enable_pgvector` enables
+`CREATE EXTENSION IF NOT EXISTS vector`. Migration `0002_auth_foundation`
+creates users, devices, authentication sessions, and audit logs. Memory, RAG,
+task, and conversation tables are intentionally deferred.
+
+## Tests, linting, and formatting
+
+Backend commands:
+
+```powershell
+Set-Location backend
+..\.venv\Scripts\python.exe -m pytest
+$env:RUN_INTEGRATION_TESTS = "1"
+..\.venv\Scripts\python.exe -m pytest -m integration
+..\.venv\Scripts\python.exe -m ruff check .
+..\.venv\Scripts\python.exe -m ruff format --check .
+```
+
+Integration tests require native PostgreSQL with pgvector and Redis, plus
+`$env:RUN_INTEGRATION_TESTS = "1"`. If the services are unavailable, the
+integration tests skip without reporting a false success.
+
+Existing React Native commands:
+
+```powershell
+npm.cmd run typecheck
+npm.cmd run lint
+npm.cmd run format:check
+npm.cmd test -- --runInBand
+npm.cmd run check
+```
+
+`npm.cmd run check` does not build Android and does not start microphone
+capture. The existing Android development flow still uses Metro. Android unit
+tests, including secure token-storage tests, run with:
+
+```powershell
+Set-Location android
+.\gradlew.bat testDebugUnitTest --no-daemon
+```
+
+The existing Android development flow still uses Metro:
+
+```powershell
+npm.cmd start
+npm.cmd run android
+```
+
+For a USB-connected debug device, configure the existing React Native bundle
+connection as needed:
+
+```powershell
+adb reverse tcp:8081 tcp:8081
+```
+
+## CI
+
+GitHub Actions runs backend unit/integration checks with PostgreSQL/Redis
+service containers, plus frontend TypeScript, ESLint, Prettier, and Jest
+checks. It does not require GPU hardware or an Android device.
+
+## Troubleshooting
+
+### `/ready` returns 503
+
+Check the native service ports and the URLs in `.env`:
+
+```powershell
+Test-NetConnection localhost -Port 5432
+Test-NetConnection localhost -Port 6379
+Get-Content .env
+```
+
+The local backend uses `DATABASE_URL` and `REDIS_URL` exactly as configured.
+Docker Compose, if used, supplies its own internal service URLs separately.
+
+### pgvector is unavailable
+
+Run the migration and inspect the extension directly:
+
+```powershell
+Set-Location backend
+..\.venv\Scripts\python.exe -m alembic upgrade head
+psql -U postgres -d voice_assistance -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+### React Native says “Unable to load script”
+
+That is a debug-bundle/Metro connection issue, separate from the Phase 1
+backend. Start Metro and use the existing USB reverse command above. Do not
+change the Android audio pipeline to resolve it.
+
+## Phase 0 preservation
+
+The approved `hey_mycroft` Android model and existing audio implementation
+remain frozen. Phase 1 infrastructure work does not authorize retuning or
+replacing them, and Phase 0 must not be marked passed until its acoustic and
+other mandatory acceptance gates are objectively satisfied.

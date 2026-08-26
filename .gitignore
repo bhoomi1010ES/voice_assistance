@@ -40,6 +40,9 @@ local.properties
 node_modules/
 npm-debug.log
 yarn-error.log
+.env
+.env.*
+!.env.example
 
 # fastlane
 #
@@ -67,7 +70,19 @@ yarn-error.log
 /coverage
 
 # Local work records
-/docs/
+/docs/*
+!/docs/
+!/docs/phase_1_status_report.md
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+backend/.coverage
+backend/htmlcov/
 
 # Temporary, sensitive openWakeWord cross-runtime diagnostic data
 /diagnostics/openwakeword_pcm/
