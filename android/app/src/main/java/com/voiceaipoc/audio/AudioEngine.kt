@@ -19,6 +19,7 @@ import com.voiceaipoc.wakeword.OnnxWakeWordRuntime
 import com.voiceaipoc.wakeword.WakeWordDiagnosticCapture
 import com.voiceaipoc.wakeword.WakeWordDiagnosticReplay
 import com.voiceaipoc.wakeword.WakeWordEngine
+import com.voiceaipoc.wakeword.WakeWordManualTrialStatus
 import com.voiceaipoc.wakeword.WakeWordReplayBatchResult
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -99,6 +100,27 @@ class AudioEngine(
         val partialFrameSamples: Int,
         val vad: VadEngine.Status,
         val sileroVad: SileroVadEngine.Status,
+    )
+
+    /** Combined metadata for one manually controlled microphone session. */
+    data class ManualWakeWordTrialStatus(
+        val wake: WakeWordManualTrialStatus,
+        val history: List<WakeWordManualTrialStatus>,
+        val aecEnabled: Boolean,
+        val noiseSuppressionEnabled: Boolean,
+        val pcmOverflowCount: Long,
+        val wakeWorkerDropCount: Long,
+        val audioRecordErrorCount: Int,
+        val audioRecordReadErrorCount: Long,
+        val pcmPipelineErrorCount: Long,
+        val wakeRuntimeErrorCount: Long,
+        val sileroRuntimeErrorCount: Long,
+        val energyVadState: String,
+        val sileroVadState: String,
+        val energyVadSpeechStartCount: Long,
+        val energyVadSpeechStopCount: Long,
+        val sileroVadSpeechStartCount: Long,
+        val sileroVadSpeechStopCount: Long,
     )
 
     data class OperationResult(
@@ -367,6 +389,32 @@ class AudioEngine(
 
     fun getWakeWordStatus(): WakeWordEngine.Status = wakeWordEngine.getStatus()
 
+    fun getManualWakeWordTrialStatus(): ManualWakeWordTrialStatus {
+        val microphoneStatus = getStatus()
+        val pipelineStatus = getAudioPipelineStatus()
+        val processingStatus = getAudioProcessingStatus()
+        val wakeStatus = wakeWordEngine.getStatus()
+        return ManualWakeWordTrialStatus(
+            wake = wakeStatus.manualTrial,
+            history = wakeWordEngine.getManualTrialHistory(),
+            aecEnabled = processingStatus.aec.enabled,
+            noiseSuppressionEnabled = processingStatus.noiseSuppression.enabled,
+            pcmOverflowCount = pipelineStatus.overflowCount,
+            wakeWorkerDropCount = wakeStatus.droppedFrameCount,
+            audioRecordErrorCount = microphoneStatus.microphoneErrorCount,
+            audioRecordReadErrorCount = pipelineStatus.readErrorCount,
+            pcmPipelineErrorCount = pipelineStatus.pipelineErrorCount,
+            wakeRuntimeErrorCount = wakeStatus.runtimeErrorCount,
+            sileroRuntimeErrorCount = pipelineStatus.sileroVad.errorCount,
+            energyVadState = pipelineStatus.vad.state,
+            sileroVadState = pipelineStatus.sileroVad.state,
+            energyVadSpeechStartCount = pipelineStatus.vad.speechStartCount,
+            energyVadSpeechStopCount = pipelineStatus.vad.speechStopCount,
+            sileroVadSpeechStartCount = pipelineStatus.sileroVad.speechStartCount,
+            sileroVadSpeechStopCount = pipelineStatus.sileroVad.speechStopCount,
+        )
+    }
+
     /** Changes AEC/NS requests for the next session only; defaults return after app recreation. */
     fun setAudioProcessingCalibrationMode(
         enableAcousticEchoCancellation: Boolean,
@@ -614,7 +662,7 @@ class AudioEngine(
             vadEngine.startSession()
             pcmPipeline.start()
             sileroVadEngine.startSession()
-            wakeWordEngine.startSession()
+            wakeWordEngine.startSession(audioSessionId)
         } catch (exception: RuntimeException) {
             return failStartLocked(
                 ERROR_AUDIO_PIPELINE,

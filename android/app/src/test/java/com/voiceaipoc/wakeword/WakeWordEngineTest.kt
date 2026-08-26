@@ -296,12 +296,12 @@ class WakeWordEngineTest {
             listener = listener,
         )
 
-        assertTrue(engine.startSession().succeeded)
+        assertTrue(engine.startSession(1).succeeded)
         waitUntil { runtimes.size == 1 && engine.getStatus().runtimeInitialized }
         engine.offerPcmFrame(ShortArray(FRAME_SAMPLES), FRAME_SAMPLES)
         engine.stopSession()
 
-        assertTrue(engine.startSession().succeeded)
+        assertTrue(engine.startSession(2).succeeded)
         assertTrue(listener.startedLatch.await(1, TimeUnit.SECONDS))
 
         val restarted = engine.getStatus()
@@ -309,6 +309,9 @@ class WakeWordEngineTest {
         assertEquals(0L, restarted.framesOffered)
         assertEquals(0L, restarted.inferenceCount)
         assertEquals(0L, restarted.detectionCount)
+        assertTrue(restarted.manualTrial.active)
+        assertEquals(2, restarted.manualTrial.microphoneSessionId)
+        assertEquals(2L, restarted.manualTrial.workerGeneration)
         engine.stopSession()
         assertEquals(1, runtimes[0].closeCount)
         assertEquals(1, runtimes[1].closeCount)

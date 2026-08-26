@@ -36,6 +36,10 @@ class WakeWordStateMachineTest {
         assertEquals(1L, machine.getStatus().detectionCount)
         assertEquals("test_wake_word", detection?.modelName)
         assertEquals(wallMs, detection?.timestampMs)
+        assertEquals(WakeWordStateMachine.State.LISTENING, detection?.stateBefore)
+        assertEquals(WakeWordStateMachine.State.WAKE_DETECTED, detection?.stateAfter)
+        assertEquals(2_000L, detection?.cooldownRemainingMs)
+        assertEquals(null, detection?.millisecondsSincePreviousDetection)
     }
 
     @Test

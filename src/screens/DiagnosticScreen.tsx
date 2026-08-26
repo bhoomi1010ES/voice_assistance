@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   Button,
   DeviceEventEmitter,
@@ -12,10 +12,10 @@ import {
   AudioProcessingCalibrationMode,
   AudioPipelineStatus,
   AudioProcessingStatus,
-  beginWakeWordCalibrationTrial,
   getAudioPipelineStatus,
   getAudioProcessingStatus,
   getMicrophoneStatus,
+  getManualWakeWordTrialStatus,
   getWakeWordStatus,
   getWakeWordDiagnosticPcmCaptureStatus,
   MicrophoneStatus,
@@ -34,6 +34,7 @@ import {
   VadEvent,
   WakeWordDetectionEvent,
   WakeWordDiagnosticCaptureStatus,
+  ManualWakeWordTrialStatus,
   WakeWordReplayBatchResult,
   WakeWordStatus,
   WakeWordStatusEvent,
@@ -140,6 +141,8 @@ const INITIAL_AUDIO_PIPELINE_STATUS: AudioPipelineStatus = {
     speechFrames: 0,
     nonSpeechFrames: 0,
     speechSegments: 0,
+    speechStartCount: 0,
+    speechStopCount: 0,
     currentSpeechDurationMs: 0,
     currentSilenceDurationMs: 0,
     lastSpeechStartedFrameIndex: 0,
@@ -346,6 +349,48 @@ const INITIAL_WAKE_CAPTURE_STATUS: WakeWordDiagnosticCaptureStatus = {
   records: [],
 };
 
+const INITIAL_MANUAL_WAKE_WORD_TRIAL_STATUS: ManualWakeWordTrialStatus = {
+  active: false,
+  trialId: null,
+  microphoneSessionId: -1,
+  startTimestampMs: 0,
+  stopTimestampMs: 0,
+  wakeDetectionCount: 0,
+  inferenceWindowCount: 0,
+  aboveThresholdWindowCount: 0,
+  maximumScore: null,
+  maximumScoreTimestampMs: 0,
+  lastDetectionTimestampMs: 0,
+  lastDetectionIntervalMs: null,
+  currentWakeState: 'IDLE',
+  cooldownActive: false,
+  cooldownRemainingMs: 0,
+  cooldownDurationMs: 2000,
+  queueDepthFrames: 0,
+  queueHighWaterMarkFrames: 0,
+  queueDrops: 0,
+  runtimeErrors: 0,
+  workerGeneration: 0,
+  aecEnabled: false,
+  noiseSuppressionEnabled: false,
+  pcmOverflowCount: 0,
+  wakeWorkerDropCount: 0,
+  audioRecordErrorCount: 0,
+  audioRecordReadErrorCount: 0,
+  pcmPipelineErrorCount: 0,
+  wakeRuntimeErrorCount: 0,
+  sileroRuntimeErrorCount: 0,
+  energyVadState: 'SILENCE',
+  sileroVadState: 'SILENCE',
+  energyVadSpeechStartCount: 0,
+  energyVadSpeechStopCount: 0,
+  sileroVadSpeechStartCount: 0,
+  sileroVadSpeechStopCount: 0,
+  detections: [],
+  thresholdCrossings: [],
+  history: [],
+};
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -363,6 +408,9 @@ export function DiagnosticScreen() {
     INITIAL_AUDIO_PIPELINE_STATUS,
   );
   const [wakeWord, setWakeWord] = useState(INITIAL_WAKE_WORD_STATUS);
+  const [manualTrial, setManualTrial] = useState(
+    INITIAL_MANUAL_WAKE_WORD_TRIAL_STATUS,
+  );
   const [wakeCapture, setWakeCapture] = useState(INITIAL_WAKE_CAPTURE_STATUS);
   const [wakeReplay, setWakeReplay] =
     useState<WakeWordReplayBatchResult | null>(null);
@@ -380,6 +428,10 @@ export function DiagnosticScreen() {
     useState<SileroVadErrorEvent | null>(null);
   const [lastWakeDetection, setLastWakeDetection] =
     useState<WakeWordDetectionEvent | null>(null);
+  const wakeEventKeys = useRef(new Set<string>());
+  const [bridgeWakeEventCount, setBridgeWakeEventCount] = useState(0);
+  const [bridgeDuplicateEventCount, setBridgeDuplicateEventCount] =
+    useState(0);
   const [lastWakeEngineEvent, setLastWakeEngineEvent] = useState('NONE');
   const [wakeCalibrationConditionIndex, setWakeCalibrationConditionIndex] =
     useState(0);
@@ -393,18 +445,21 @@ export function DiagnosticScreen() {
         audioProcessingStatus,
         audioPipelineStatus,
         wakeWordStatus,
+        manualWakeWordTrialStatus,
         wakeCaptureStatus,
       ] = await Promise.all([
         getMicrophoneStatus(),
         getAudioProcessingStatus(),
         getAudioPipelineStatus(),
         getWakeWordStatus(),
+        getManualWakeWordTrialStatus(),
         getWakeWordDiagnosticPcmCaptureStatus(),
       ]);
       setStatus(microphoneStatus);
       setAudioProcessing(audioProcessingStatus);
       setAudioPipeline(audioPipelineStatus);
       setWakeWord(wakeWordStatus);
+      setManualTrial(manualWakeWordTrialStatus);
       setWakeCapture(wakeCaptureStatus);
     } catch (error) {
       setUiError(errorMessage(error));
@@ -465,6 +520,13 @@ export function DiagnosticScreen() {
       DeviceEventEmitter.addListener(
         'WAKE_WORD_DETECTED',
         (event: WakeWordDetectionEvent) => {
+          const eventKey = `${event.microphoneSessionId}:${event.detectionSequenceNumber}:${event.inferenceIndex}`;
+          setBridgeWakeEventCount(count => count + 1);
+          if (wakeEventKeys.current.has(eventKey)) {
+            setBridgeDuplicateEventCount(count => count + 1);
+          } else {
+            wakeEventKeys.current.add(eventKey);
+          }
           setLastWakeDetection(event);
           refreshDiagnostics();
         },
@@ -526,6 +588,9 @@ export function DiagnosticScreen() {
     setLastSileroErrorEvent(null);
     setLastWakeDetection(null);
     setLastWakeEngineEvent('NONE');
+    wakeEventKeys.current.clear();
+    setBridgeWakeEventCount(0);
+    setBridgeDuplicateEventCount(0);
 
     try {
       const permission = await requestMicrophonePermission();
@@ -551,28 +616,6 @@ export function DiagnosticScreen() {
 
     try {
       setStatus(await stopMicrophone());
-      await refreshDiagnostics();
-    } catch (error) {
-      setUiError(errorMessage(error));
-      await refreshDiagnostics();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleBeginWakeTrial = async (expectedPositive: boolean) => {
-    setBusy(true);
-    setUiError(null);
-    try {
-      setWakeWord(
-        await beginWakeWordCalibrationTrial(
-          expectedPositive,
-          wakeCalibrationCondition,
-        ),
-      );
-      await new Promise<void>(resolve => {
-        setTimeout(() => resolve(), 3_250);
-      });
       await refreshDiagnostics();
     } catch (error) {
       setUiError(errorMessage(error));
@@ -723,6 +766,162 @@ export function DiagnosticScreen() {
             />
           </View>
 
+          <Text style={styles.sectionTitle}>MANUAL WAKE-WORD TRIAL</Text>
+          <Text style={styles.subtitle}>
+            One trial equals one manually controlled microphone session. Start
+            and stop capture only with the buttons above; wake events never
+            restart AudioRecord.
+          </Text>
+          <StatusRow
+            label="Microphone"
+            value={status.isRecording ? 'RUNNING' : 'STOPPED'}
+          />
+          <StatusRow
+            label="Wake engine"
+            value={wakeWord.running ? 'RUNNING' : 'STOPPED'}
+          />
+          <StatusRow
+            label="Silero VAD"
+            value={audioPipeline.sileroVad.running ? 'RUNNING' : 'STOPPED'}
+          />
+          <StatusRow label="AEC" value={yesNo(manualTrial.aecEnabled)} />
+          <StatusRow
+            label="NS"
+            value={yesNo(manualTrial.noiseSuppressionEnabled)}
+          />
+          <StatusRow label="Trial ID" value={manualTrial.trialId ?? 'NONE'} />
+          <StatusRow
+            label="Microphone session ID"
+            value={String(manualTrial.microphoneSessionId)}
+          />
+          <StatusRow
+            label="Trial start / stop"
+            value={`${formatTimestamp(
+              manualTrial.startTimestampMs,
+            )} / ${formatTimestamp(manualTrial.stopTimestampMs)}`}
+          />
+          <StatusRow
+            label="Wake detections"
+            value={`${Math.floor(manualTrial.wakeDetectionCount)} (native)`}
+          />
+          <StatusRow
+            label="Bridge events / duplicate deliveries"
+            value={`${bridgeWakeEventCount} / ${bridgeDuplicateEventCount}`}
+          />
+          <StatusRow
+            label="Classifier windows"
+            value={String(Math.floor(manualTrial.inferenceWindowCount))}
+          />
+          <StatusRow
+            label="Windows score >= 0.50"
+            value={String(Math.floor(manualTrial.aboveThresholdWindowCount))}
+          />
+          <StatusRow
+            label="Maximum score / timestamp"
+            value={`${formatConfidence(
+              manualTrial.maximumScore,
+            )} / ${formatTimestamp(manualTrial.maximumScoreTimestampMs)}`}
+          />
+          <StatusRow
+            label="Last detection / interval"
+            value={`${formatTimestamp(
+              manualTrial.lastDetectionTimestampMs,
+            )} / ${formatMilliseconds(manualTrial.lastDetectionIntervalMs)}`}
+          />
+          <StatusRow
+            label="Wake state"
+            value={`${manualTrial.currentWakeState} / cooldown=${
+              manualTrial.cooldownActive
+                ? `${Math.floor(manualTrial.cooldownRemainingMs)} ms remaining`
+                : 'OFF'
+            }`}
+          />
+          <StatusRow
+            label="Cooldown duration"
+            value={`${Math.floor(manualTrial.cooldownDurationMs)} ms`}
+          />
+          <StatusRow
+            label="Queue depth / high-water"
+            value={`${manualTrial.queueDepthFrames} / ${manualTrial.queueHighWaterMarkFrames} frames`}
+          />
+          <StatusRow
+            label="Queue drops"
+            value={String(Math.floor(manualTrial.wakeWorkerDropCount))}
+          />
+          <StatusRow
+            label="PCM overflows"
+            value={String(Math.floor(manualTrial.pcmOverflowCount))}
+          />
+          <StatusRow
+            label="AudioRecord errors / read errors"
+            value={`${manualTrial.audioRecordErrorCount} / ${Math.floor(
+              manualTrial.audioRecordReadErrorCount,
+            )}`}
+          />
+          <StatusRow
+            label="ONNX runtime errors wake / Silero"
+            value={`${Math.floor(
+              manualTrial.wakeRuntimeErrorCount,
+            )} / ${Math.floor(manualTrial.sileroRuntimeErrorCount)}`}
+          />
+          <StatusRow
+            label="VAD state / speech start-stop"
+            value={`${manualTrial.energyVadState} / ${Math.floor(
+              manualTrial.energyVadSpeechStartCount,
+            )}-${Math.floor(manualTrial.energyVadSpeechStopCount)}`}
+          />
+          <StatusRow
+            label="Silero state / speech start-stop"
+            value={`${manualTrial.sileroVadState} / ${Math.floor(
+              manualTrial.sileroVadSpeechStartCount,
+            )}-${Math.floor(manualTrial.sileroVadSpeechStopCount)}`}
+          />
+
+          <Text style={styles.subsectionTitle}>NATIVE DETECTION METADATA</Text>
+          {manualTrial.detections.slice(-10).map(detection => (
+            <StatusRow
+              key={`${manualTrial.trialId}-detection-${detection.detectionSequenceNumber}`}
+              label={`Detection #${Math.floor(
+                detection.detectionSequenceNumber,
+              )} / window #${Math.floor(detection.inferenceWindowSequence)}`}
+              value={`score=${detection.classifierScore.toFixed(
+                4,
+              )}, ${detection.wakeStateBefore}->${
+                detection.wakeStateAfter
+              }, cooldown=${Math.floor(
+                detection.cooldownRemainingMs,
+              )} ms, Δ=${formatMilliseconds(
+                detection.millisecondsSincePreviousDetection,
+              )}`}
+            />
+          ))}
+          <Text style={styles.subsectionTitle}>
+            THRESHOLD-CROSSING WINDOWS (LAST 10)
+          </Text>
+          {manualTrial.thresholdCrossings.slice(-10).map(crossing => (
+            <StatusRow
+              key={`${manualTrial.trialId}-crossing-${crossing.inferenceWindowSequence}`}
+              label={`Window #${Math.floor(
+                crossing.inferenceWindowSequence,
+              )} / ${crossing.wakeStateBefore}->${crossing.wakeStateAfter}`}
+              value={`score=${crossing.score.toFixed(4)}, event=${yesNo(
+                crossing.generatedWakeEvent,
+              )}, cooldown-suppressed=${yesNo(crossing.suppressedByCooldown)}`}
+            />
+          ))}
+          <Text style={styles.subsectionTitle}>COMPLETED MANUAL TRIALS</Text>
+          {manualTrial.history.slice(-10).map(trial => (
+            <StatusRow
+              key={`history-${trial.trialId}`}
+              label={trial.trialId ?? 'UNKNOWN'}
+              value={`detections=${Math.floor(
+                trial.wakeDetectionCount,
+              )}, windows>=0.50=${Math.floor(
+                trial.aboveThresholdWindowCount,
+              )}, max=${formatConfidence(trial.maximumScore)}`}
+            />
+          ))}
+
           <Text style={styles.sectionTitle}>CALIBRATION CONTROLS</Text>
           <View style={styles.controls}>
             <Button
@@ -739,26 +938,6 @@ export function DiagnosticScreen() {
               onPress={handleNextWakeCalibrationCondition}
               disabled={
                 busy ||
-                wakeWord.acousticDiagnostics.activeTrialLabel !== null
-              }
-            />
-            <Button
-              title="Begin 3s Positive Trial"
-              onPress={() => handleBeginWakeTrial(true)}
-              disabled={
-                busy ||
-                !status.isRecording ||
-                !wakeWord.acousticDiagnostics.enabled ||
-                wakeWord.acousticDiagnostics.activeTrialLabel !== null
-              }
-            />
-            <Button
-              title="Begin 3s Negative Trial"
-              onPress={() => handleBeginWakeTrial(false)}
-              disabled={
-                busy ||
-                !status.isRecording ||
-                !wakeWord.acousticDiagnostics.enabled ||
                 wakeWord.acousticDiagnostics.activeTrialLabel !== null
               }
             />
@@ -1663,6 +1842,13 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 16,
     marginBottom: 10,
+  },
+  subsectionTitle: {
+    color: '#cbd5e1',
+    fontSize: 14,
+    fontWeight: '700',
+    marginTop: 14,
+    marginBottom: 6,
   },
   statusRow: {
     flexDirection: 'row',

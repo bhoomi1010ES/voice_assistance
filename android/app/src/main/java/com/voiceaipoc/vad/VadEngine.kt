@@ -66,6 +66,8 @@ class VadEngine(
         val speechFrames: Long,
         val nonSpeechFrames: Long,
         val speechSegments: Long,
+        val speechStartCount: Long,
+        val speechStopCount: Long,
         val currentSpeechDurationMs: Long,
         val currentSilenceDurationMs: Long,
         val lastSpeechStartedFrameIndex: Long,
@@ -100,6 +102,8 @@ class VadEngine(
     private var speechFrames = 0L
     private var nonSpeechFrames = 0L
     private var speechSegments = 0L
+    private var speechStartCount = 0L
+    private var speechStopCount = 0L
     private var lastSpeechStartedFrameIndex = 0L
     private var lastSpeechStoppedFrameIndex = 0L
     private var vadErrorCount = 0L
@@ -148,6 +152,7 @@ class VadEngine(
             }
             if (sessionActive && state == State.SPEECH) {
                 stopEvent = buildSpeechStoppedEventLocked(REASON_SESSION_STOPPED)
+                speechStopCount += 1L
                 lastSpeechStoppedFrameIndex = vadFramesProcessed
             }
             sessionActive = false
@@ -227,6 +232,7 @@ class VadEngine(
                     ) {
                         state = State.SPEECH
                         speechSegments += 1L
+                        speechStartCount += 1L
                         currentSpeechStateFrames = consecutiveSpeechFrames.toLong()
                         currentSilenceStateFrames = 0L
                         lastSpeechStartedFrameIndex = vadFramesProcessed
@@ -250,6 +256,7 @@ class VadEngine(
                     ) {
                         transitionEvent = buildSpeechStoppedEventLocked(REASON_SILENCE_CONFIRMED)
                         state = State.SILENCE
+                        speechStopCount += 1L
                         currentSilenceStateFrames = consecutiveSilenceFrames.toLong()
                         currentSpeechStateFrames = 0L
                         lastSpeechStoppedFrameIndex = vadFramesProcessed
@@ -344,6 +351,8 @@ class VadEngine(
         speechFrames = speechFrames,
         nonSpeechFrames = nonSpeechFrames,
         speechSegments = speechSegments,
+        speechStartCount = speechStartCount,
+        speechStopCount = speechStopCount,
         currentSpeechDurationMs = currentSpeechStateFrames * frameDurationMs,
         currentSilenceDurationMs = currentSilenceStateFrames * frameDurationMs,
         lastSpeechStartedFrameIndex = lastSpeechStartedFrameIndex,
@@ -363,6 +372,8 @@ class VadEngine(
         speechFrames = 0L
         nonSpeechFrames = 0L
         speechSegments = 0L
+        speechStartCount = 0L
+        speechStopCount = 0L
         lastSpeechStartedFrameIndex = 0L
         lastSpeechStoppedFrameIndex = 0L
         vadErrorCount = 0L

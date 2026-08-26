@@ -20,6 +20,10 @@ internal class WakeWordStateMachine(
         val confidence: Float,
         val detectionCount: Long,
         val modelName: String,
+        val millisecondsSincePreviousDetection: Long?,
+        val stateBefore: State,
+        val stateAfter: State,
+        val cooldownRemainingMs: Long,
     )
 
     data class Status(
@@ -36,6 +40,7 @@ internal class WakeWordStateMachine(
     private var detectionCount = 0L
     private var duplicateSuppressionCount = 0L
     private var lastDetectionTimestampMs = 0L
+    private var lastDetectionMonotonicTimestampMs: Long? = null
     private var lastConfidence: Float? = null
     private var cooldownUntilMs = 0L
 
@@ -44,6 +49,7 @@ internal class WakeWordStateMachine(
         detectionCount = 0L
         duplicateSuppressionCount = 0L
         lastDetectionTimestampMs = 0L
+        lastDetectionMonotonicTimestampMs = null
         lastConfidence = null
         cooldownUntilMs = 0L
     }
@@ -63,12 +69,16 @@ internal class WakeWordStateMachine(
         cooldownUntilMs = 0L
     }
 
-    fun onConfidence(confidence: Float): Detection? = synchronized(lock) {
+    fun onConfidence(
+        confidence: Float,
+        wallTimestampMs: Long = wallClockMs(),
+    ): Detection? = synchronized(lock) {
         require(confidence.isFinite() && confidence in 0.0f..1.0f) {
             "confidence must be finite and in [0, 1]"
         }
 
         val now = monotonicClockMs()
+        val stateBefore = state
         advanceBeforeInferenceLocked(now)
         lastConfidence = confidence
 
@@ -84,13 +94,21 @@ internal class WakeWordStateMachine(
 
         state = State.WAKE_DETECTED
         detectionCount += 1L
-        lastDetectionTimestampMs = wallClockMs()
+        val millisecondsSincePreviousDetection = lastDetectionMonotonicTimestampMs?.let {
+            (now - it).coerceAtLeast(0L)
+        }
+        lastDetectionTimestampMs = wallTimestampMs
+        lastDetectionMonotonicTimestampMs = now
         cooldownUntilMs = now + config.cooldownMs
         Detection(
             timestampMs = lastDetectionTimestampMs,
             confidence = confidence,
             detectionCount = detectionCount,
             modelName = config.modelName,
+            millisecondsSincePreviousDetection = millisecondsSincePreviousDetection,
+            stateBefore = stateBefore,
+            stateAfter = state,
+            cooldownRemainingMs = config.cooldownMs,
         )
     }
 

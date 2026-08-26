@@ -68,6 +68,8 @@ export type VadStatus = {
   speechFrames: number;
   nonSpeechFrames: number;
   speechSegments: number;
+  speechStartCount: number;
+  speechStopCount: number;
   currentSpeechDurationMs: number;
   currentSilenceDurationMs: number;
   lastSpeechStartedFrameIndex: number;
@@ -396,10 +398,108 @@ export type WakeWordDetectionEvent = {
   modelName: string;
   confidence: number;
   detectionCount: number;
+  detectionSequenceNumber: number;
   inferenceIndex: number;
+  inferenceTimestampMs: number;
+  wakeStateBefore: string;
+  wakeStateAfter: string;
+  cooldownRemainingMs: number;
+  millisecondsSincePreviousDetection: number | null;
+  microphoneSessionId: number;
+  workerGeneration: number;
   framesConsumed: number;
   queueDepthFrames: number;
   droppedFrameCount: number;
+};
+
+export type WakeWordManualDetection = {
+  detectionSequenceNumber: number;
+  classifierScore: number;
+  inferenceWindowSequence: number;
+  inferenceTimestampMs: number;
+  wakeStateBefore: string;
+  wakeStateAfter: string;
+  cooldownRemainingMs: number;
+  millisecondsSincePreviousDetection: number | null;
+  workerGeneration: number;
+};
+
+export type WakeWordThresholdCrossing = {
+  inferenceWindowSequence: number;
+  inferenceTimestampMs: number;
+  score: number;
+  wakeStateBefore: string;
+  wakeStateAfter: string;
+  cooldownRemainingMs: number;
+  generatedWakeEvent: boolean;
+  suppressedByCooldown: boolean;
+};
+
+export type ManualWakeWordTrialStatus = {
+  active: boolean;
+  trialId: string | null;
+  microphoneSessionId: number;
+  startTimestampMs: number;
+  stopTimestampMs: number;
+  wakeDetectionCount: number;
+  inferenceWindowCount: number;
+  aboveThresholdWindowCount: number;
+  maximumScore: number | null;
+  maximumScoreTimestampMs: number;
+  lastDetectionTimestampMs: number;
+  lastDetectionIntervalMs: number | null;
+  currentWakeState: string;
+  cooldownActive: boolean;
+  cooldownRemainingMs: number;
+  cooldownDurationMs: number;
+  queueDepthFrames: number;
+  queueHighWaterMarkFrames: number;
+  queueDrops: number;
+  runtimeErrors: number;
+  workerGeneration: number;
+  aecEnabled: boolean;
+  noiseSuppressionEnabled: boolean;
+  pcmOverflowCount: number;
+  wakeWorkerDropCount: number;
+  audioRecordErrorCount: number;
+  audioRecordReadErrorCount: number;
+  pcmPipelineErrorCount: number;
+  wakeRuntimeErrorCount: number;
+  sileroRuntimeErrorCount: number;
+  energyVadState: string;
+  sileroVadState: string;
+  energyVadSpeechStartCount: number;
+  energyVadSpeechStopCount: number;
+  sileroVadSpeechStartCount: number;
+  sileroVadSpeechStopCount: number;
+  detections: WakeWordManualDetection[];
+  thresholdCrossings: WakeWordThresholdCrossing[];
+  history: ManualWakeWordTrialSummary[];
+};
+
+export type ManualWakeWordTrialSummary = {
+  trialId: string | null;
+  microphoneSessionId: number;
+  startTimestampMs: number;
+  stopTimestampMs: number;
+  wakeDetectionCount: number;
+  inferenceWindowCount: number;
+  aboveThresholdWindowCount: number;
+  maximumScore: number | null;
+  maximumScoreTimestampMs: number;
+  lastDetectionTimestampMs: number;
+  lastDetectionIntervalMs: number | null;
+  currentWakeState: string;
+  cooldownActive: boolean;
+  cooldownRemainingMs: number;
+  cooldownDurationMs: number;
+  queueDepthFrames: number;
+  queueHighWaterMarkFrames: number;
+  queueDrops: number;
+  runtimeErrors: number;
+  workerGeneration: number;
+  detections: WakeWordManualDetection[];
+  thresholdCrossings: WakeWordThresholdCrossing[];
 };
 
 export type WakeWordStatusEvent = WakeWordStatus & {
@@ -449,6 +549,7 @@ type NativeVoiceModule = {
   getAudioProcessingStatus: () => Promise<AudioProcessingStatus>;
   getAudioPipelineStatus: () => Promise<AudioPipelineStatus>;
   getWakeWordStatus: () => Promise<WakeWordStatus>;
+  getManualWakeWordTrialStatus: () => Promise<ManualWakeWordTrialStatus>;
   setWakeWordCalibrationMode: (enabled: boolean) => Promise<WakeWordStatus>;
   beginWakeWordCalibrationTrial: (
     expectedPositive: boolean,
@@ -514,6 +615,11 @@ export async function getAudioPipelineStatus(): Promise<AudioPipelineStatus> {
 /** Reads native openWakeWord worker/model/runtime metadata only. */
 export async function getWakeWordStatus(): Promise<WakeWordStatus> {
   return requireNativeVoiceModule().getWakeWordStatus();
+}
+
+/** Reads bounded metadata for the manually controlled AudioRecord session. */
+export async function getManualWakeWordTrialStatus(): Promise<ManualWakeWordTrialStatus> {
+  return requireNativeVoiceModule().getManualWakeWordTrialStatus();
 }
 
 /** Marks one three-second metadata-only acoustic calibration trial. */

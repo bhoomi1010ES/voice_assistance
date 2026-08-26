@@ -11,6 +11,7 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.voiceaipoc.audio.AudioConfig
 import com.voiceaipoc.audio.AudioEngine
 import com.voiceaipoc.audio.AudioEffectsManager
+import com.voiceaipoc.audio.AudioEngine.ManualWakeWordTrialStatus
 import com.voiceaipoc.vad.VadEngine
 import com.voiceaipoc.vad.silero.SileroVadEngine
 import com.voiceaipoc.wakeword.WakeWordEngine
@@ -160,6 +161,13 @@ class VoiceModule(
     @ReactMethod
     fun getWakeWordStatus(promise: Promise) {
         promise.resolve(toWritableWakeWordMap(audioEngine.getWakeWordStatus()))
+    }
+
+    @ReactMethod
+    fun getManualWakeWordTrialStatus(promise: Promise) {
+        promise.resolve(
+            toWritableManualWakeWordTrialMap(audioEngine.getManualWakeWordTrialStatus()),
+        )
     }
 
     @ReactMethod
@@ -589,6 +597,8 @@ class VoiceModule(
             putDouble("speechFrames", status.speechFrames.toDouble())
             putDouble("nonSpeechFrames", status.nonSpeechFrames.toDouble())
             putDouble("speechSegments", status.speechSegments.toDouble())
+            putDouble("speechStartCount", status.speechStartCount.toDouble())
+            putDouble("speechStopCount", status.speechStopCount.toDouble())
             putDouble("currentSpeechDurationMs", status.currentSpeechDurationMs.toDouble())
             putDouble("currentSilenceDurationMs", status.currentSilenceDurationMs.toDouble())
             putDouble(
@@ -601,6 +611,162 @@ class VoiceModule(
             )
             putDouble("vadErrorCount", status.vadErrorCount.toDouble())
         }
+
+    private fun toWritableManualWakeWordTrialMap(
+        status: ManualWakeWordTrialStatus,
+    ): WritableMap = Arguments.createMap().apply {
+        val trial = status.wake
+        putBoolean("active", trial.active)
+        if (trial.trialId == null) putNull("trialId") else putString("trialId", trial.trialId)
+        putInt("microphoneSessionId", trial.microphoneSessionId)
+        putDouble("startTimestampMs", trial.startTimestampMs.toDouble())
+        putDouble("stopTimestampMs", trial.stopTimestampMs.toDouble())
+        putDouble("wakeDetectionCount", trial.wakeDetectionCount.toDouble())
+        putDouble("inferenceWindowCount", trial.inferenceWindowCount.toDouble())
+        putDouble("aboveThresholdWindowCount", trial.aboveThresholdWindowCount.toDouble())
+        if (trial.maximumScore == null) putNull("maximumScore") else {
+            putDouble("maximumScore", trial.maximumScore.toDouble())
+        }
+        putDouble("maximumScoreTimestampMs", trial.maximumScoreTimestampMs.toDouble())
+        putDouble("lastDetectionTimestampMs", trial.lastDetectionTimestampMs.toDouble())
+        if (trial.lastDetectionIntervalMs == null) putNull("lastDetectionIntervalMs") else {
+            putDouble("lastDetectionIntervalMs", trial.lastDetectionIntervalMs.toDouble())
+        }
+        putString("currentWakeState", trial.currentWakeState)
+        putBoolean("cooldownActive", trial.cooldownActive)
+        putDouble("cooldownRemainingMs", trial.cooldownRemainingMs.toDouble())
+        putDouble("cooldownDurationMs", trial.cooldownDurationMs.toDouble())
+        putInt("queueDepthFrames", trial.queueDepthFrames)
+        putInt("queueHighWaterMarkFrames", trial.queueHighWaterMarkFrames)
+        putDouble("queueDrops", trial.queueDrops.toDouble())
+        putDouble("runtimeErrors", trial.runtimeErrors.toDouble())
+        putDouble("workerGeneration", trial.workerGeneration.toDouble())
+        putBoolean("aecEnabled", status.aecEnabled)
+        putBoolean("noiseSuppressionEnabled", status.noiseSuppressionEnabled)
+        putDouble("pcmOverflowCount", status.pcmOverflowCount.toDouble())
+        putDouble("wakeWorkerDropCount", status.wakeWorkerDropCount.toDouble())
+        putInt("audioRecordErrorCount", status.audioRecordErrorCount)
+        putDouble("audioRecordReadErrorCount", status.audioRecordReadErrorCount.toDouble())
+        putDouble("pcmPipelineErrorCount", status.pcmPipelineErrorCount.toDouble())
+        putDouble("wakeRuntimeErrorCount", status.wakeRuntimeErrorCount.toDouble())
+        putDouble("sileroRuntimeErrorCount", status.sileroRuntimeErrorCount.toDouble())
+        putString("energyVadState", status.energyVadState)
+        putString("sileroVadState", status.sileroVadState)
+        putDouble("energyVadSpeechStartCount", status.energyVadSpeechStartCount.toDouble())
+        putDouble("energyVadSpeechStopCount", status.energyVadSpeechStopCount.toDouble())
+        putDouble("sileroVadSpeechStartCount", status.sileroVadSpeechStartCount.toDouble())
+        putDouble("sileroVadSpeechStopCount", status.sileroVadSpeechStopCount.toDouble())
+
+        val detections = Arguments.createArray()
+        trial.detections.forEach { detection ->
+            detections.pushMap(Arguments.createMap().apply {
+                putDouble("detectionSequenceNumber", detection.detectionSequenceNumber.toDouble())
+                putDouble("classifierScore", detection.classifierScore.toDouble())
+                putDouble("inferenceWindowSequence", detection.inferenceWindowSequence.toDouble())
+                putDouble("inferenceTimestampMs", detection.inferenceTimestampMs.toDouble())
+                putString("wakeStateBefore", detection.wakeStateBefore)
+                putString("wakeStateAfter", detection.wakeStateAfter)
+                putDouble("cooldownRemainingMs", detection.cooldownRemainingMs.toDouble())
+                if (detection.millisecondsSincePreviousDetection == null) {
+                    putNull("millisecondsSincePreviousDetection")
+                } else {
+                    putDouble(
+                        "millisecondsSincePreviousDetection",
+                        detection.millisecondsSincePreviousDetection.toDouble(),
+                    )
+                }
+                putDouble("workerGeneration", detection.workerGeneration.toDouble())
+            })
+        }
+        putArray("detections", detections)
+
+        val thresholdCrossings = Arguments.createArray()
+        trial.thresholdCrossings.forEach { crossing ->
+            thresholdCrossings.pushMap(Arguments.createMap().apply {
+                putDouble("inferenceWindowSequence", crossing.inferenceWindowSequence.toDouble())
+                putDouble("inferenceTimestampMs", crossing.inferenceTimestampMs.toDouble())
+                putDouble("score", crossing.score.toDouble())
+                putString("wakeStateBefore", crossing.wakeStateBefore)
+                putString("wakeStateAfter", crossing.wakeStateAfter)
+                putDouble("cooldownRemainingMs", crossing.cooldownRemainingMs.toDouble())
+                putBoolean("generatedWakeEvent", crossing.generatedWakeEvent)
+                putBoolean("suppressedByCooldown", crossing.suppressedByCooldown)
+            })
+        }
+        putArray("thresholdCrossings", thresholdCrossings)
+
+        val history = Arguments.createArray()
+        status.history.forEach { record ->
+            history.pushMap(toWritableManualWakeWordTrialRecord(record))
+        }
+        putArray("history", history)
+    }
+
+    private fun toWritableManualWakeWordTrialRecord(
+        trial: com.voiceaipoc.wakeword.WakeWordManualTrialStatus,
+    ): WritableMap = Arguments.createMap().apply {
+        putBoolean("active", false)
+        if (trial.trialId == null) putNull("trialId") else putString("trialId", trial.trialId)
+        putInt("microphoneSessionId", trial.microphoneSessionId)
+        putDouble("startTimestampMs", trial.startTimestampMs.toDouble())
+        putDouble("stopTimestampMs", trial.stopTimestampMs.toDouble())
+        putDouble("wakeDetectionCount", trial.wakeDetectionCount.toDouble())
+        putDouble("inferenceWindowCount", trial.inferenceWindowCount.toDouble())
+        putDouble("aboveThresholdWindowCount", trial.aboveThresholdWindowCount.toDouble())
+        if (trial.maximumScore == null) putNull("maximumScore") else {
+            putDouble("maximumScore", trial.maximumScore.toDouble())
+        }
+        putDouble("maximumScoreTimestampMs", trial.maximumScoreTimestampMs.toDouble())
+        putDouble("lastDetectionTimestampMs", trial.lastDetectionTimestampMs.toDouble())
+        if (trial.lastDetectionIntervalMs == null) putNull("lastDetectionIntervalMs") else {
+            putDouble("lastDetectionIntervalMs", trial.lastDetectionIntervalMs.toDouble())
+        }
+        putString("currentWakeState", trial.currentWakeState)
+        putBoolean("cooldownActive", trial.cooldownActive)
+        putDouble("cooldownRemainingMs", trial.cooldownRemainingMs.toDouble())
+        putDouble("cooldownDurationMs", trial.cooldownDurationMs.toDouble())
+        putInt("queueDepthFrames", trial.queueDepthFrames)
+        putInt("queueHighWaterMarkFrames", trial.queueHighWaterMarkFrames)
+        putDouble("queueDrops", trial.queueDrops.toDouble())
+        putDouble("runtimeErrors", trial.runtimeErrors.toDouble())
+        putDouble("workerGeneration", trial.workerGeneration.toDouble())
+        val detections = Arguments.createArray()
+        trial.detections.forEach { detection ->
+            detections.pushMap(Arguments.createMap().apply {
+                putDouble("detectionSequenceNumber", detection.detectionSequenceNumber.toDouble())
+                putDouble("classifierScore", detection.classifierScore.toDouble())
+                putDouble("inferenceWindowSequence", detection.inferenceWindowSequence.toDouble())
+                putDouble("inferenceTimestampMs", detection.inferenceTimestampMs.toDouble())
+                putString("wakeStateBefore", detection.wakeStateBefore)
+                putString("wakeStateAfter", detection.wakeStateAfter)
+                putDouble("cooldownRemainingMs", detection.cooldownRemainingMs.toDouble())
+                if (detection.millisecondsSincePreviousDetection == null) {
+                    putNull("millisecondsSincePreviousDetection")
+                } else {
+                    putDouble(
+                        "millisecondsSincePreviousDetection",
+                        detection.millisecondsSincePreviousDetection.toDouble(),
+                    )
+                }
+                putDouble("workerGeneration", detection.workerGeneration.toDouble())
+            })
+        }
+        putArray("detections", detections)
+        val thresholdCrossings = Arguments.createArray()
+        trial.thresholdCrossings.forEach { crossing ->
+            thresholdCrossings.pushMap(Arguments.createMap().apply {
+                putDouble("inferenceWindowSequence", crossing.inferenceWindowSequence.toDouble())
+                putDouble("inferenceTimestampMs", crossing.inferenceTimestampMs.toDouble())
+                putDouble("score", crossing.score.toDouble())
+                putString("wakeStateBefore", crossing.wakeStateBefore)
+                putString("wakeStateAfter", crossing.wakeStateAfter)
+                putDouble("cooldownRemainingMs", crossing.cooldownRemainingMs.toDouble())
+                putBoolean("generatedWakeEvent", crossing.generatedWakeEvent)
+                putBoolean("suppressedByCooldown", crossing.suppressedByCooldown)
+            })
+        }
+        putArray("thresholdCrossings", thresholdCrossings)
+    }
 
     private fun toWritableWakeWordMap(status: WakeWordEngine.Status): WritableMap =
         Arguments.createMap().apply {

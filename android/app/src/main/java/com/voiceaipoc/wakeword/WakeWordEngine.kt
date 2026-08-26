@@ -42,7 +42,15 @@ class WakeWordEngine(
         val modelName: String,
         val confidence: Float,
         val detectionCount: Long,
+        val detectionSequenceNumber: Long,
         val inferenceIndex: Long,
+        val inferenceTimestampMs: Long,
+        val wakeStateBefore: String,
+        val wakeStateAfter: String,
+        val cooldownRemainingMs: Long,
+        val millisecondsSincePreviousDetection: Long?,
+        val microphoneSessionId: Int,
+        val workerGeneration: Long,
         val framesConsumed: Long,
         val queueDepthFrames: Int,
         val droppedFrameCount: Long,
@@ -93,6 +101,7 @@ class WakeWordEngine(
         val runtimeErrorCount: Long,
         val lastDetectionTimestampMs: Long,
         val lastConfidence: Float?,
+        val manualTrial: WakeWordManualTrialStatus,
         val pcmContextSamples: Int,
         val melHistoryFrames: Int,
         val melBins: Int,
@@ -180,6 +189,11 @@ class WakeWordEngine(
     private var lastErrorMessage: String? = null
     private var currentAecEnabled = false
     private var currentNoiseSuppressionEnabled = false
+    private var workerGeneration = 0L
+    private val manualTrialDiagnostics = WakeWordManualTrialDiagnostics(
+        detectionThreshold = config.detectionThreshold,
+        cooldownDurationMs = config.cooldownMs,
+    )
 
     init {
         require(frameDurationMs > 0) { "frameDurationMs must be positive" }
@@ -193,7 +207,7 @@ class WakeWordEngine(
     }
 
     /** Starts one model worker or reports an explicit unavailable/error state. */
-    fun startSession(): StartResult {
+    fun startSession(microphoneSessionId: Int = -1): StartResult {
         var startupError: Pair<String, String>? = null
         var workerStartException: RuntimeException? = null
         var readyLatch: CountDownLatch? = null
@@ -205,6 +219,11 @@ class WakeWordEngine(
                 startupError = ERROR_ALREADY_RUNNING to message
             } else {
                 resetForNewSessionLocked()
+                manualTrialDiagnostics.begin(
+                    microphoneSessionId = microphoneSessionId,
+                    timestampMs = wallClockMs(),
+                    workerGeneration = workerGeneration,
+                )
                 sessionActive = true
                 startupError = when {
                     !config.enabled -> {
@@ -505,6 +524,16 @@ class WakeWordEngine(
                 inferenceWindow.fill(0)
             }
             frameQueue.clear()
+            val state = stateMachine.getStatus()
+            manualTrialDiagnostics.finish(
+                timestampMs = wallClockMs(),
+                currentWakeState = state.state.name,
+                cooldownRemainingMs = state.cooldownRemainingMs,
+                queueDepthFrames = frameQueue.currentBufferedFrames(),
+                queueHighWaterMarkFrames = queueHighWaterMarkFrames,
+                queueDrops = droppedFrameCount,
+                runtimeErrors = runtimeErrorCount,
+            )
         }
         acousticDiagnostics.finishActiveTrial(wallClockMs())?.let(::logCalibrationTrial)
         diagnosticCapture?.stop()
@@ -580,6 +609,7 @@ class WakeWordEngine(
                 runtimeErrorCount = runtimeErrorCount,
                 lastDetectionTimestampMs = stateStatus.lastDetectionTimestampMs,
                 lastConfidence = stateStatus.lastConfidence,
+                manualTrial = manualTrialDiagnostics.snapshot(),
                 pcmContextSamples = ApprovedOpenWakeWordModel.MEL_CONTEXT_SAMPLES,
                 melHistoryFrames = ApprovedOpenWakeWordModel.MEL_HISTORY_FRAMES,
                 melBins = ApprovedOpenWakeWordModel.MEL_BINS,
@@ -592,6 +622,12 @@ class WakeWordEngine(
             )
         }
     }
+
+    fun getManualTrialStatus(): WakeWordManualTrialStatus =
+        manualTrialDiagnostics.snapshot()
+
+    fun getManualTrialHistory(): List<WakeWordManualTrialStatus> =
+        manualTrialDiagnostics.history()
 
     private fun workerLoop() {
         var runtime: WakeWordInferenceRuntime? = null
@@ -688,23 +724,48 @@ class WakeWordEngine(
                     }
                     assembledFrameCount = 0
 
+                    val inferenceTimestampMs = wallClockMs()
                     val stateBeforeInference = stateMachine.getStatus()
-                    val detection = stateMachine.onConfidence(confidence)
+                    val detection = stateMachine.onConfidence(
+                        confidence = confidence,
+                        wallTimestampMs = inferenceTimestampMs,
+                    )
                     val stateAfterInference = stateMachine.getStatus()
+                    val queueDepthFrames = frameQueue.currentBufferedFrames()
+                    val queueHighWaterMarkFrames = synchronized(lock) {
+                        this@WakeWordEngine.queueHighWaterMarkFrames
+                    }
+                    val droppedFrames = synchronized(lock) { droppedFrameCount }
+                    val runtimeErrors = synchronized(lock) { runtimeErrorCount }
+                    val duplicateSuppressed =
+                        stateAfterInference.duplicateSuppressionCount >
+                            stateBeforeInference.duplicateSuppressionCount
+                    manualTrialDiagnostics.recordInference(
+                        inferenceWindowSequence = currentInferenceIndex,
+                        inferenceTimestampMs = inferenceTimestampMs,
+                        score = confidence,
+                        wakeStateBefore = stateBeforeInference.state.name,
+                        wakeStateAfter = stateAfterInference.state.name,
+                        cooldownRemainingMs = stateAfterInference.cooldownRemainingMs,
+                        queueDepthFrames = queueDepthFrames,
+                        queueHighWaterMarkFrames = queueHighWaterMarkFrames,
+                        queueDrops = droppedFrames,
+                        runtimeErrors = runtimeErrors,
+                        detection = detection,
+                        suppressedByCooldown = duplicateSuppressed,
+                    )
                     acousticDiagnostics.recordInference(
                         pcm16 = inferenceWindow,
                         samplesRead = inferenceWindowSamples,
                         inferenceIndex = currentInferenceIndex,
                         score = confidence,
-                        timestampMs = wallClockMs(),
-                        queueDepthFrames = frameQueue.currentBufferedFrames(),
+                        timestampMs = inferenceTimestampMs,
+                        queueDepthFrames = queueDepthFrames,
                         inferenceDurationNanos = inferenceElapsedNanos,
                         aecEnabled = currentAecEnabled,
                         noiseSuppressionEnabled = currentNoiseSuppressionEnabled,
                         detectionOccurred = detection != null,
-                        duplicateSuppressed =
-                            stateAfterInference.duplicateSuppressionCount >
-                                stateBeforeInference.duplicateSuppressionCount,
+                        duplicateSuppressed = duplicateSuppressed,
                     )?.let(::logCalibrationTrial)
 
                     detection?.let {
@@ -714,10 +775,19 @@ class WakeWordEngine(
                             modelName = it.modelName,
                             confidence = it.confidence,
                             detectionCount = it.detectionCount,
+                            detectionSequenceNumber = it.detectionCount,
                             inferenceIndex = currentInferenceIndex,
+                            inferenceTimestampMs = inferenceTimestampMs,
+                            wakeStateBefore = stateBeforeInference.state.name,
+                            wakeStateAfter = stateAfterInference.state.name,
+                            cooldownRemainingMs = stateAfterInference.cooldownRemainingMs,
+                            millisecondsSincePreviousDetection =
+                                it.millisecondsSincePreviousDetection,
+                            microphoneSessionId = manualTrialDiagnostics.snapshot().microphoneSessionId,
+                            workerGeneration = workerGeneration,
                             framesConsumed = synchronized(lock) { framesConsumed },
-                            queueDepthFrames = frameQueue.currentBufferedFrames(),
-                            droppedFrameCount = synchronized(lock) { droppedFrameCount },
+                            queueDepthFrames = queueDepthFrames,
+                            droppedFrameCount = droppedFrames,
                         )
                         Log.i(
                             AudioEngine.TAG,
@@ -803,6 +873,7 @@ class WakeWordEngine(
     }
 
     private fun resetForNewSessionLocked() {
+        workerGeneration += 1L
         frameQueue.clear()
         workerFrame.fill(0)
         inferenceWindow.fill(0)
