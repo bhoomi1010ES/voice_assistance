@@ -46,10 +46,10 @@ data class OpenWakeWordModelContract(
     val artifacts: List<WakeWordArtifactContract>,
 )
 
-/** Exact official openWakeWord v0.5.1 release chain approved for Phase 0.7. */
+/** Exact official openWakeWord v0.5.1 release chain approved for Phase 0.9. */
 object ApprovedOpenWakeWordModel {
-    const val TARGET_PHRASE = "hey_jarvis"
-    const val MODEL_NAME = "hey_jarvis"
+    const val TARGET_PHRASE = "hey_mycroft"
+    const val MODEL_NAME = "hey_mycroft"
     const val ARTIFACT_VERSION = "v0.1"
     const val RELEASE_TAG = "v0.5.1"
     const val GIT_COMMIT = "1eec2158c5c54150ac5f4c15065adacb1003b1e7"
@@ -76,7 +76,7 @@ object ApprovedOpenWakeWordModel {
 
     const val MEL_FILE_NAME = "melspectrogram.onnx"
     const val EMBEDDING_FILE_NAME = "embedding_model.onnx"
-    const val CLASSIFIER_FILE_NAME = "hey_jarvis_v0.1.onnx"
+    const val CLASSIFIER_FILE_NAME = "hey_mycroft_v0.1.onnx"
     const val MEL_ASSET_PATH = "$ASSET_DIRECTORY/$MEL_FILE_NAME"
     const val EMBEDDING_ASSET_PATH = "$ASSET_DIRECTORY/$EMBEDDING_FILE_NAME"
     const val CLASSIFIER_ASSET_PATH = "$ASSET_DIRECTORY/$CLASSIFIER_FILE_NAME"
@@ -85,8 +85,8 @@ object ApprovedOpenWakeWordModel {
     const val MEL_OUTPUT_NAME = "output"
     const val EMBEDDING_INPUT_NAME = "input_1"
     const val EMBEDDING_OUTPUT_NAME = "conv2d_19"
-    const val CLASSIFIER_INPUT_NAME = "x.1"
-    const val CLASSIFIER_OUTPUT_NAME = "53"
+    const val CLASSIFIER_INPUT_NAME = "onnx::Flatten_0"
+    const val CLASSIFIER_OUTPUT_NAME = "39"
 
     val MEL_ARTIFACT = WakeWordArtifactContract(
         fileName = MEL_FILE_NAME,
@@ -140,8 +140,8 @@ object ApprovedOpenWakeWordModel {
         fileName = CLASSIFIER_FILE_NAME,
         assetPath = CLASSIFIER_ASSET_PATH,
         officialUrl = "$RELEASE_BASE_URL/$CLASSIFIER_FILE_NAME",
-        sizeBytes = 1_271_370L,
-        sha256 = "94A13CFE60075B132F6A472E7E462E8123EE70861BC3FB58434A73712EE0D2CB",
+        sizeBytes = 857_691L,
+        sha256 = "C2A311E8FA1338DE89C31B3B46DC4DFFD4AF2F9A8D6DDEAD48893C2D301B1F18",
         onnxIrVersion = 7,
         onnxOpsets = mapOf("ai.onnx" to 13),
         producerName = "pytorch",

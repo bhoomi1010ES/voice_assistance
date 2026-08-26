@@ -209,7 +209,7 @@ const INITIAL_WAKE_WORD_STATUS: WakeWordStatus = {
   enabled: true,
   available: false,
   modelPresent: false,
-  modelName: 'hey_jarvis',
+  modelName: 'hey_mycroft',
   modelVersion: 'v0.1',
   modelReleaseTag: 'v0.5.1',
   modelGitCommit: '1eec2158c5c54150ac5f4c15065adacb1003b1e7',
@@ -217,7 +217,7 @@ const INITIAL_WAKE_WORD_STATUS: WakeWordStatus = {
   modelFormat: 'ONNX',
   modelAssetDirectory: 'openwakeword',
   missingModelAssets:
-    'openwakeword/melspectrogram.onnx, openwakeword/embedding_model.onnx, openwakeword/hey_jarvis_v0.1.onnx',
+    'openwakeword/melspectrogram.onnx, openwakeword/embedding_model.onnx, openwakeword/hey_mycroft_v0.1.onnx',
   modelHashVerified: false,
   classifierSha256: null,
   runtimeName: 'ONNX_RUNTIME_ANDROID_CPU',

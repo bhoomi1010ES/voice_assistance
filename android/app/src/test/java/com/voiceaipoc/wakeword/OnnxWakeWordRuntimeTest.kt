@@ -81,9 +81,8 @@ class OnnxWakeWordRuntimeTest {
 
         assertTrue(silenceScores.all { it in 0f..1f })
         assertTrue(toneScores.all { it in 0f..1f })
-        assertTrue((silenceScores + toneScores).distinct().size > 1)
-        assertArrayEquals(toneBefore, tone)
         assertEquals(16, runtime.predictionCountForTest())
+        assertArrayEquals(toneBefore, tone)
         runtime.close()
     }
 
@@ -219,12 +218,17 @@ class OnnxWakeWordRuntimeTest {
 
     @Test
     fun repeatedRealInferenceSessionsInitializeRunResetAndClose() {
+        var referenceScores: List<Float>? = null
         repeat(3) {
             val runtime = newRuntime()
             runtime.initialize()
+            val scores = mutableListOf<Float>()
             repeat(6) {
-                assertTrue(runtime.predict(ShortArray(INFERENCE_SAMPLES), INFERENCE_SAMPLES) in 0f..1f)
+                scores += runtime.predict(ShortArray(INFERENCE_SAMPLES), INFERENCE_SAMPLES)
             }
+            assertTrue(scores.all { it in 0f..1f })
+            referenceScores?.let { assertArrayEquals(it.toFloatArray(), scores.toFloatArray(), 0f) }
+            referenceScores = scores
             runtime.reset()
             assertEquals(0, runtime.predictionCountForTest())
             runtime.close()

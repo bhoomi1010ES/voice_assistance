@@ -40,7 +40,7 @@ TRACE_VERSION = 1
 MODEL_HASHES = {
     "melspectrogram.onnx": "BA2B0E0F8B7B875369A2C89CB13360FF53BAC436F2895CCED9F479FA65EB176F",
     "embedding_model.onnx": "70D164290C1D095D1D4EE149BC5E00543250A7316B59F31D056CFF7BD3075C1F",
-    "hey_jarvis_v0.1.onnx": "94A13CFE60075B132F6A472E7E462E8123EE70861BC3FB58434A73712EE0D2CB",
+    "hey_mycroft_v0.1.onnx": "C2A311E8FA1338DE89C31B3B46DC4DFFD4AF2F9A8D6DDEAD48893C2D301B1F18",
 }
 
 
@@ -94,7 +94,7 @@ def create_official_model(model_dir: Path) -> Any:
     # seed makes the unmodified official initialization deterministic.
     np.random.seed(REFERENCE_SEED)
     return openwakeword.Model(
-        wakeword_models=[str(model_dir / "hey_jarvis_v0.1.onnx")],
+        wakeword_models=[str(model_dir / "hey_mycroft_v0.1.onnx")],
         inference_framework="onnx",
         melspec_model_path=str(model_dir / "melspectrogram.onnx"),
         embedding_model_path=str(model_dir / "embedding_model.onnx"),

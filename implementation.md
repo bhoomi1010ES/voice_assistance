@@ -2046,6 +2046,7 @@ Do not proceed to a full product build until wake word + VAD + capture works rel
 
 ---
 
+
 ## Phase 1 — Repository and infrastructure foundation
 
 ### Steps
