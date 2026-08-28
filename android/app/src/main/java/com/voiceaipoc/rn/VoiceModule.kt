@@ -11,14 +11,17 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.voiceaipoc.audio.AudioConfig
 import com.voiceaipoc.audio.AudioEngine
 import com.voiceaipoc.audio.AudioEffectsManager
+import com.voiceaipoc.auth.SecureTokenStorage
 import com.voiceaipoc.audio.AudioEngine.ManualWakeWordTrialStatus
 import com.voiceaipoc.vad.VadEngine
 import com.voiceaipoc.vad.silero.SileroVadEngine
+import com.voiceaipoc.voice.VoiceWebSocketTransport
 import com.voiceaipoc.wakeword.WakeWordEngine
 import com.voiceaipoc.wakeword.WakeWordAcousticStatus
 import com.voiceaipoc.wakeword.WakeWordCalibrationTrial
 import com.voiceaipoc.wakeword.WakeWordDiagnosticCapture
 import com.voiceaipoc.wakeword.WakeWordReplayBatchResult
+import java.security.GeneralSecurityException
 import java.util.concurrent.Executors
 
 /**
@@ -37,12 +40,33 @@ class VoiceModule(
         Thread(runnable, "VoiceAI-WakeReplay")
     }
 
+    private val authTokenStorage = SecureTokenStorage(reactContext.applicationContext)
+
+    private val voiceGateway = VoiceWebSocketTransport(
+        tokenStorage = authTokenStorage,
+        listener = object : VoiceWebSocketTransport.Listener {
+            override fun onStatus(status: VoiceWebSocketTransport.Status) {
+                emitVoiceGatewayStatus(status)
+            }
+
+            override fun onServerEvent(
+                eventType: String,
+                sessionId: String?,
+                turnId: String?,
+                responseId: String?,
+            ) {
+                emitVoiceGatewayEvent(eventType, sessionId, turnId, responseId)
+            }
+        },
+    )
+
     private val audioEngine = AudioEngine(
         context = reactContext.applicationContext,
         config = AudioConfig(),
-        pcmDataCallback = AudioEngine.PcmDataCallback { _, _ ->
-            // Reserved for future native stages. Raw PCM deliberately stops
-            // here and never crosses the React Native bridge.
+        pcmDataCallback = AudioEngine.PcmDataCallback { buffer, samplesRead ->
+            // The transport copies the reusable frame immediately. PCM stays
+            // native and is never sent through the React Native bridge.
+            voiceGateway.offerPcmFrame(buffer, samplesRead)
         },
         vadEventListener = object : VadEngine.Listener {
             override fun onSpeechStarted(event: VadEngine.Event) {
@@ -121,6 +145,68 @@ class VoiceModule(
         }
 
         promise.resolve(diagnostics)
+    }
+
+    @ReactMethod
+    fun storeAuthTokens(accessToken: String, refreshToken: String, promise: Promise) {
+        try {
+            authTokenStorage.save(
+                accessToken,
+                refreshToken,
+            )
+            promise.resolve(true)
+        } catch (exception: IllegalArgumentException) {
+            promise.reject("E_AUTH_TOKEN_STORAGE", exception.message, exception)
+        } catch (exception: GeneralSecurityException) {
+            promise.reject("E_AUTH_TOKEN_STORAGE", exception.message, exception)
+        }
+    }
+
+    @ReactMethod
+    fun clearAuthTokens(promise: Promise) {
+        authTokenStorage.clear()
+        promise.resolve(true)
+    }
+
+    @ReactMethod
+    fun connectVoiceGateway(url: String, promise: Promise) {
+        resolveVoiceResult(voiceGateway.connect(url), promise)
+    }
+
+    @ReactMethod
+    fun disconnectVoiceGateway(promise: Promise) {
+        voiceGateway.disconnect()
+        promise.resolve(toWritableVoiceGatewayMap(voiceGateway.getStatus()))
+    }
+
+    @ReactMethod
+    fun startVoiceSession(resumeSessionId: String?, promise: Promise) {
+        resolveVoiceResult(voiceGateway.startSession(resumeSessionId), promise)
+    }
+
+    @ReactMethod
+    fun startVoiceTurn(clientTurnId: String?, promise: Promise) {
+        resolveVoiceResult(voiceGateway.startTurn(clientTurnId), promise)
+    }
+
+    @ReactMethod
+    fun commitVoiceAudio(durationMs: Int, promise: Promise) {
+        resolveVoiceResult(voiceGateway.commitAudio(durationMs), promise)
+    }
+
+    @ReactMethod
+    fun cancelVoiceResponse(reason: String?, promise: Promise) {
+        resolveVoiceResult(voiceGateway.cancelResponse(reason ?: "client_requested"), promise)
+    }
+
+    @ReactMethod
+    fun endVoiceSession(reason: String?, promise: Promise) {
+        resolveVoiceResult(voiceGateway.endSession(reason ?: "client_requested"), promise)
+    }
+
+    @ReactMethod
+    fun getVoiceGatewayStatus(promise: Promise) {
+        promise.resolve(toWritableVoiceGatewayMap(voiceGateway.getStatus()))
     }
 
     @ReactMethod
@@ -300,6 +386,7 @@ class VoiceModule(
 
     override fun invalidate() {
         audioEngine.release()
+        voiceGateway.shutdown()
         diagnosticExecutor.shutdownNow()
         super.invalidate()
     }
@@ -396,6 +483,48 @@ class VoiceModule(
         reactApplicationContext
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
             .emit(eventName, toWritableMap(status))
+    }
+
+    private fun emitVoiceGatewayStatus(status: VoiceWebSocketTransport.Status) {
+        if (!reactApplicationContext.hasActiveReactInstance()) {
+            return
+        }
+
+        reactApplicationContext
+            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+            .emit(EVENT_VOICE_GATEWAY_STATUS, toWritableVoiceGatewayMap(status))
+    }
+
+    private fun emitVoiceGatewayEvent(
+        eventType: String,
+        sessionId: String?,
+        turnId: String?,
+        responseId: String?,
+    ) {
+        if (!reactApplicationContext.hasActiveReactInstance()) {
+            return
+        }
+
+        val payload = Arguments.createMap().apply {
+            putString("event", eventType)
+            if (sessionId == null) putNull("sessionId") else putString("sessionId", sessionId)
+            if (turnId == null) putNull("turnId") else putString("turnId", turnId)
+            if (responseId == null) putNull("responseId") else putString("responseId", responseId)
+        }
+        reactApplicationContext
+            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+            .emit(EVENT_VOICE_GATEWAY_EVENT, payload)
+    }
+
+    private fun resolveVoiceResult(result: VoiceWebSocketTransport.Result, promise: Promise) {
+        if (result.succeeded) {
+            promise.resolve(toWritableVoiceGatewayMap(voiceGateway.getStatus()))
+        } else {
+            promise.reject(
+                result.errorCode ?: "E_VOICE_GATEWAY",
+                result.errorMessage ?: "Voice gateway operation failed.",
+            )
+        }
     }
 
     private fun emitVadEvent(eventName: String, event: VadEngine.Event) {
@@ -502,6 +631,32 @@ class VoiceModule(
         } else {
             putString("lastError", status.lastError)
         }
+    }
+
+    private fun toWritableVoiceGatewayMap(
+        status: VoiceWebSocketTransport.Status,
+    ): WritableMap = Arguments.createMap().apply {
+        putString("state", status.state.name)
+        putBoolean("connected", status.connected)
+        putBoolean("sessionStarted", status.sessionStarted)
+        putBoolean("turnActive", status.turnActive)
+        if (status.sessionId == null) putNull("sessionId") else putString("sessionId", status.sessionId)
+        if (status.turnId == null) putNull("turnId") else putString("turnId", status.turnId)
+        if (status.responseId == null) putNull("responseId") else putString("responseId", status.responseId)
+        putInt("framesQueued", status.framesQueued)
+        putInt("queueHighWaterMark", status.queueHighWaterMark)
+        putDouble("droppedFrames", status.droppedFrames.toDouble())
+        putDouble("invalidFrames", status.invalidFrames.toDouble())
+        putDouble("framesSent", status.framesSent.toDouble())
+        putDouble("bytesSent", status.bytesSent.toDouble())
+        putDouble("websocketErrorCount", status.websocketErrorCount.toDouble())
+        if (status.lastServerEvent == null) {
+            putNull("lastServerEvent")
+        } else {
+            putString("lastServerEvent", status.lastServerEvent)
+        }
+        putDouble("lastServerEventTimestampMs", status.lastServerEventTimestampMs.toDouble())
+        if (status.lastError == null) putNull("lastError") else putString("lastError", status.lastError)
     }
 
     private fun toWritableAudioProcessingMap(
@@ -1119,5 +1274,7 @@ class VoiceModule(
         const val EVENT_WAKE_ENGINE_STARTED = WakeWordEngine.EVENT_ENGINE_STARTED
         const val EVENT_WAKE_ENGINE_STOPPED = WakeWordEngine.EVENT_ENGINE_STOPPED
         const val EVENT_WAKE_ENGINE_ERROR = WakeWordEngine.EVENT_ENGINE_ERROR
+        const val EVENT_VOICE_GATEWAY_STATUS = "VOICE_GATEWAY_STATUS"
+        const val EVENT_VOICE_GATEWAY_EVENT = "VOICE_GATEWAY_EVENT"
     }
 }

@@ -11,6 +11,16 @@ from app.schemas.auth import (
     TokenResponse,
     UserResponse,
 )
+from app.schemas.resources import (
+    MemoryCreateRequest,
+    MemoryResponse,
+    MemoryUpdateRequest,
+    SessionUpdateRequest,
+    TaskCreateRequest,
+    TaskResponse,
+    TaskUpdateRequest,
+    VoiceSessionResponse,
+)
 
 __all__ = [
     "AuthSessionResponse",
@@ -22,4 +32,12 @@ __all__ = [
     "RegisterRequest",
     "TokenResponse",
     "UserResponse",
+    "MemoryCreateRequest",
+    "MemoryResponse",
+    "MemoryUpdateRequest",
+    "SessionUpdateRequest",
+    "TaskCreateRequest",
+    "TaskResponse",
+    "TaskUpdateRequest",
+    "VoiceSessionResponse",
 ]

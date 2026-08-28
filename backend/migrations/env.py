@@ -9,7 +9,14 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import Settings
-from app.models import AuditLog, AuthSession, Device, User  # noqa: F401
+from app.models import (  # noqa: F401
+    AuditLog,
+    AuthSession,
+    ConversationTurn,
+    Device,
+    User,
+    VoiceSession,
+)
 from app.models.base import Base
 
 config = context.config

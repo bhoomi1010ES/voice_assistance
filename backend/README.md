@@ -1,8 +1,9 @@
 # Backend
 
-This directory contains the Phase 1 infrastructure foundation and the Phase 2
-authentication/user/device foundation. GPU, STT, TTS, LLM, RAG, memory, task,
-and other voice application features remain deferred.
+This directory contains the Phase 1 infrastructure foundation, the Phase 2
+authentication/user/device foundation, and the bounded Phase 3 WebSocket voice
+gateway. GPU, STT, TTS, LLM, RAG, memory, task, and other voice application
+features remain deferred.
 
 ## Local setup
 
@@ -51,6 +52,28 @@ an explicit reason rather than reporting a false pass.
 - `/auth/sessions` provides ownership-scoped session listing and revocation.
 - `WS /ws` requires a bearer access token and binds the connection to that
   authenticated user. Client messages cannot override the connection identity.
+- `WS /v1/voice` requires the same bearer access token and accepts the existing
+  16 kHz mono PCM16 stream as exact 640-byte binary frames. Use explicit
+  `client.session.start`, `client.turn.start`, `client.audio.commit`,
+  `client.response.cancel`, `client.ping`, and `client.session.end` controls.
+  The fixed binary frame header is 24 bytes: `VAI1`, version 1, client PCM
+  type 1, zero flags, a per-turn sequence number, a client timestamp, and
+  payload length.
+
+The voice gateway is metadata-only in this phase: it counts and persists
+session/turn/frame metadata but does not run STT, LLM, tools, TTS, or playback.
+PostgreSQL stores durable session/turn boundaries and Redis stores TTL-bound
+active connection/turn/response/cancellation ownership. One bounded ingress
+queue is used per connection; gaps, duplicates, oversized frames, invalid
+state transitions, and cross-owner resume attempts are rejected.
+
+For a local synthetic protocol test, set `RUN_INTEGRATION_TESTS=1` and run
+`pytest tests/test_voice_gateway_integration.py`. The test sends one exact
+640-byte PCM frame and does not retain audio. On Android, the transport is
+explicitly controlled from the diagnostic screen; it never starts or stops
+the microphone and does not send PCM through React Native. The default
+diagnostic URL is `ws://127.0.0.1:8000/v1/voice`, suitable for a USB device
+after `adb reverse tcp:8000 tcp:8000`.
 
 Refresh tokens are stored as SHA-256 hashes, access tokens are short-lived
 signed JWTs, and every protected resource query is scoped by the authenticated

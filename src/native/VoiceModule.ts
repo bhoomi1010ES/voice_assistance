@@ -541,6 +541,34 @@ export type AudioPipelineStatus = {
   sileroVad: SileroVadStatus;
 };
 
+/** Native WebSocket transport metadata only; PCM and tokens are excluded. */
+export type VoiceGatewayStatus = {
+  state: string;
+  connected: boolean;
+  sessionStarted: boolean;
+  turnActive: boolean;
+  sessionId: string | null;
+  turnId: string | null;
+  responseId: string | null;
+  framesQueued: number;
+  queueHighWaterMark: number;
+  droppedFrames: number;
+  invalidFrames: number;
+  framesSent: number;
+  bytesSent: number;
+  websocketErrorCount: number;
+  lastServerEvent: string | null;
+  lastServerEventTimestampMs: number;
+  lastError: string | null;
+};
+
+export type VoiceGatewayEvent = {
+  event: string;
+  sessionId: string | null;
+  turnId: string | null;
+  responseId: string | null;
+};
+
 type NativeVoiceModule = {
   getDiagnostics: () => Promise<VoiceDiagnostics>;
   startMicrophone: () => Promise<MicrophoneStatus>;
@@ -572,6 +600,16 @@ type NativeVoiceModule = {
   setAudioProcessingCalibrationMode: (
     mode: AudioProcessingCalibrationMode,
   ) => Promise<AudioProcessingStatus>;
+  storeAuthTokens: (accessToken: string, refreshToken: string) => Promise<boolean>;
+  clearAuthTokens: () => Promise<boolean>;
+  connectVoiceGateway: (url: string) => Promise<VoiceGatewayStatus>;
+  disconnectVoiceGateway: () => Promise<VoiceGatewayStatus>;
+  startVoiceSession: (resumeSessionId?: string | null) => Promise<VoiceGatewayStatus>;
+  startVoiceTurn: (clientTurnId?: string | null) => Promise<VoiceGatewayStatus>;
+  commitVoiceAudio: (durationMs: number) => Promise<VoiceGatewayStatus>;
+  cancelVoiceResponse: (reason?: string | null) => Promise<VoiceGatewayStatus>;
+  endVoiceSession: (reason?: string | null) => Promise<VoiceGatewayStatus>;
+  getVoiceGatewayStatus: () => Promise<VoiceGatewayStatus>;
 };
 
 export type AudioProcessingCalibrationMode =
@@ -689,6 +727,58 @@ export async function startMicrophone(): Promise<MicrophoneStatus> {
 
 export async function stopMicrophone(): Promise<MicrophoneStatus> {
   return requireNativeVoiceModule().stopMicrophone();
+}
+
+/** Stores credentials through Android Keystore-backed native storage. */
+export async function storeAuthTokens(
+  accessToken: string,
+  refreshToken: string,
+): Promise<boolean> {
+  return requireNativeVoiceModule().storeAuthTokens(accessToken, refreshToken);
+}
+
+export async function clearAuthTokens(): Promise<boolean> {
+  return requireNativeVoiceModule().clearAuthTokens();
+}
+
+export async function connectVoiceGateway(url: string): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().connectVoiceGateway(url);
+}
+
+export async function disconnectVoiceGateway(): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().disconnectVoiceGateway();
+}
+
+export async function startVoiceSession(
+  resumeSessionId?: string | null,
+): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().startVoiceSession(resumeSessionId);
+}
+
+export async function startVoiceTurn(
+  clientTurnId?: string | null,
+): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().startVoiceTurn(clientTurnId);
+}
+
+export async function commitVoiceAudio(durationMs: number): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().commitVoiceAudio(durationMs);
+}
+
+export async function cancelVoiceResponse(
+  reason?: string | null,
+): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().cancelVoiceResponse(reason);
+}
+
+export async function endVoiceSession(
+  reason?: string | null,
+): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().endVoiceSession(reason);
+}
+
+export async function getVoiceGatewayStatus(): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().getVoiceGatewayStatus();
 }
 
 /**

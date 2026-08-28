@@ -47,6 +47,15 @@ def get_auth_service(request: Request) -> AuthService:
 AuthServiceDependency = Annotated[AuthService, Depends(get_auth_service)]
 
 
+def extract_bearer_token(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    scheme, separator, token = authorization.partition(" ")
+    if not separator or scheme.lower() != "bearer" or not token.strip():
+        return None
+    return token.strip()
+
+
 async def _record_unauthorized(
     session: AsyncSession,
     request: Request,

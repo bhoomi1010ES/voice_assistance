@@ -1,8 +1,7 @@
 # Voice Assistance
 
 This repository contains the React Native Android proof of concept and the
-Phase 1 backend/infrastructure foundation with the Phase 2 authentication and
-user/device foundation.
+Phase 1/2 backend foundation with the Phase 3 bounded WebSocket voice gateway.
 
 Current gates:
 
@@ -10,13 +9,15 @@ Current gates:
 PHASE 0: FAIL (unchanged; acoustic acceptance is not complete)
 PHASE 1: PASS
 PHASE 2: IN PROGRESS
+PHASE 3: IN PROGRESS (gateway implementation; acceptance validation pending)
 ```
 
-Phase 1 and Phase 2 do not change the Android microphone, AEC/NS, VAD,
-wake-word model, threshold, cooldown, or native audio pipeline. Phase 2 adds
-backend authentication, device/session ownership, security audit records, an
-authenticated WebSocket foundation, and a standalone Android Keystore-backed
-token-storage abstraction.
+Phase 1 through Phase 3 do not change the Android microphone, AEC/NS, VAD,
+wake-word model, threshold, cooldown, or native audio pipeline. Phase 3 adds
+an authenticated `/v1/voice` gateway, exact binary PCM framing, bounded
+transport queues, explicit session/turn controls, PostgreSQL metadata, and
+Redis active-session state. STT, LLM, tools, TTS, and Phase 1 functionality
+remain outside this phase.
 
 ## Repository structure
 

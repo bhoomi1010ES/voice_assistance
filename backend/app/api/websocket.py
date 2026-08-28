@@ -5,6 +5,7 @@ import uuid
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import extract_bearer_token
 from app.services.audit import record_audit
 from app.services.auth import AuthConfigurationError, AuthenticationError, AuthService
 
@@ -37,13 +38,7 @@ async def _close_with_audit(
 
 
 def _bearer_token(websocket: WebSocket) -> str | None:
-    authorization = websocket.headers.get("authorization")
-    if not authorization:
-        return None
-    scheme, separator, token = authorization.partition(" ")
-    if not separator or scheme.lower() != "bearer" or not token.strip():
-        return None
-    return token.strip()
+    return extract_bearer_token(websocket.headers.get("authorization"))
 
 
 @router.websocket("/ws")

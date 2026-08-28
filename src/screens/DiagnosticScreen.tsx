@@ -12,6 +12,11 @@ import {
   AudioProcessingCalibrationMode,
   AudioPipelineStatus,
   AudioProcessingStatus,
+  VoiceGatewayStatus,
+  connectVoiceGateway,
+  disconnectVoiceGateway,
+  endVoiceSession,
+  getVoiceGatewayStatus,
   getAudioPipelineStatus,
   getAudioProcessingStatus,
   getMicrophoneStatus,
@@ -20,6 +25,9 @@ import {
   getWakeWordDiagnosticPcmCaptureStatus,
   MicrophoneStatus,
   requestMicrophonePermission,
+  startVoiceSession,
+  startVoiceTurn,
+  commitVoiceAudio,
   resetWakeWordAcousticDiagnostics,
   replayWakeWordDiagnosticPcm,
   setAudioProcessingCalibrationMode,
@@ -39,6 +47,8 @@ import {
   WakeWordStatus,
   WakeWordStatusEvent,
 } from '../native/VoiceModule';
+
+const DEFAULT_VOICE_GATEWAY_URL = 'ws://127.0.0.1:8000/v1/voice';
 
 const WAKE_CALIBRATION_CONDITIONS = [
   'QUIET_25CM',
@@ -391,6 +401,26 @@ const INITIAL_MANUAL_WAKE_WORD_TRIAL_STATUS: ManualWakeWordTrialStatus = {
   history: [],
 };
 
+const INITIAL_VOICE_GATEWAY_STATUS: VoiceGatewayStatus = {
+  state: 'DISCONNECTED',
+  connected: false,
+  sessionStarted: false,
+  turnActive: false,
+  sessionId: null,
+  turnId: null,
+  responseId: null,
+  framesQueued: 0,
+  queueHighWaterMark: 0,
+  droppedFrames: 0,
+  invalidFrames: 0,
+  framesSent: 0,
+  bytesSent: 0,
+  websocketErrorCount: 0,
+  lastServerEvent: null,
+  lastServerEventTimestampMs: 0,
+  lastError: null,
+};
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -412,6 +442,7 @@ export function DiagnosticScreen() {
     INITIAL_MANUAL_WAKE_WORD_TRIAL_STATUS,
   );
   const [wakeCapture, setWakeCapture] = useState(INITIAL_WAKE_CAPTURE_STATUS);
+  const [voiceGateway, setVoiceGateway] = useState(INITIAL_VOICE_GATEWAY_STATUS);
   const [wakeReplay, setWakeReplay] =
     useState<WakeWordReplayBatchResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -447,6 +478,7 @@ export function DiagnosticScreen() {
         wakeWordStatus,
         manualWakeWordTrialStatus,
         wakeCaptureStatus,
+        voiceGatewayStatus,
       ] = await Promise.all([
         getMicrophoneStatus(),
         getAudioProcessingStatus(),
@@ -454,6 +486,7 @@ export function DiagnosticScreen() {
         getWakeWordStatus(),
         getManualWakeWordTrialStatus(),
         getWakeWordDiagnosticPcmCaptureStatus(),
+        getVoiceGatewayStatus(),
       ]);
       setStatus(microphoneStatus);
       setAudioProcessing(audioProcessingStatus);
@@ -461,6 +494,7 @@ export function DiagnosticScreen() {
       setWakeWord(wakeWordStatus);
       setManualTrial(manualWakeWordTrialStatus);
       setWakeCapture(wakeCaptureStatus);
+      setVoiceGateway(voiceGatewayStatus);
     } catch (error) {
       setUiError(errorMessage(error));
     }
@@ -552,6 +586,11 @@ export function DiagnosticScreen() {
           setLastWakeEngineEvent(event.event);
         },
       ),
+      DeviceEventEmitter.addListener(
+        'VOICE_GATEWAY_STATUS',
+        (event: VoiceGatewayStatus) => setVoiceGateway(event),
+      ),
+      DeviceEventEmitter.addListener('VOICE_GATEWAY_EVENT', refreshDiagnostics),
     ];
 
     return () => {
@@ -620,6 +659,79 @@ export function DiagnosticScreen() {
     } catch (error) {
       setUiError(errorMessage(error));
       await refreshDiagnostics();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleConnectVoiceGateway = async () => {
+    setBusy(true);
+    setUiError(null);
+    try {
+      setVoiceGateway(await connectVoiceGateway(DEFAULT_VOICE_GATEWAY_URL));
+    } catch (error) {
+      setUiError(errorMessage(error));
+      await refreshDiagnostics();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDisconnectVoiceGateway = async () => {
+    setBusy(true);
+    setUiError(null);
+    try {
+      setVoiceGateway(await disconnectVoiceGateway());
+    } catch (error) {
+      setUiError(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleStartVoiceSession = async () => {
+    setBusy(true);
+    setUiError(null);
+    try {
+      setVoiceGateway(await startVoiceSession());
+    } catch (error) {
+      setUiError(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleStartVoiceTurn = async () => {
+    setBusy(true);
+    setUiError(null);
+    try {
+      setVoiceGateway(await startVoiceTurn());
+    } catch (error) {
+      setUiError(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCommitVoiceAudio = async () => {
+    setBusy(true);
+    setUiError(null);
+    try {
+      setVoiceGateway(await commitVoiceAudio(0));
+    } catch (error) {
+      setUiError(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleEndVoiceSession = async () => {
+    setBusy(true);
+    setUiError(null);
+    try {
+      setVoiceGateway(await endVoiceSession('diagnostic_complete'));
+    } catch (error) {
+      setUiError(errorMessage(error));
     } finally {
       setBusy(false);
     }
@@ -765,6 +877,65 @@ export function DiagnosticScreen() {
               disabled={busy || !status.isRecording}
             />
           </View>
+
+          <Text style={styles.sectionTitle}>VOICE GATEWAY</Text>
+          <Text style={styles.subtitle}>
+            Explicit controls only. The gateway reads the access token from
+            Android secure storage; PCM and credentials never cross this UI.
+          </Text>
+          <View style={styles.controls}>
+            <Button
+              title="Connect Voice Gateway"
+              onPress={handleConnectVoiceGateway}
+              disabled={busy || voiceGateway.connected}
+            />
+            <Button
+              title="Start Voice Session"
+              onPress={handleStartVoiceSession}
+              disabled={busy || !voiceGateway.connected || voiceGateway.sessionStarted}
+            />
+            <Button
+              title="Start Voice Turn"
+              onPress={handleStartVoiceTurn}
+              disabled={busy || !voiceGateway.sessionStarted || voiceGateway.turnActive}
+            />
+            <Button
+              title="Commit Voice Audio"
+              onPress={handleCommitVoiceAudio}
+              disabled={busy || !voiceGateway.turnActive}
+            />
+            <Button
+              title="End Voice Session"
+              onPress={handleEndVoiceSession}
+              disabled={busy || !voiceGateway.sessionStarted}
+            />
+            <Button
+              title="Disconnect Voice Gateway"
+              onPress={handleDisconnectVoiceGateway}
+              disabled={busy || !voiceGateway.connected}
+            />
+          </View>
+          <StatusRow label="Gateway state" value={voiceGateway.state} />
+          <StatusRow label="Gateway URL" value={DEFAULT_VOICE_GATEWAY_URL} />
+          <StatusRow label="Session ID" value={voiceGateway.sessionId ?? 'NONE'} />
+          <StatusRow label="Turn ID" value={voiceGateway.turnId ?? 'NONE'} />
+          <StatusRow
+            label="Queue / high-water / drops"
+            value={`${voiceGateway.framesQueued} / ${voiceGateway.queueHighWaterMark} / ${voiceGateway.droppedFrames}`}
+          />
+          <StatusRow
+            label="Frames / bytes sent"
+            value={`${Math.floor(voiceGateway.framesSent)} / ${Math.floor(voiceGateway.bytesSent)}`}
+          />
+          <StatusRow
+            label="Last server event"
+            value={voiceGateway.lastServerEvent ?? 'NONE'}
+          />
+          {voiceGateway.lastError ? (
+            <Text style={styles.errorText}>
+              Gateway error: {voiceGateway.lastError}
+            </Text>
+          ) : null}
 
           <Text style={styles.sectionTitle}>MANUAL WAKE-WORD TRIAL</Text>
           <Text style={styles.subtitle}>

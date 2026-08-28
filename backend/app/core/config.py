@@ -23,6 +23,21 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
 
+    voice_protocol_version: int = 1
+    voice_sample_rate_hz: int = 16_000
+    voice_channels: int = 1
+    voice_frame_samples: int = 320
+    voice_frame_bytes: int = 640
+    voice_heartbeat_interval_seconds: int = 15
+    voice_heartbeat_timeout_seconds: int = 45
+    voice_max_session_seconds: int = 1_800
+    voice_max_turn_seconds: int = 120
+    voice_idle_timeout_seconds: int = 90
+    voice_max_frame_bytes: int = 4_096
+    voice_max_control_bytes: int = 16 * 1024
+    voice_queue_capacity_frames: int = 100
+    voice_reconnect_grace_seconds: int = 30
+
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",

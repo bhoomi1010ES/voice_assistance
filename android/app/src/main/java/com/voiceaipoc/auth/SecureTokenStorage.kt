@@ -8,7 +8,6 @@ import android.util.Base64
 import java.nio.charset.StandardCharsets
 import java.security.GeneralSecurityException
 import java.security.KeyStore
-import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -37,7 +36,6 @@ class SecureTokenStorage internal constructor(
     private val backend: TokenStorageBackend,
     private val keyProvider: TokenKeyProvider,
     private val encoding: TokenEncoding,
-    private val secureRandom: SecureRandom = SecureRandom(),
 ) : AuthTokenStorage {
     constructor(context: Context) : this(
         backend = SharedPreferencesTokenBackend(
@@ -78,9 +76,12 @@ class SecureTokenStorage internal constructor(
     }
 
     private fun encrypt(value: String, key: SecretKey): String {
-        val iv = ByteArray(GCM_IV_BYTES).also(secureRandom::nextBytes)
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+        // With randomized encryption required, Android Keystore must generate
+        // the GCM IV. Supplying an app-generated IV is rejected on API 36.
+        cipher.init(Cipher.ENCRYPT_MODE, key)
+        val iv = cipher.iv
+        require(iv.size == GCM_IV_BYTES) { "Unexpected GCM IV length" }
         val ciphertext = cipher.doFinal(value.toByteArray(StandardCharsets.UTF_8))
         val combined = ByteArray(iv.size + ciphertext.size)
         iv.copyInto(combined)

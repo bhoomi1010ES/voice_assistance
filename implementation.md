@@ -2176,7 +2176,7 @@ One user's token cannot access another user's memory, tasks, sessions, or WebSoc
 ### Steps
 
 - [ ] Implement `/v1/voice`.
-- [ ] Authenticate during connection establishment.
+- [ ] Authenticate during connection establishment.  
 - [ ] Implement heartbeat.
 - [ ] Implement frame-size limits.
 - [ ] Implement max session/turn duration.
