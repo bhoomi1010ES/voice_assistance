@@ -3,12 +3,16 @@
 Date: 2026-08-26
 Validation type: final local-development acceptance validation
 
+> Historical snapshot: this report records the Phase 1 validation performed on
+> 2026-08-26. Its Phase 2 status is superseded by the current Phase 2/3 final
+> acceptance report; it is retained as historical evidence.
+
 ## Final status
 
 ```text
 PHASE 0: FAIL — unchanged
 PHASE 1: PASS
-PHASE 2: NOT STARTED
+PHASE 2: NOT STARTED AT THIS SNAPSHOT
 ```
 
 The complete Phase 1 acceptance gate passed using the existing local `.env`,
@@ -157,4 +161,7 @@ were all validated successfully.
 
 PHASE 0: FAIL — unchanged
 PHASE 1: PASS
-PHASE 2: NOT STARTED
+PHASE 2: NOT STARTED AT THAT SNAPSHOT
+
+Current Phase 2 and Phase 3 status is maintained in the latest final
+acceptance report under `docs/`.

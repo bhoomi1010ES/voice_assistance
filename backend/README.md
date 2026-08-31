@@ -1,9 +1,11 @@
 # Backend
 
 This directory contains the Phase 1 infrastructure foundation, the Phase 2
-authentication/user/device foundation, and the bounded Phase 3 WebSocket voice
-gateway. GPU, STT, TTS, LLM, RAG, memory, task, and other voice application
-features remain deferred.
+authentication/user/device foundation with ownership-scoped memory/task CRUD,
+and the bounded Phase 3 WebSocket voice gateway. The gateway is
+metadata/transport infrastructure only. GPU, Whisper STT, Qwen/LLM reasoning,
+RAG, tools, reminders, Kokoro TTS, playback, barge-in, and other full voice
+application features remain deferred.
 
 ## Local setup
 

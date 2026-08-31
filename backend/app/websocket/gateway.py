@@ -318,7 +318,6 @@ class VoiceGateway:
         self.voice_session = voice_session
         self._session_started = time.monotonic()
         self.state.session_ready(voice_session.id, completed_turns=voice_session.total_turns)
-        self._session_status = "completed"
         await self.db.commit()
         await self._send(
             server_event(

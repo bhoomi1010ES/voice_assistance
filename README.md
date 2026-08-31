@@ -8,16 +8,22 @@ Current gates:
 ```text
 PHASE 0: FAIL (unchanged; acoustic acceptance is not complete)
 PHASE 1: PASS
-PHASE 2: IN PROGRESS
-PHASE 3: IN PROGRESS (gateway implementation; acceptance validation pending)
+PHASE 2: IMPLEMENTED — ACCEPTANCE PENDING
+PHASE 3: IMPLEMENTED — ACCEPTANCE PENDING
 ```
+
+The Phase 2 cross-user backend isolation gate passed. Phase 2 acceptance is
+still pending Android validation. Phase 3 backend gateway simulation passed,
+but the physical mobile gate and same-owner reconnect behavior remain not
+verified in the current environment.
 
 Phase 1 through Phase 3 do not change the Android microphone, AEC/NS, VAD,
 wake-word model, threshold, cooldown, or native audio pipeline. Phase 3 adds
 an authenticated `/v1/voice` gateway, exact binary PCM framing, bounded
 transport queues, explicit session/turn controls, PostgreSQL metadata, and
-Redis active-session state. STT, LLM, tools, TTS, and Phase 1 functionality
-remain outside this phase.
+Redis active-session state. The gateway is metadata/transport infrastructure
+only; Whisper STT, Qwen/LLM reasoning, RAG, tools, reminders, Kokoro TTS,
+audio playback, and barge-in remain deferred.
 
 ## Repository structure
 
@@ -167,8 +173,11 @@ alembic downgrade -1
 
 Migration `0001_enable_pgvector` enables
 `CREATE EXTENSION IF NOT EXISTS vector`. Migration `0002_auth_foundation`
-creates users, devices, authentication sessions, and audit logs. Memory, RAG,
-task, and conversation tables are intentionally deferred.
+creates users, devices, authentication sessions, and audit logs. Migrations
+`0003_voice_gateway` and `0004_phase2_user_resources` add voice session/turn
+metadata plus ownership-scoped memory and task CRUD foundations. Embedding
+search/RAG, reminders, and the remaining voice application features remain
+deferred.
 
 ## Tests, linting, and formatting
 

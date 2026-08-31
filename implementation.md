@@ -2133,23 +2133,25 @@ Core capture and inference infrastructure is stable enough for conditional downs
 
 ### Steps
 
-- [ ] Create monorepo structure.
-- [ ] Configure TypeScript/linting/formatting.
-- [ ] Create Python service environment.
-- [ ] Add Docker Compose.
-- [ ] Start PostgreSQL + pgvector.
-- [ ] Start Redis.
-- [ ] Add Alembic.
-- [ ] Add base FastAPI project.
-- [ ] Add health/readiness endpoints.
-- [ ] Add structured logging.
-- [ ] Add CI for lint/unit tests.
-- [ ] Create `.env.example`.
-- [ ] Create developer bootstrap script.
+- [x] Create monorepo structure.
+- [x] Configure TypeScript/linting/formatting.
+- [x] Create Python service environment.
+- [x] Add Docker Compose.
+- [x] Start PostgreSQL + pgvector.
+- [x] Start Redis.
+- [x] Add Alembic.
+- [x] Add base FastAPI project.
+- [x] Add health/readiness endpoints.
+- [x] Add structured logging.
+- [x] Add CI for lint/unit tests.
+- [x] Create `.env.example`.
+- [x] Create developer bootstrap script.
 
 ### Gate
 
 A fresh developer machine can clone the repo, configure environment variables, run migrations, and start all non-GPU services predictably.
+
+**Status: PASS.**
 
 ---
 
@@ -2157,17 +2159,21 @@ A fresh developer machine can clone the repo, configure environment variables, r
 
 ### Steps
 
-- [ ] Create users/devices/auth_sessions migrations.
-- [ ] Implement login/refresh/logout.
-- [ ] Store mobile tokens securely using Android secure storage.
-- [ ] Register device.
-- [ ] Revoke device/session support.
-- [ ] Add per-user and per-device authorization checks.
-- [ ] Add audit logging for security-relevant events.
+- [x] Create users/devices/auth_sessions migrations.
+- [x] Implement login/refresh/logout.
+- [x] Store mobile tokens securely using Android secure storage.
+- [x] Register device.
+- [x] Revoke device/session support.
+- [x] Add per-user and per-device authorization checks.
+- [x] Add audit logging for security-relevant events.
 
 ### Gate
 
 One user's token cannot access another user's memory, tasks, sessions, or WebSocket.
+
+**Implementation: COMPLETE. Acceptance: IMPLEMENTED — ACCEPTANCE PENDING.**
+The cross-user backend isolation gate passed; Android validation is blocked by
+the local Gradle/tooling environment and no physical device is available.
 
 ---
 
@@ -2175,22 +2181,27 @@ One user's token cannot access another user's memory, tasks, sessions, or WebSoc
 
 ### Steps
 
-- [ ] Implement `/v1/voice`.
-- [ ] Authenticate during connection establishment.  
-- [ ] Implement heartbeat.
-- [ ] Implement frame-size limits.
-- [ ] Implement max session/turn duration.
-- [ ] Implement sequence numbers.
-- [ ] Implement binary PCM frame handling.
-- [ ] Implement session/turn/response IDs.
-- [ ] Persist session + final turn metadata.
-- [ ] Add Redis active-session registry.
-- [ ] Handle reconnect and disconnect cleanly.
-- [ ] Add cancellation events.
+- [x] Implement `/v1/voice`.
+- [x] Authenticate during connection establishment.
+- [x] Implement heartbeat.
+- [x] Implement frame-size limits.
+- [x] Implement max session/turn duration.
+- [x] Implement sequence numbers.
+- [x] Implement binary PCM frame handling.
+- [x] Implement session/turn/response IDs.
+- [x] Persist session + final turn metadata.
+- [x] Add Redis active-session registry.
+- [x] Handle reconnect and disconnect cleanly.
+- [x] Add cancellation events.
 
 ### Gate
 
 A mobile test client can stream PCM to the backend for repeated turns without memory growth, stuck sessions, or stale response delivery.
+
+**Implementation: COMPLETE. Acceptance: IMPLEMENTED — ACCEPTANCE PENDING.**
+The synthetic backend repeated-turn validation passed, but physical mobile
+validation and same-owner reconnect behavior are not verified in this
+environment. The gateway remains metadata/transport infrastructure only.
 
 ---
 
