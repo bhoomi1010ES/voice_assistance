@@ -2171,9 +2171,9 @@ A fresh developer machine can clone the repo, configure environment variables, r
 
 One user's token cannot access another user's memory, tasks, sessions, or WebSocket.
 
-**Implementation: COMPLETE. Acceptance: IMPLEMENTED — ACCEPTANCE PENDING.**
-The cross-user backend isolation gate passed; Android validation is blocked by
-the local Gradle/tooling environment and no physical device is available.
+**Implementation: COMPLETE. Acceptance: PASS.**
+The cross-user backend isolation gate passed, Android Keystore-backed storage
+was exercised on the physical device, and Android JVM validation completed.
 
 ---
 
@@ -2198,10 +2198,11 @@ the local Gradle/tooling environment and no physical device is available.
 
 A mobile test client can stream PCM to the backend for repeated turns without memory growth, stuck sessions, or stale response delivery.
 
-**Implementation: COMPLETE. Acceptance: IMPLEMENTED — ACCEPTANCE PENDING.**
-The synthetic backend repeated-turn validation passed, but physical mobile
-validation and same-owner reconnect behavior are not verified in this
-environment. The gateway remains metadata/transport infrastructure only.
+**Implementation: COMPLETE. Acceptance: PASS.**
+The backend and physical-device gateway validations passed, including ten
+consecutive microphone PCM turns, cancellation, heartbeat, reconnect, and
+credential checks. The gateway remains metadata/transport infrastructure only;
+process memory was not independently measured.
 
 ---
 

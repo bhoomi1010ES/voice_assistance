@@ -8,14 +8,15 @@ Current gates:
 ```text
 PHASE 0: FAIL (unchanged; acoustic acceptance is not complete)
 PHASE 1: PASS
-PHASE 2: IMPLEMENTED — ACCEPTANCE PENDING
-PHASE 3: IMPLEMENTED — ACCEPTANCE PENDING
+PHASE 2: PASS
+PHASE 3: PASS
 ```
 
-The Phase 2 cross-user backend isolation gate passed. Phase 2 acceptance is
-still pending Android validation. Phase 3 backend gateway simulation passed,
-but the physical mobile gate and same-owner reconnect behavior remain not
-verified in the current environment.
+The Phase 2 cross-user backend isolation gate passed, Android secure-storage
+instrumentation passed, and Android JVM validation completed successfully. The
+Phase 3 backend and physical-device gateway validation passed, including the
+10-turn microphone run, cancellation, heartbeat, reconnect, and credential
+checks. No process-memory measurement was taken.
 
 Phase 1 through Phase 3 do not change the Android microphone, AEC/NS, VAD,
 wake-word model, threshold, cooldown, or native audio pipeline. Phase 3 adds
