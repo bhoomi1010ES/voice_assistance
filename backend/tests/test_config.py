@@ -19,6 +19,33 @@ def test_settings_loads_connection_urls_from_environment(monkeypatch) -> None:
     assert settings.redis_url == "redis://cache.example:56379/2"
     assert settings.database_dsn == settings.database_url
     assert settings.redis_dsn == settings.redis_url
+    assert settings.stt_model_path == "models/whisper-large-v3-turbo-ct2"
+    assert settings.stt_device == "cpu"
+    assert settings.stt_compute_type == "int8"
+    assert settings.stt_language is None
+    assert settings.stt_beam_size == 5
+    assert settings.stt_workers == 1
+    assert settings.stt_timeout == 180.0
+
+
+def test_settings_loads_stt_configuration_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("STT_MODEL_PATH", "D:/models/whisper-large-v3-turbo-ct2")
+    monkeypatch.setenv("STT_DEVICE", "cpu")
+    monkeypatch.setenv("STT_COMPUTE_TYPE", "int8")
+    monkeypatch.setenv("STT_LANGUAGE", "en")
+    monkeypatch.setenv("STT_BEAM_SIZE", "3")
+    monkeypatch.setenv("STT_WORKERS", "2")
+    monkeypatch.setenv("STT_TIMEOUT", "12.5")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.stt_model_path == "D:/models/whisper-large-v3-turbo-ct2"
+    assert settings.stt_device == "cpu"
+    assert settings.stt_compute_type == "int8"
+    assert settings.stt_language == "en"
+    assert settings.stt_beam_size == 3
+    assert settings.stt_workers == 2
+    assert settings.stt_timeout == 12.5
 
 
 def test_database_dsn_normalizes_postgresql_scheme_to_asyncpg() -> None:

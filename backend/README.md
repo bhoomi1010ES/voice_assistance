@@ -2,10 +2,24 @@
 
 This directory contains the Phase 1 infrastructure foundation, the Phase 2
 authentication/user/device foundation with ownership-scoped memory/task CRUD,
-and the bounded Phase 3 WebSocket voice gateway. The gateway is
-metadata/transport infrastructure only. GPU, Whisper STT, Qwen/LLM reasoning,
-RAG, tools, reminders, Kokoro TTS, playback, barge-in, and other full voice
-application features remain deferred.
+the bounded Phase 3 WebSocket voice gateway, and the Phase 4 isolated local
+CPU STT service. The Phase 4 implementation uses the approved
+CTranslate2-compatible Whisper Large-v3-Turbo model at
+`models/whisper-large-v3-turbo-ct2/`, `faster-whisper` 1.2.1, and CTranslate2
+4.8.1 with CPU `int8`. The LM Studio GGUF artifact is not loaded by the
+backend or silently substituted. Phase 4 implementation is complete, but the
+acceptance decision is `IMPLEMENTED — ACCEPTANCE PENDING`. A physical RMX5070
+device was enumerated and the debug APK was built, installed, and launched;
+two committed microphone turns were observed, but the required ten
+consecutive English turns and physical partial-event evidence were not proven.
+Legitimate English ground-truth data is also unavailable, so WER remains
+blocked. Actual-model synthetic 1/2/4-stream and process-memory measurements
+are recorded separately and are not real-speech acceptance evidence. The Phase
+4 acceptance language is English only; multilingual evaluation is outside this
+gate.
+
+Qwen/LLM reasoning, RAG, tools, reminders, Kokoro TTS, playback, barge-in,
+and other Phase 5+ voice application features remain deferred.
 
 ## Local setup
 
@@ -62,12 +76,15 @@ an explicit reason rather than reporting a false pass.
   type 1, zero flags, a per-turn sequence number, a client timestamp, and
   payload length.
 
-The voice gateway is metadata-only in this phase: it counts and persists
-session/turn/frame metadata but does not run STT, LLM, tools, TTS, or playback.
+The voice gateway preserves the Phase 3 transport behavior and can enable
+local STT with `stt: {"enabled": true, "language": "..."}` in
+`client.session.start`. It emits `transcript.partial` and
+`transcript.final` events and persists final transcript metadata in the turn.
 PostgreSQL stores durable session/turn boundaries and Redis stores TTL-bound
 active connection/turn/response/cancellation ownership. One bounded ingress
 queue is used per connection; gaps, duplicates, oversized frames, invalid
-state transitions, and cross-owner resume attempts are rejected.
+state transitions, and cross-owner resume attempts are rejected. No LLM,
+tools, TTS, or playback is implemented.
 
 For a local synthetic protocol test, set `RUN_INTEGRATION_TESTS=1` and run
 `pytest tests/test_voice_gateway_integration.py`. The test sends one exact

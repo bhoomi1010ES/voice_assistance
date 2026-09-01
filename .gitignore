@@ -91,6 +91,9 @@ backend/htmlcov/
 /diagnostics/openwakeword_export.tar
 /.venv-openwakeword/
 
+# Local STT model weights; never commit model binaries.
+/models/whisper-large-v3-turbo-ct2/
+
 # Yarn
 .yarn/*
 !.yarn/patches

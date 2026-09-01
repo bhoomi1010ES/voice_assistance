@@ -2,6 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -22,6 +23,22 @@ class Settings(BaseSettings):
     jwt_issuer: str = "voice-assistance"
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
+
+    # Phase 4 local CPU STT settings. The isolated service consumes these
+    # values and initializes the reusable model lazily.
+    stt_model_path: str = "models/whisper-large-v3-turbo-ct2"
+    stt_device: str = "cpu"
+    stt_compute_type: str = "int8"
+    stt_language: str | None = None
+    stt_beam_size: int = Field(default=5, ge=1, le=20)
+    stt_workers: int = Field(default=1, ge=1, le=4)
+    # CPU Large-v3-Turbo inference can take longer than the audio capture
+    # window on modest machines; this remains a bounded per-inference timeout.
+    stt_timeout: float = Field(default=180.0, gt=0, le=300)
+    stt_partial_interval_seconds: float = Field(default=2.0, gt=0, le=30)
+    stt_partial_window_seconds: int = Field(default=30, ge=1, le=120)
+    stt_max_audio_seconds: int = Field(default=120, ge=1, le=600)
+    stt_max_active_turns: int = Field(default=4, ge=1, le=32)
 
     voice_protocol_version: int = 1
     voice_sample_rate_hz: int = 16_000
@@ -65,6 +82,13 @@ class Settings(BaseSettings):
         if not self.redis_url:
             raise RuntimeError("REDIS_URL is not configured")
         return self.redis_url
+
+    @property
+    def stt_model_dir(self) -> Path:
+        """Return the configured STT model path resolved against the project root."""
+
+        path = Path(self.stt_model_path).expanduser()
+        return path if path.is_absolute() else PROJECT_ROOT / path
 
     @property
     def jwt_secret(self) -> str:

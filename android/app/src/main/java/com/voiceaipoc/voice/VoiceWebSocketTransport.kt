@@ -1,6 +1,7 @@
 package com.voiceaipoc.voice
 
 import android.os.SystemClock
+import android.util.Log
 import com.voiceaipoc.auth.AuthTokenStorage
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -109,6 +110,11 @@ class VoiceWebSocketTransport(
                 lastError = null,
             )
         }
+        Log.i(
+            TAG,
+            "VOICE connect requested wallMs=${System.currentTimeMillis()} " +
+                "elapsedMs=${SystemClock.elapsedRealtime()}",
+        )
         notifyStatus()
 
         val request = Request.Builder()
@@ -137,6 +143,11 @@ class VoiceWebSocketTransport(
             }
             status = status.copy(state = State.SESSION_STARTING)
         }
+        Log.i(
+            TAG,
+            "VOICE session start requested resume=${resumeSessionId != null} " +
+                "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+        )
         notifyStatus()
         val message = JSONObject()
             .put("type", "client.session.start")
@@ -153,6 +164,7 @@ class VoiceWebSocketTransport(
                 "client_metadata",
                 JSONObject().put("platform", "android").put("client_version", "phase3-native"),
             )
+            .put("stt", JSONObject().put("enabled", true))
         if (resumeSessionId != null) message.put("resume_session_id", resumeSessionId)
         postControl(message)
         return Result(true)
@@ -169,6 +181,11 @@ class VoiceWebSocketTransport(
             turnByteCount = 0
             status = status.copy(state = State.TURN_STARTING, turnActive = true)
         }
+        Log.i(
+            TAG,
+            "VOICE turn start requested clientTurnId=${clientTurnId ?: "NONE"} " +
+                "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+        )
         notifyStatus()
         val message = JSONObject().put("type", "client.turn.start")
         if (clientTurnId != null) message.put("client_turn_id", clientTurnId)
@@ -196,6 +213,11 @@ class VoiceWebSocketTransport(
             }
             status = status.copy(turnActive = false)
         }
+        Log.i(
+            TAG,
+            "VOICE audio commit requested durationMs=$durationMs " +
+                "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+        )
         notifyStatus()
         networkExecutor.execute {
             drainQueue()
@@ -210,6 +232,12 @@ class VoiceWebSocketTransport(
                     .put("byte_count", committed.second)
                     .put("duration_ms", durationMs.coerceAtLeast(0)),
             )
+            Log.i(
+                TAG,
+                "VOICE audio commit sent frames=${committed.first} bytes=${committed.second} " +
+                    "lastSequence=${committed.third} wallMs=${System.currentTimeMillis()} " +
+                    "elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
         }
         return Result(true)
     }
@@ -220,6 +248,11 @@ class VoiceWebSocketTransport(
         synchronized(stateLock) {
             status = status.copy(turnActive = false)
         }
+        Log.i(
+            TAG,
+            "VOICE response cancel requested responseId=$responseId reason=$reason " +
+                "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+        )
         sendQueue.clear()
         notifyStatus()
         postControl(
@@ -265,6 +298,11 @@ class VoiceWebSocketTransport(
 
     private val socketListener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            Log.i(
+                TAG,
+                "VOICE websocket opened wallMs=${System.currentTimeMillis()} " +
+                    "elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
             synchronized(stateLock) {
                 status = status.copy(state = State.CONNECTED, connected = true, lastError = null)
             }
@@ -281,6 +319,11 @@ class VoiceWebSocketTransport(
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+            Log.i(
+                TAG,
+                "VOICE websocket closing code=$code reason=$reason " +
+                    "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
             stopHeartbeat()
             synchronized(stateLock) {
                 status = status.copy(state = State.CLOSING, connected = false, turnActive = false)
@@ -289,6 +332,11 @@ class VoiceWebSocketTransport(
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            Log.i(
+                TAG,
+                "VOICE websocket closed code=$code reason=$reason " +
+                    "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
             stopHeartbeat()
             synchronized(stateLock) {
                 status = status.copy(state = State.DISCONNECTED, connected = false, turnActive = false)
@@ -298,6 +346,11 @@ class VoiceWebSocketTransport(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            Log.e(
+                TAG,
+                "VOICE websocket failure type=${t::class.java.simpleName} " +
+                    "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
             stopHeartbeat()
             recordError("E_VOICE_WEBSOCKET", "Voice gateway connection failed.")
         }
@@ -308,6 +361,11 @@ class VoiceWebSocketTransport(
     }
 
     private fun sendControlNow(message: JSONObject) {
+        Log.i(
+            TAG,
+            "VOICE control sent type=${message.optString("type", "unknown")} " +
+                "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+        )
         val sent = webSocket?.send(message.toString()) == true
         if (!sent) recordError("E_VOICE_SEND", "Voice gateway message could not be sent.")
     }
@@ -341,6 +399,14 @@ class VoiceWebSocketTransport(
                 turnFrameCount += 1
                 turnByteCount += frame.payload.size
             }
+            if (frame.sequenceNo == 0L || frame.sequenceNo % 50L == 0L) {
+                Log.i(
+                    TAG,
+                    "VOICE PCM frame sent sequence=${frame.sequenceNo} " +
+                        "bytes=${frame.payload.size} clientTimestampMs=${frame.clientTimestampMs} " +
+                        "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
+            }
         }
     }
 
@@ -355,6 +421,13 @@ class VoiceWebSocketTransport(
         val sessionId = json.optStringOrNull("session_id")
         val turnId = json.optStringOrNull("turn_id")
         val responseId = json.optStringOrNull("response_id")
+        Log.i(
+            TAG,
+            "VOICE server event type=$eventType sessionId=${sessionId ?: "NONE"} " +
+                "turnId=${turnId ?: "NONE"} responseId=${responseId ?: "NONE"} " +
+                "payload=$raw wallMs=${System.currentTimeMillis()} " +
+                "elapsedMs=${SystemClock.elapsedRealtime()}",
+        )
         if (eventType == "server.session.ready") {
             scheduleHeartbeat(
                 json.optLong("heartbeat_interval_seconds", DEFAULT_HEARTBEAT_INTERVAL_SECONDS),
@@ -394,6 +467,11 @@ class VoiceWebSocketTransport(
     }
 
     private fun recordError(code: String, message: String) {
+        Log.e(
+            TAG,
+            "VOICE error code=$code message=$message wallMs=${System.currentTimeMillis()} " +
+                "elapsedMs=${SystemClock.elapsedRealtime()}",
+        )
         stopHeartbeat()
         synchronized(stateLock) {
             status = status.copy(
@@ -445,6 +523,11 @@ class VoiceWebSocketTransport(
         val message = JSONObject()
             .put("type", "client.ping")
             .put("client_timestamp_ms", System.currentTimeMillis())
+        Log.i(
+            TAG,
+            "VOICE heartbeat sent wallMs=${System.currentTimeMillis()} " +
+                "elapsedMs=${SystemClock.elapsedRealtime()}",
+        )
         if (!socket.send(message.toString())) {
             recordError("E_VOICE_HEARTBEAT", "Voice gateway heartbeat could not be sent.")
         }
@@ -461,6 +544,7 @@ class VoiceWebSocketTransport(
         if (!has(name) || isNull(name)) null else optString(name).takeIf { it.isNotBlank() }
 
     private companion object {
+        const val TAG = "VoiceAI-VoiceGateway"
         const val DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 15L
         const val MAX_HEARTBEAT_INTERVAL_SECONDS = 60L
     }

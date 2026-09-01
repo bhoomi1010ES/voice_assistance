@@ -1,5 +1,6 @@
 package com.voiceaipoc.rn
 
+import android.util.Log
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -55,6 +56,12 @@ class VoiceModule(
                 turnId: String?,
                 responseId: String?,
             ) {
+                Log.i(
+                    TAG,
+                    "VOICE server event type=$eventType sessionId=${sessionId ?: "NONE"} " +
+                        "turnId=${turnId ?: "NONE"} responseId=${responseId ?: "NONE"} " +
+                        "wallMs=${System.currentTimeMillis()}",
+                )
                 emitVoiceGatewayEvent(eventType, sessionId, turnId, responseId)
             }
         },
@@ -70,10 +77,21 @@ class VoiceModule(
         },
         vadEventListener = object : VadEngine.Listener {
             override fun onSpeechStarted(event: VadEngine.Event) {
+                Log.i(
+                    TAG,
+                    "VAD speech started timestampMs=${event.timestampMs} " +
+                        "frameIndex=${event.frameIndex} wallMs=${System.currentTimeMillis()}",
+                )
                 emitVadEvent(EVENT_VAD_SPEECH_STARTED, event)
             }
 
             override fun onSpeechStopped(event: VadEngine.Event) {
+                Log.i(
+                    TAG,
+                    "VAD speech stopped timestampMs=${event.timestampMs} " +
+                        "frameIndex=${event.frameIndex} reason=${event.reason} " +
+                        "wallMs=${System.currentTimeMillis()}",
+                )
                 emitVadEvent(EVENT_VAD_SPEECH_STOPPED, event)
             }
         },
@@ -83,10 +101,21 @@ class VoiceModule(
             override fun onEngineStopped(status: SileroVadEngine.Status) = Unit
 
             override fun onSpeechStarted(event: SileroVadEngine.Event) {
+                Log.i(
+                    TAG,
+                    "SILERO VAD speech started timestampMs=${event.timestampMs} " +
+                        "inferenceIndex=${event.inferenceIndex} wallMs=${System.currentTimeMillis()}",
+                )
                 emitSileroVadEvent(EVENT_SILERO_VAD_SPEECH_STARTED, event)
             }
 
             override fun onSpeechStopped(event: SileroVadEngine.Event) {
+                Log.i(
+                    TAG,
+                    "SILERO VAD speech stopped timestampMs=${event.timestampMs} " +
+                        "inferenceIndex=${event.inferenceIndex} reason=${event.reason} " +
+                        "wallMs=${System.currentTimeMillis()}",
+                )
                 emitSileroVadEvent(EVENT_SILERO_VAD_SPEECH_STOPPED, event)
             }
 
@@ -1260,6 +1289,7 @@ class VoiceModule(
         }
 
     companion object {
+        private const val TAG = "VoiceAI-Bridge"
         const val NAME = "VoiceModule"
 
         const val EVENT_AUDIO_ENGINE_STARTED = "AUDIO_ENGINE_STARTED"

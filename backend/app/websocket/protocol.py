@@ -27,12 +27,20 @@ class AudioContract(BaseModel):
     frame_bytes: int = Field(gt=0)
 
 
+class SttSessionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    language: str | None = Field(default=None, min_length=2, max_length=20)
+
+
 class SessionStartMessage(ControlMessage):
     type: Literal["client.session.start"]
     protocol_version: int = Field(gt=0)
     audio: AudioContract
     client_metadata: dict[str, Any] = Field(default_factory=dict)
     resume_session_id: uuid.UUID | None = None
+    stt: SttSessionConfig | None = None
 
 
 class TurnStartMessage(ControlMessage):

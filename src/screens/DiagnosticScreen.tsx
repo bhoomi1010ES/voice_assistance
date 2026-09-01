@@ -28,6 +28,7 @@ import {
   startVoiceSession,
   startVoiceTurn,
   commitVoiceAudio,
+  cancelVoiceResponse,
   resetWakeWordAcousticDiagnostics,
   replayWakeWordDiagnosticPcm,
   setAudioProcessingCalibrationMode,
@@ -725,6 +726,18 @@ export function DiagnosticScreen() {
     }
   };
 
+  const handleCancelVoiceResponse = async () => {
+    setBusy(true);
+    setUiError(null);
+    try {
+      setVoiceGateway(await cancelVoiceResponse('physical_validation_cancel'));
+    } catch (error) {
+      setUiError(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleEndVoiceSession = async () => {
     setBusy(true);
     setUiError(null);
@@ -902,6 +915,11 @@ export function DiagnosticScreen() {
             <Button
               title="Commit Voice Audio"
               onPress={handleCommitVoiceAudio}
+              disabled={busy || !voiceGateway.turnActive}
+            />
+            <Button
+              title="Cancel Voice Response"
+              onPress={handleCancelVoiceResponse}
               disabled={busy || !voiceGateway.turnActive}
             />
             <Button

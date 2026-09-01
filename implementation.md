@@ -2208,18 +2208,37 @@ process memory was not independently measured.
 
 ## Phase 4 — STT
 
+**Implementation: COMPLETE. Acceptance: IMPLEMENTED — ACCEPTANCE PENDING.**
+The isolated `backend/app/stt/` service loads and reuses the approved local
+Whisper Large-v3-Turbo CTranslate2 model through faster-whisper on CPU `int8`.
+The existing `/v1/voice` transport now supports opt-in STT session configuration,
+bounded PCM16 chunk processing, partial/final transcript events, language
+configuration, cancellation, and persisted final-turn metrics. The Android
+transport opts into STT without changing the native PCM/audio pipeline.
+
+Acceptance remains pending because the repository contains no legitimate
+English speech evaluation set with reference transcripts, and the physical run
+did not complete the required ten consecutive English turns. The connected
+RMX5070 did produce two committed microphone turn records, including one
+English-looking transcript and one non-English detected transcript, but no
+spoken reference text was captured and physical partial-event evidence was not
+verified. Actual-model synthetic concurrency and process-memory measurements
+are recorded separately. Phase 4 acceptance is English-only; multilingual
+evaluation is outside this gate. See the latest Phase 4 final acceptance
+report.
+
 ### Steps
 
-- [ ] Create isolated STT service.
-- [ ] Load Whisper Large-v3-Turbo.
-- [ ] Integrate faster-whisper/CTranslate2.
-- [ ] Accept streaming audio buffers.
-- [ ] Emit partial text.
-- [ ] Emit final text on VAD end.
-- [ ] Add language handling.
-- [ ] Add cancellation.
-- [ ] Add per-turn latency metrics.
-- [ ] Build a noisy-audio evaluation set.
+- [x] Create isolated STT service.
+- [x] Load Whisper Large-v3-Turbo.
+- [x] Integrate faster-whisper/CTranslate2.
+- [x] Accept bounded streaming audio buffers.
+- [x] Emit partial text.
+- [x] Emit final text on the existing audio-commit/VAD-end contract.
+- [x] Add language handling.
+- [x] Add cancellation.
+- [x] Add per-turn latency metrics.
+- [ ] Build and run the English clean/noisy ground-truth evaluation set.
 
 ### Gate
 
@@ -2228,7 +2247,7 @@ Measure:
 ```text
 speech-end → final transcript latency
 word error rate on target languages/accents
-GPU VRAM
+CPU performance and process memory
 concurrent streams
 failure recovery
 ```

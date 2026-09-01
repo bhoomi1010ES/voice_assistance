@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -26,6 +28,14 @@ from app.services.voice_registry import (
     VoiceRegistryOwner,
     VoiceSessionConflict,
 )
+from app.stt.service import (
+    STTCancelledError,
+    STTError,
+    STTService,
+    STTTranscriptEvent,
+    STTTranscriptResult,
+    STTTurn,
+)
 from app.websocket.binary import BinaryPcmFrame, BinaryProtocolError, decode_pcm_frame
 from app.websocket.cancellation import CancellationGuard
 from app.websocket.protocol import (
@@ -46,6 +56,8 @@ from app.websocket.state import (
     VoiceConnectionState,
     VoiceState,
 )
+
+LOGGER = logging.getLogger("voice-assistance-backend")
 
 
 @dataclass
@@ -77,6 +89,7 @@ class VoiceGateway:
         settings: Settings,
         principal: AuthPrincipal,
         access_token: str,
+        stt_service: STTService,
     ) -> None:
         self.websocket = websocket
         self.db = db
@@ -85,6 +98,7 @@ class VoiceGateway:
         self.principal = principal
         self.access_token = access_token
         self.auth_service = AuthService(settings)
+        self.stt_service = stt_service
         self.persistence = VoicePersistence()
         self.registry = VoiceRegistry(
             websocket.app.state.infrastructure.redis,
@@ -105,6 +119,12 @@ class VoiceGateway:
         )
         self.voice_session: VoiceSession | None = None
         self.active_turn: ConversationTurn | None = None
+        self.stt_turn: STTTurn | None = None
+        self._stt_event_task: asyncio.Task[None] | None = None
+        self._stt_finalize_task: asyncio.Task[None] | None = None
+        self._stt_finalize_cancel_requested = False
+        self._stt_enabled = False
+        self._stt_language: str | None = None
         self._last_response_id: uuid.UUID | None = None
         self._connection_started = time.monotonic()
         self._session_started = self._connection_started
@@ -246,6 +266,8 @@ class VoiceGateway:
                 )
             except StateTransitionError:
                 await self._protocol_failure("invalid_voice_state", close_code=1002)
+            except STTError as error:
+                await self._fail_active_turn(error.code)
             except PermissionError:
                 await self._protocol_failure("voice_ownership_violation", close_code=1008)
             except (VoiceRegistryError, VoiceSessionConflict):
@@ -316,6 +338,21 @@ class VoiceGateway:
             return
 
         self.voice_session = voice_session
+        self._stt_enabled = bool(message.stt and message.stt.enabled)
+        self._stt_language = message.stt.language if message.stt else None
+        LOGGER.info(
+            "Voice session started",
+            extra={
+                "event": "voice.session.started",
+                "session_id": str(voice_session.id),
+                "user_id": str(self.principal.user_id),
+                "device_id": str(self.principal.device_id),
+                "stt_enabled": self._stt_enabled,
+                "stt_language": self._stt_language or self.settings.stt_language,
+                "reconnect": self.stats.reconnect,
+                "timestamp_ms": int(time.time() * 1000),
+            },
+        )
         self._session_started = time.monotonic()
         self.state.session_ready(voice_session.id, completed_turns=voice_session.total_turns)
         await self.db.commit()
@@ -335,6 +372,10 @@ class VoiceGateway:
                 heartbeat_timeout_seconds=self.settings.voice_heartbeat_timeout_seconds,
                 queue_capacity_frames=self.settings.voice_queue_capacity_frames,
                 reconnect=self.stats.reconnect,
+                stt={
+                    "enabled": self._stt_enabled,
+                    "language": self._stt_language or self.settings.stt_language,
+                },
             )
         )
 
@@ -356,6 +397,32 @@ class VoiceGateway:
         self._last_response_id = response_id
         self._turn_started = time.monotonic()
         self.cancel_guard.activate(response_id)
+        LOGGER.info(
+            "Voice turn started",
+            extra={
+                "event": "voice.turn.started",
+                "session_id": str(self.voice_session.id),
+                "turn_id": str(turn.id),
+                "response_id": str(response_id),
+                "turn_number": turn.turn_number,
+                "timestamp_ms": int(time.time() * 1000),
+            },
+        )
+        if self._stt_enabled:
+            try:
+                self.stt_turn = await self.stt_service.start_turn(
+                    session_id=self.voice_session.id,
+                    turn_id=turn.id,
+                    response_id=response_id,
+                    language=self._stt_language,
+                )
+            except STTError as error:
+                await self._fail_active_turn(error.code)
+                return
+            self._stt_event_task = asyncio.create_task(
+                self._forward_stt_events(self.stt_turn),
+                name=f"stt-events-{turn.id}",
+            )
         await self.db.commit()
         await self._send(
             server_event(
@@ -370,57 +437,307 @@ class VoiceGateway:
 
     async def _handle_binary(self, frame: BinaryPcmFrame) -> None:
         self._require_session()
+        if self._stt_finalize_task is not None:
+            await self._send_error("turn_finalizing")
+            return
         self.state.accept_frame(frame)
         self.stats.frames_accepted += 1
         self.stats.bytes_received += frame.payload_length
         self.voice_session.last_activity_at = self._now_datetime()
+        if frame.sequence_no == 0 or frame.sequence_no % 50 == 0:
+            LOGGER.info(
+                "Voice PCM frame accepted",
+                extra={
+                    "event": "voice.pcm.accepted",
+                    "session_id": str(self.voice_session.id),
+                    "turn_id": str(self.active_turn.id) if self.active_turn else None,
+                    "sequence_no": frame.sequence_no,
+                    "payload_bytes": frame.payload_length,
+                    "frames_accepted": self.stats.frames_accepted,
+                    "bytes_received": self.stats.bytes_received,
+                    "queue_depth": self.queue.qsize(),
+                    "timestamp_ms": int(time.time() * 1000),
+                },
+            )
+        if self.stt_turn is not None:
+            await self.stt_turn.accept_audio(frame.payload)
 
     async def _handle_audio_commit(self, message: AudioCommitMessage) -> None:
         self._require_session()
         if self.active_turn is None:
             raise StateTransitionError("no active turn")
-        counters = self.state.commit(
-            last_sequence_no=message.last_sequence_no,
-            frame_count=message.frame_count,
-            byte_count=message.byte_count,
+        LOGGER.info(
+            "Voice audio commit received",
+            extra={
+                "event": "voice.audio.commit.received",
+                "session_id": str(self.voice_session.id),
+                "turn_id": str(self.active_turn.id),
+                "response_id": str(self.active_turn.response_id),
+                "last_sequence_no": message.last_sequence_no,
+                "frame_count": message.frame_count,
+                "byte_count": message.byte_count,
+                "duration_ms": message.duration_ms,
+                "backend_commit_received_timestamp_ms": int(time.time() * 1000),
+                "backend_commit_received_monotonic_ms": round(time.monotonic() * 1000, 1),
+            },
         )
-        observed_duration_ms = self._elapsed_turn_ms()
-        await self.persistence.finalize_turn(
-            self.db,
-            self.principal,
-            turn_id=counters.turn_id,
-            status="committed",
-            frame_count=counters.frame_count,
-            byte_count=counters.byte_count,
-            last_sequence=counters.last_sequence_no,
-            declared_duration_ms=message.duration_ms,
-            observed_duration_ms=observed_duration_ms,
+        if self.stt_turn is not None:
+            if self._stt_finalize_task is not None:
+                await self._send_error("turn_finalizing")
+                return
+            self._stt_finalize_task = asyncio.create_task(
+                self._finish_audio_commit(message, self.stt_turn),
+                name=f"stt-finalize-{self.active_turn.id}",
+            )
+            self._stt_finalize_cancel_requested = False
+            return
+        await self._finish_audio_commit(message, None)
+
+    async def _finish_audio_commit(
+        self,
+        message: AudioCommitMessage,
+        stt_turn: STTTurn | None,
+    ) -> None:
+        stt_result: STTTranscriptResult | None = None
+        stt_error: STTError | None = None
+        try:
+            LOGGER.info(
+                "Voice turn finalization started",
+                extra={
+                    "event": "voice.turn.finalization.started",
+                    "session_id": str(self.voice_session.id),
+                    "turn_id": str(self.active_turn.id) if self.active_turn else None,
+                    "response_id": str(self.active_turn.response_id) if self.active_turn else None,
+                    "timestamp_ms": int(time.time() * 1000),
+                },
+            )
+            if stt_turn is not None:
+                try:
+                    stt_result = await stt_turn.finalize()
+                except STTCancelledError:
+                    if self._stt_finalize_cancel_requested or self._closing.is_set():
+                        return
+                    await self._fail_active_turn("stt_cancelled", status="cancelled")
+                    return
+                except STTError as error:
+                    stt_error = error
+            counters = self.state.commit(
+                last_sequence_no=message.last_sequence_no,
+                frame_count=message.frame_count,
+                byte_count=message.byte_count,
+            )
+            observed_duration_ms = self._elapsed_turn_ms()
+            metadata: dict[str, Any] = {}
+            if stt_result is not None:
+                metadata = {
+                    "transcript": stt_result.event.text,
+                    "language": stt_result.event.language,
+                    "stt": stt_result.metrics,
+                }
+            elif stt_error is not None:
+                metadata = {"stt_error": stt_error.code}
+            turn_status = "failed" if stt_error is not None else "committed"
+            await self.persistence.finalize_turn(
+                self.db,
+                self.principal,
+                turn_id=counters.turn_id,
+                status=turn_status,
+                frame_count=counters.frame_count,
+                byte_count=counters.byte_count,
+                last_sequence=counters.last_sequence_no,
+                declared_duration_ms=message.duration_ms,
+                observed_duration_ms=observed_duration_ms,
+                metadata=metadata,
+            )
+            self.voice_session.total_frames += counters.frame_count
+            self.voice_session.total_bytes += counters.byte_count
+            self.voice_session.last_activity_at = self._now_datetime()
+            self.active_turn = None
+            self._turn_started = None
+            self.cancel_guard.clear()
+            await self.registry.clear_turn(self.owner, self.voice_session.id)
+            await self.registry.refresh(self.owner, self.voice_session.id)
+            await self.db.commit()
+            if stt_result is not None:
+                await self._send_transcript_event(stt_result.event)
+                LOGGER.info(
+                    "Voice final transcript delivered",
+                    extra={
+                        "event": "voice.transcript.final.delivered",
+                        "session_id": str(stt_result.event.session_id),
+                        "turn_id": str(stt_result.event.turn_id),
+                        "response_id": str(stt_result.event.response_id),
+                        "text": stt_result.event.text,
+                        "language": stt_result.event.language,
+                        "timestamp_ms": int(time.time() * 1000),
+                        "transcript_timestamp_ms": stt_result.event.timestamp_ms,
+                        "metrics": stt_result.metrics,
+                    },
+                )
+            await self._close_stt_turn()
+            if stt_error is not None:
+                await self._send(
+                    server_event(
+                        "server.turn.failed",
+                        session_id=self.voice_session.id,
+                        turn_id=counters.turn_id,
+                        response_id=counters.response_id,
+                        turn_number=counters.turn_number,
+                        code=stt_error.code,
+                    )
+                )
+                return
+            await self._send(
+                server_event(
+                    "server.turn.completed",
+                    session_id=self.voice_session.id,
+                    turn_id=counters.turn_id,
+                    response_id=counters.response_id,
+                    turn_number=counters.turn_number,
+                    frame_count=counters.frame_count,
+                    byte_count=counters.byte_count,
+                    last_sequence_no=counters.last_sequence_no,
+                    observed_duration_ms=observed_duration_ms,
+                    stt_enabled=self._stt_enabled,
+                )
+            )
+        except asyncio.CancelledError:
+            return
+        except (VoiceRegistryError, VoiceSessionConflict):
+            await self._protocol_failure("voice_registry_unavailable", close_code=1013)
+        except SQLAlchemyError:
+            await self.db.rollback()
+            self.stats.error_count += 1
+            await self._protocol_failure("voice_persistence_unavailable", close_code=1011)
+        except Exception:  # noqa: BLE001 - isolate background STT completion failures
+            self.stats.error_count += 1
+            await self._protocol_failure("voice_stt_completion_failed", close_code=1011)
+        finally:
+            if self._stt_finalize_task is asyncio.current_task():
+                self._stt_finalize_task = None
+                self._stt_finalize_cancel_requested = False
+
+    async def _forward_stt_events(self, turn: STTTurn) -> None:
+        try:
+            while True:
+                event = await turn.events.get()
+                if event is None:
+                    return
+                await self._send_transcript_event(event)
+        except asyncio.CancelledError:
+            return
+
+    async def _send_transcript_event(self, event: STTTranscriptEvent) -> None:
+        LOGGER.info(
+            "Voice transcript event sent",
+            extra={
+                "event": f"voice.{event.event_type}.sent",
+                "session_id": str(event.session_id),
+                "turn_id": str(event.turn_id),
+                "response_id": str(event.response_id),
+                "text": event.text,
+                "language": event.language,
+                "final": event.final,
+                "transcript_sequence": event.transcript_sequence,
+                "timestamp_ms": int(time.time() * 1000),
+                "transcript_timestamp_ms": event.timestamp_ms,
+                "metrics": event.metrics,
+            },
         )
-        self.voice_session.total_frames += counters.frame_count
-        self.voice_session.total_bytes += counters.byte_count
-        self.voice_session.last_activity_at = self._now_datetime()
+        await self._send(
+            server_event(
+                event.event_type,
+                session_id=event.session_id,
+                turn_id=event.turn_id,
+                response_id=event.response_id,
+                text=event.text,
+                final=event.final,
+                transcript_sequence=event.transcript_sequence,
+                language=event.language,
+                audio_duration_ms=event.audio_duration_ms,
+                metrics=event.metrics,
+                timestamp_ms=event.timestamp_ms,
+            )
+        )
+
+    async def _close_stt_turn(self, *, cancel: bool = False) -> None:
+        turn = self.stt_turn
+        event_task = self._stt_event_task
+        self.stt_turn = None
+        self._stt_event_task = None
+        if turn is not None:
+            if cancel:
+                await turn.cancel()
+            else:
+                await turn.close()
+        if event_task is not None and event_task is not asyncio.current_task():
+            await event_task
+
+    async def _cancel_stt_finalize_task(self) -> None:
+        task = self._stt_finalize_task
+        self._stt_finalize_task = None
+        if task is None or task is asyncio.current_task():
+            return
+        self._stt_finalize_cancel_requested = True
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+    async def _fail_active_turn(self, code: str, *, status: str = "failed") -> None:
+        if self.active_turn is None or self.voice_session is None:
+            await self._send_error(code)
+            return
+        try:
+            counters = self.state.abort_turn()
+        except StateTransitionError:
+            counters = None
+        if counters is not None:
+            await self.persistence.finalize_turn(
+                self.db,
+                self.principal,
+                turn_id=counters.turn_id,
+                status=status,
+                frame_count=counters.frame_count,
+                byte_count=counters.byte_count,
+                last_sequence=counters.last_sequence_no if counters.frame_count else None,
+                declared_duration_ms=None,
+                observed_duration_ms=self._elapsed_turn_ms(),
+                error_count=1,
+                metadata={"stt_error": code},
+            )
+            self.voice_session.total_frames += counters.frame_count
+            self.voice_session.total_bytes += counters.byte_count
+        turn_id = self.active_turn.id
+        response_id = self.active_turn.response_id
         self.active_turn = None
         self._turn_started = None
         self.cancel_guard.clear()
+        await self._close_stt_turn(cancel=True)
         await self.registry.clear_turn(self.owner, self.voice_session.id)
-        await self.registry.refresh(self.owner, self.voice_session.id)
         await self.db.commit()
         await self._send(
             server_event(
-                "server.turn.completed",
+                "server.turn.failed",
                 session_id=self.voice_session.id,
-                turn_id=counters.turn_id,
-                response_id=counters.response_id,
-                turn_number=counters.turn_number,
-                frame_count=counters.frame_count,
-                byte_count=counters.byte_count,
-                last_sequence_no=counters.last_sequence_no,
-                observed_duration_ms=observed_duration_ms,
+                turn_id=turn_id,
+                response_id=response_id,
+                code=code,
             )
         )
 
     async def _handle_response_cancel(self, message: ResponseCancelMessage) -> None:
         self._require_session()
+        LOGGER.info(
+            "Voice response cancellation received",
+            extra={
+                "event": "voice.response.cancel.received",
+                "session_id": str(self.voice_session.id),
+                "response_id": str(message.response_id),
+                "reason": message.reason,
+                "timestamp_ms": int(time.time() * 1000),
+            },
+        )
         if message.response_id != self._last_response_id:
             await self._send_error("response_not_active")
             return
@@ -434,6 +751,9 @@ class VoiceGateway:
             self.voice_session.id,
             message.response_id,
         )
+        await self._cancel_stt_finalize_task()
+        if self.stt_turn is not None:
+            await self._close_stt_turn(cancel=True)
         cancelled_turn_id = self.active_turn.id if self.active_turn is not None else None
         if self.active_turn is not None:
             counters = self.state.abort_turn()
@@ -510,6 +830,7 @@ class VoiceGateway:
                     return
                 if (
                     self._turn_started is not None
+                    and self._stt_finalize_task is None
                     and now - self._turn_started > self.settings.voice_max_turn_seconds
                 ):
                     await self._timeout("turn_timeout")
@@ -589,6 +910,9 @@ class VoiceGateway:
         for task in (self._processor_task, self._watchdog_task, self._receive_task):
             if task is not None and task is not current and not task.done():
                 task.cancel()
+        await self._cancel_stt_finalize_task()
+        if self.stt_turn is not None:
+            await self._close_stt_turn(cancel=True)
         await self._finalize_active_turn()
         if self.voice_session is not None:
             await self.persistence.finalize_session(
