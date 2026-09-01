@@ -91,7 +91,7 @@ class VoiceWebSocketTransport(
     private fun autoSeedToken(): String? {
         return try {
             val baseUrl = "http://127.0.0.1:8000"
-            val email = "rmx5070-permanent-device@voiceai.local"
+            val email = "rmx5070-primary@voiceai.local"
             val password = "rmx5070-permanent-auth-password-123"
 
             try {
@@ -160,10 +160,7 @@ class VoiceWebSocketTransport(
         notifyStatus()
 
         networkExecutor.execute {
-            var token = tokenStorage.read()?.accessToken
-            if (token.isNullOrBlank()) {
-                token = autoSeedToken()
-            }
+            var token = autoSeedToken() ?: tokenStorage.read()?.accessToken
             if (token.isNullOrBlank()) {
                 recordError("E_VOICE_AUTH", "No access token is stored securely on this device.")
                 return@execute
@@ -404,6 +401,7 @@ class VoiceWebSocketTransport(
                     "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
             )
             stopHeartbeat()
+            tokenStorage.clear()
             recordError("E_VOICE_WEBSOCKET", "Voice gateway connection failed.")
         }
     }

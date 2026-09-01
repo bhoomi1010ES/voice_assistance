@@ -1,6 +1,6 @@
+import os
 import subprocess
 import sys
-import os
 
 # Set unbuffered environment variable
 os.environ["PYTHONUNBUFFERED"] = "1"

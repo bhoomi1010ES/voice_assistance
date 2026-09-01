@@ -285,3 +285,93 @@ P95 speech -> final:     115078.0 ms
 Average commit -> final: 78550.0 ms
 P50 commit -> final:     78992.0 ms
 P95 commit -> final:     84950.0 ms
+
+
+
+Waiting for speech...
+[2026-09-01 12:24:32.259] Speech detected (wallMs=1788290672315)
+[2026-09-01 12:24:36.107] [VAD END] Speech stopped (wallMs=1788290676168)
+[2026-09-01 12:27:31.334] 
+Turn rejected - insufficient audio or timeout.
+Retrying Turn 1...
+[2026-09-01 12:27:32.337] 
+************************************************************
+*                                                          *
+*                 TURN 1 / 10 — READY                    *
+*                                                          *
+*               SPEAK YOUR SENTENCE NOW                    *
+*                                                          *
+************************************************************
+
+READY — Speak your English sentence now.
+
+[Microphone is active]
+
+Waiting for speech...
+[2026-09-01 12:27:37.450] Speech detected (wallMs=1788290857508)
+[2026-09-01 12:27:41.062] [VAD END] Speech stopped (wallMs=1788290861117)
+[2026-09-01 12:28:44.018] Client turn start sent (wallMs=1788290924089)
+[2026-09-01 12:28:44.745] Backend started turn: turn_id=0d04bd1b-c236-4e3a-8371-062feb8007d9, response_id=d207f3ea-c061-4791-995e-284bdb62e22a
+[2026-09-01 12:28:45.601] STT inference submitted: kind=partial, audio_duration=1500ms
+[2026-09-01 12:28:45.601] STT inference started: kind=partial at 1788290925566
+[2026-09-01 12:28:51.948] Client audio commit sent (wallMs=1788290932006)
+[2026-09-01 12:28:52.025] Backend received audio commit: 396 frames, 253440 bytes
+[2026-09-01 12:28:52.038] STT finalization requested (partial_task_running=True)
+[2026-09-01 12:28:52.039] STT inference submitted: kind=final, audio_duration=7920ms      
+[2026-09-01 12:28:52.041] STT inference started: kind=final at 1788290931971
+[2026-09-01 12:29:54.702] STT inference completed: kind=final, dur=62690.7ms, text='Pizza. How was your weekend? It was relaxing.'
+[2026-09-01 12:29:54.702] Final transcript: "Pizza. How was your weekend? It was relaxing."
+[2026-09-01 12:29:54.702]
+------------------------------------------------------------
+TURN 1 RESULTS
+------------------------------------------------------------
+
+Final transcript:
+"Pizza. How was your weekend? It was relaxing."
+
+Speech start:            19:27:37.508
+Speech end:              19:28:51.970
+First partial:           N/A
+Commit:                  19:28:52.006
+Final transcript:        19:29:54.663
+Final received:          N/A
+
+Speech duration:         74462 ms
+First partial latency:   N/A ms
+Speech -> final:          62703.0 ms
+Commit -> final:          62703.0 ms
+Turn processing:         -371153348.0 ms
+
+PCM frames:              396
+PCM bytes:               253440
+Response ID:             d207f3ea-c061-4791-995e-284bdb62e22a
+Final count:             1
+
+Status: PASS
+
+[2026-09-01 12:29:55.715] 
+************************************************************
+*                                                          *
+*                 TURN 2 / 10 — READY                    *
+*                                                          *
+*               SPEAK YOUR SENTENCE NOW                    *
+*                                                          *
+************************************************************
+
+READY — Speak your English sentence now.
+
+[Microphone is active]
+
+Waiting for speech...
+[2026-09-01 12:29:56.496] Android received transcript.final (wallMs=1788290996555)
+[2026-09-01 12:29:56.509] Android received server.turn.completed (wallMs=1788290996564)
+[2026-09-01 12:30:01.102] Client turn start sent (wallMs=1788291001160)
+[2026-09-01 12:30:01.819] Backend started turn: turn_id=8f747161-2cca-4c89-a80d-f3176f025dab, response_id=30cadb70-2dc4-4beb-bbd8-cb1715c4ee33
+[2026-09-01 12:30:02.624] STT inference submitted: kind=partial, audio_duration=1500ms
+[2026-09-01 12:30:02.624] STT inference started: kind=partial at 1788291002609
+[2026-09-01 12:30:03.851] [VAD END] Speech stopped (wallMs=1788291003908)
+[2026-09-01 12:30:09.775] Client audio commit sent (wallMs=1788291009834)
+[2026-09-01 12:30:09.872] Backend received audio commit: 435 frames, 278400 bytes
+[2026-09-01 12:30:09.887] STT finalization requested (partial_task_running=True)
+[2026-09-01 12:30:09.892] STT inference submitted: kind=final, audio_duration=8700ms
+[2026-09-01 12:30:09.901] STT inference started: kind=final at 1788291009810

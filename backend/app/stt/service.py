@@ -115,11 +115,17 @@ class STTService:
         self.settings = settings
         self._model_factory = model_factory or WhisperModel
         self._model: Any | None = None
+        self._final_model: Any | None = None
+        self._partial_model: Any | None = None
         self._model_info: STTModelInfo | None = None
         self._model_lock = asyncio.Lock()
-        self._executor = ThreadPoolExecutor(
+        self._final_executor = ThreadPoolExecutor(
             max_workers=settings.stt_workers,
-            thread_name_prefix="local-stt",
+            thread_name_prefix="local-stt-final",
+        )
+        self._partial_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="local-stt-partial",
         )
         self._turns: dict[tuple[uuid.UUID, uuid.UUID], STTTurn] = {}
         self._turns_lock = asyncio.Lock()
@@ -166,14 +172,22 @@ class STTService:
                     "model_format": "CTranslate2",
                     "device": self.settings.stt_device,
                     "compute_type": self.settings.stt_compute_type,
+                    "cpu_threads": self.settings.stt_threads,
                     "workers": self.settings.stt_workers,
                 },
             )
             try:
-                model = await loop.run_in_executor(
-                    self._executor,
+                final_model = await loop.run_in_executor(
+                    self._final_executor,
                     self._load_model,
                     model_path,
+                    self.settings.stt_threads,
+                )
+                partial_model = await loop.run_in_executor(
+                    self._partial_executor,
+                    self._load_model,
+                    model_path,
+                    1,
                 )
             except STTError:
                 raise
@@ -181,7 +195,9 @@ class STTService:
                 raise STTConfigurationError(
                     f"Whisper model initialization failed: {type(error).__name__}"
                 ) from error
-            self._model = model
+            self._final_model = final_model
+            self._partial_model = partial_model
+            self._model = final_model
             self._model_info = STTModelInfo(
                 model_path=str(model_path),
                 model_format="CTranslate2",
@@ -199,8 +215,19 @@ class STTService:
                     "model_format": "CTranslate2",
                     "device": self.settings.stt_device,
                     "compute_type": self.settings.stt_compute_type,
+                    "cpu_threads": self.settings.stt_threads,
                     "workers": self.settings.stt_workers,
                     "load_time_ms": self._model_info.load_time_ms,
+                },
+            )
+            LOGGER.info(
+                "STT model ready for inference",
+                extra={
+                    "event": "stt.model.ready",
+                    "model_path": str(model_path),
+                    "device": self.settings.stt_device,
+                    "compute_type": self.settings.stt_compute_type,
+                    "cpu_threads": self.settings.stt_threads,
                 },
             )
             return self._model_info
@@ -240,19 +267,31 @@ class STTService:
         turns = list(self._turns.values())
         for turn in turns:
             await turn.cancel()
-        await asyncio.to_thread(self._executor.shutdown, wait=True, cancel_futures=True)
+        await asyncio.to_thread(self._final_executor.shutdown, wait=True, cancel_futures=True)
+        await asyncio.to_thread(self._partial_executor.shutdown, wait=True, cancel_futures=True)
 
     async def _release_turn(self, turn: STTTurn) -> None:
         async with self._turns_lock:
             self._turns.pop((turn.session_id, turn.turn_id), None)
 
-    def _load_model(self, model_path: Path) -> Any:
-        return self._model_factory(
-            str(model_path),
-            device=self.settings.stt_device,
-            compute_type=self.settings.stt_compute_type,
-            num_workers=self.settings.stt_workers,
-        )
+    def _load_model(self, model_path: Path, cpu_threads: int | None = None) -> Any:
+        import inspect
+
+        threads = cpu_threads or self.settings.stt_threads
+        kwargs: dict[str, Any] = {
+            "device": self.settings.stt_device,
+            "compute_type": self.settings.stt_compute_type,
+            "num_workers": self.settings.stt_workers,
+        }
+        try:
+            sig = inspect.signature(self._model_factory)
+            if "cpu_threads" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            ):
+                kwargs["cpu_threads"] = threads
+        except (ValueError, TypeError):
+            kwargs["cpu_threads"] = threads
+        return self._model_factory(str(model_path), **kwargs)
 
     def _validate_runtime_configuration(self) -> None:
         if self.settings.stt_device.lower() != "cpu":
@@ -280,7 +319,11 @@ class STTService:
         response_id: uuid.UUID,
         inference_kind: Literal["partial", "final"],
     ) -> _InferenceResult:
-        model = self._model
+        model = (
+            self._partial_model
+            if inference_kind == "partial" and self._partial_model is not None
+            else self._final_model or self._model
+        )
         if model is None:
             raise STTConfigurationError("STT model is not initialized")
         if cancel_event.is_set():
@@ -300,8 +343,9 @@ class STTService:
                 "submitted_monotonic_ms": round(time.monotonic() * 1000, 1),
             },
         )
+        executor = self._partial_executor if inference_kind == "partial" else self._final_executor
         future = loop.run_in_executor(
-            self._executor,
+            executor,
             self._transcribe_sync,
             model,
             audio_bytes,
@@ -380,6 +424,7 @@ class STTService:
                     "inference_duration_ms": result.inference_duration_ms,
                     "text": result.text,
                     "completed_timestamp_ms": int(time.time() * 1000),
+                    "completed_monotonic_ms": round(time.monotonic() * 1000, 1),
                 },
             )
             return result
@@ -390,8 +435,9 @@ class STTService:
             "vad_filter": False,
             "without_timestamps": True,
         }
-        if language is not None:
-            options["language"] = language
+        target_language = language or self.settings.stt_language
+        if target_language is not None:
+            options["language"] = target_language
         try:
             segments, info = model.transcribe(audio, **options)
             text_parts: list[str] = []
@@ -399,7 +445,7 @@ class STTService:
                 if cancel_event.is_set():
                     raise STTCancelledError("STT inference was cancelled")
                 text_parts.append(segment.text)
-            detected_language = getattr(info, "language", None) or language
+            detected_language = getattr(info, "language", None) or target_language
             result = _InferenceResult(
                 text="".join(text_parts).strip(),
                 language=detected_language,
@@ -417,6 +463,7 @@ class STTService:
                     "text": result.text,
                     "language": result.language,
                     "completed_timestamp_ms": int(time.time() * 1000),
+                    "completed_monotonic_ms": round(time.monotonic() * 1000, 1),
                 },
             )
             return result
@@ -556,7 +603,7 @@ class STTTurn:
                 "finalize_requested_timestamp_ms": int(time.time() * 1000),
             },
         )
-        await self._cancel_partial_task()
+        self._cancel_partial_task(wait=False)
         self._clear_pending_events()
         self._speech_end = time.monotonic()
         LOGGER.info(
@@ -601,11 +648,15 @@ class STTTurn:
                 else None
             ),
             "speech_end_to_final_transcript_ms": round((final_at - speech_end) * 1000, 1),
+            "commit_to_final_transcript_ms": round((final_at - speech_end) * 1000, 1),
             "real_time_factor": (
                 round(inference.inference_duration_ms / self.audio_duration_ms, 4)
                 if self.audio_duration_ms
                 else None
             ),
+            "monotonic_audio_start_ms": round(audio_start * 1000, 1),
+            "monotonic_speech_end_ms": round(speech_end * 1000, 1),
+            "monotonic_final_ms": round(final_at * 1000, 1),
         }
         self._transcript_sequence += 1
         event = STTTranscriptEvent(
@@ -631,6 +682,7 @@ class STTTurn:
                 "text": event.text,
                 "language": event.language,
                 "final_transcript_timestamp_ms": event.timestamp_ms,
+                "final_transcript_monotonic_ms": round(final_at * 1000, 1),
                 "metrics": metrics,
             },
         )
@@ -666,7 +718,7 @@ class STTTurn:
 
     async def close(self) -> None:
         if not self._cancel_requested:
-            await self._cancel_partial_task()
+            self._cancel_partial_task()
         self._audio.clear()
         await self._close_events()
         await self.service._release_turn(self)
@@ -768,13 +820,13 @@ class STTTurn:
         )
         return bytes(self._audio[-max_bytes:])
 
-    async def _cancel_partial_task(self) -> None:
+    def _cancel_partial_task(self, *, wait: bool = False) -> None:
         task = self._partial_task
         if task is None or task.done():
             return
+        if self._active_cancel_event is not None:
+            self._active_cancel_event.set()
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
 
     def _offer_event(self, event: STTTranscriptEvent) -> None:
         if self._events_closed:

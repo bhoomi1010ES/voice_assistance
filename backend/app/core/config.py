@@ -29,13 +29,14 @@ class Settings(BaseSettings):
     stt_model_path: str = "models/whisper-large-v3-turbo-ct2"
     stt_device: str = "cpu"
     stt_compute_type: str = "int8"
-    stt_language: str | None = "en"
-    stt_beam_size: int = Field(default=5, ge=1, le=20)
-    stt_workers: int = Field(default=1, ge=1, le=4)
+    stt_language: str | None = None
+    stt_beam_size: int = Field(default=1, ge=1, le=20)
+    stt_threads: int = Field(default=4, ge=1, le=16)
+    stt_workers: int = Field(default=2, ge=1, le=8)
     # CPU Large-v3-Turbo inference can take longer than the audio capture
     # window on modest machines; this remains a bounded per-inference timeout.
     stt_timeout: float = Field(default=180.0, gt=0, le=300)
-    stt_partial_interval_seconds: float = Field(default=2.0, gt=0, le=30)
+    stt_partial_interval_seconds: float = Field(default=1.5, gt=0, le=30)
     stt_partial_window_seconds: int = Field(default=30, ge=1, le=120)
     stt_max_audio_seconds: int = Field(default=120, ge=1, le=600)
     stt_max_active_turns: int = Field(default=4, ge=1, le=32)

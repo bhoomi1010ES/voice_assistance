@@ -113,7 +113,7 @@ async def test_model_is_initialized_once_and_reused(tmp_path) -> None:
         await turn.accept_audio(b"\x00\x10" * 320)
         result = await turn.finalize()
         await turn.close()
-        assert factory_calls == 1
+        assert factory_calls == 2
         assert model.calls == 1
         assert result.event.final is True
         assert result.event.text == "alpha"

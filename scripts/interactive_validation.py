@@ -2,12 +2,14 @@
 """Phase 4 — Interactive Manual 10-Turn Physical STT Acceptance Test Runner.
 
 Controls test flow, captures Android logcat and backend logs in real-time,
-measures exact latencies, validates partial/final STT events, records consolidated logs,
-and generates structured JSON, summary markdown, and final acceptance reports.
+measures exact latencies using monotonic time, validates partial/final STT events,
+enforces strict response correlation, records consolidated logs, and generates
+structured JSON, summary markdown, and final acceptance reports.
 """
 
 from __future__ import annotations
 
+import argparse
 import datetime
 import json
 import math
@@ -15,16 +17,15 @@ import os
 import re
 import subprocess
 import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-import threading
-import time
-from pathlib import Path
-from typing import Any
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 DOCS_DIR = WORKSPACE_ROOT / "docs"
@@ -35,7 +36,6 @@ SCRATCH_DIR.mkdir(exist_ok=True)
 
 def get_latest_backend_log_file() -> Path | None:
     """Find the most recent backend log file."""
-    # Check antigravity task logs first
     app_data = os.environ.get("USERPROFILE", "C:\\Users\\lenovo")
     gemini_tasks = Path(app_data) / ".gemini" / "antigravity-ide" / "brain"
     latest_task_log = None
@@ -46,7 +46,6 @@ def get_latest_backend_log_file() -> Path | None:
             try:
                 mtime = log_file.stat().st_mtime
                 if mtime > latest_task_mtime:
-                    # Check if it looks like uvicorn log
                     with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
                         header = f.read(500)
                         if "uvicorn" in header or "voice-assistance" in header or "Started server process" in header:
@@ -92,11 +91,16 @@ def calculate_percentiles(values: list[float]) -> dict[str, float]:
 
 
 class InteractiveValidationRunner:
-    def __init__(self, target_device: str = "RMX5070", required_turns: int = 10):
+    def __init__(
+        self,
+        target_device: str = "RMX5070",
+        required_turns: int = 10,
+        output_dir: Path | None = None,
+    ):
         self.target_device = target_device
         self.required_turns = required_turns
         self.timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = VALIDATION_ROOT / self.timestamp
+        self.output_dir = output_dir or (VALIDATION_ROOT / "post_fix_10_turn")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.log_file_path = self.output_dir / "phase4_10turn_validation.log"
@@ -106,40 +110,15 @@ class InteractiveValidationRunner:
 
         self.log_file = open(self.log_file_path, "w", encoding="utf-8", buffering=1)
 
-        self.turn_1_seed = {
-            "turn": 1,
-            "turn_number": 1,
-            "status": "PASS",
-            "final_transcript": "Hello, what is your name? Hi, my name is Emily. Hello, what is your name? Hi, my name is Emily.",
-            "language": "en",
-            "speech_start_timestamp": 1788285981952,
-            "speech_end_timestamp": 1788285987802,
-            "turn_start_timestamp": 1788285983751,
-            "first_partial_timestamp": 1788285985699,
-            "client_commit_timestamp": 1788285995330,
-            "backend_commit_received_timestamp": 1788285995339,
-            "final_transcript_timestamp": 1788286076623,
-            "android_final_received_timestamp": 1788286076630,
-            "turn_completion_timestamp": 1788286076630,
-            "audio_duration_ms": 11600,
-            "speech_duration_ms": 5850,
-            "first_partial_latency_ms": 3747,
-            "speech_to_final_ms": 88821,
-            "commit_to_final_ms": 81293,
-            "turn_processing_ms": 92879,
-            "pcm_frames": 580,
-            "pcm_bytes": 371200,
-            "response_id": "83f6d4e6-c00d-4aa9-9d05-e3de3d544e08",
-            "final_count": 1,
-            "failure_reason": None,
-        }
+        self.current_turn = 1
+        self.turns: list[dict[str, Any]] = []
+        self.current_turn_data: dict[str, Any] = self._new_turn_dict(1)
 
-        self.current_turn = 2
-        self.turns: list[dict[str, Any]] = [self.turn_1_seed]
-        self.current_turn_data: dict[str, Any] = self._new_turn_dict(2)
-
+        self.seen_turn_ids: set[str] = set()
+        self.seen_response_ids: set[str] = set()
         self.duplicate_finals_count = 0
         self.stale_responses_count = 0
+        self.correlation_mismatches_count = 0
 
         self.running = True
         self.lock = threading.Lock()
@@ -149,11 +128,6 @@ class InteractiveValidationRunner:
 
         # Calculate ADB offset
         self.device_offset_ms = self._calculate_adb_offset()
-
-        self.seen_turn_ids: set[str] = set()
-        self.seen_response_ids: set[str] = set()
-        self.duplicate_finals_count = 0
-        self.stale_responses_count = 0
 
     def _calculate_adb_offset(self) -> int:
         try:
@@ -184,24 +158,34 @@ class InteractiveValidationRunner:
     def _new_turn_dict(self, turn_num: int) -> dict[str, Any]:
         return {
             "turn": turn_num,
+            "turn_number": turn_num,
             "session_id": "NOT_AVAILABLE",
             "turn_id": "NOT_AVAILABLE",
             "response_id": "NOT_AVAILABLE",
             "device_id": self.target_device,
             "turn_start_timestamp": "NOT_AVAILABLE",
+            "turn_start_monotonic_ms": "NOT_AVAILABLE",
             "speech_start_timestamp": "NOT_AVAILABLE",
+            "speech_start_monotonic_ms": "NOT_AVAILABLE",
             "speech_end_timestamp": "NOT_AVAILABLE",
+            "speech_end_monotonic_ms": "NOT_AVAILABLE",
             "client_commit_timestamp": "NOT_AVAILABLE",
+            "client_commit_monotonic_ms": "NOT_AVAILABLE",
             "backend_commit_received_timestamp": "NOT_AVAILABLE",
+            "backend_commit_received_monotonic_ms": "NOT_AVAILABLE",
             "first_partial_timestamp": "NOT_AVAILABLE",
+            "first_partial_monotonic_ms": "NOT_AVAILABLE",
             "last_partial_timestamp": "NOT_AVAILABLE",
             "partial_inference_started": "NOT_AVAILABLE",
             "partial_inference_finished": "NOT_AVAILABLE",
             "final_inference_started": "NOT_AVAILABLE",
             "final_inference_finished": "NOT_AVAILABLE",
             "final_transcript_timestamp": "NOT_AVAILABLE",
+            "final_transcript_monotonic_ms": "NOT_AVAILABLE",
             "android_final_received_timestamp": "NOT_AVAILABLE",
+            "android_final_received_monotonic_ms": "NOT_AVAILABLE",
             "turn_completion_timestamp": "NOT_AVAILABLE",
+            "turn_completion_monotonic_ms": "NOT_AVAILABLE",
             "cancellation_requested": "NOT_AVAILABLE",
             "cancellation_completed": "NOT_AVAILABLE",
             "partials": [],
@@ -210,12 +194,12 @@ class InteractiveValidationRunner:
             "pcm_frames": 0,
             "pcm_bytes": 0,
             "audio_duration_ms": 0,
-            "speech_duration_ms": 0,
+            "speech_duration_ms": "N/A",
             "first_partial_latency_ms": None,
-            "speech_to_final_ms": 0,
-            "commit_to_final_ms": 0,
-            "turn_processing_ms": 0,
-            "status": "PENDING",  # PENDING, PASS, FAIL
+            "speech_to_final_ms": "N/A",
+            "commit_to_final_ms": "N/A",
+            "turn_processing_ms": "N/A",
+            "status": "PENDING",  # PASS, FAIL_LATENCY, FAIL_TIMESTAMP_INTEGRITY, FAIL_PARTIAL, FAIL_FINAL_COUNT, etc.
             "failure_reason": None,
             "language": "en",
         }
@@ -244,36 +228,52 @@ class InteractiveValidationRunner:
 
         elif "VoiceAI-VoiceGateway" in line:
             # Client control sent
-            m = re.search(r"VOICE control sent type=(\S+).*wallMs=(\d+)", line)
+            m = re.search(r"VOICE control sent type=(\S+).*wallMs=(\d+)(?:\s+elapsedMs=(\d+))?", line)
             if m:
                 ctl_type = m.group(1)
                 wall_ms = int(m.group(2)) + self.device_offset_ms
+                elapsed_ms = int(m.group(3)) if m.group(3) else None
                 if ctl_type == "client.turn.start":
                     with self.lock:
                         if self.current_turn_data["turn_start_timestamp"] == "NOT_AVAILABLE":
                             self.current_turn_data["turn_start_timestamp"] = wall_ms
+                            if elapsed_ms:
+                                self.current_turn_data["turn_start_monotonic_ms"] = elapsed_ms
                             self.log(f"Client turn start sent (wallMs={wall_ms})")
                 elif ctl_type == "client.audio.commit":
                     with self.lock:
                         self.current_turn_data["client_commit_timestamp"] = wall_ms
+                        if elapsed_ms:
+                            self.current_turn_data["client_commit_monotonic_ms"] = elapsed_ms
                         self.log(f"Client audio commit sent (wallMs={wall_ms})")
                         if self.current_turn_data["speech_end_timestamp"] == "NOT_AVAILABLE":
                             self.current_turn_data["speech_end_timestamp"] = wall_ms
 
-            # Server event received on Android
+            # Server event received on Android with response correlation
             m = re.search(
-                r"VOICE server event type=(\S+)\s+sessionId=(\S+)\s+turnId=(\S+)\s+responseId=(\S+)\s+payload=(.*?)\s+wallMs=(\d+)",
+                r"VOICE server event type=(\S+)\s+sessionId=(\S+)\s+turnId=(\S+)\s+responseId=(\S+)\s+payload=(.*?)\s+wallMs=(\d+)(?:\s+elapsedMs=(\d+))?",
                 line,
             )
             if m:
                 evt_type = m.group(1)
+                sess_id = m.group(2)
                 turn_id = m.group(3)
-                response_id = m.group(4)
+                resp_id = m.group(4)
                 wall_ms = int(m.group(6)) + self.device_offset_ms
+                elapsed_ms = int(m.group(7)) if m.group(7) else None
 
                 with self.lock:
+                    # Check correlation
+                    cur_turn_id = self.current_turn_data["turn_id"]
+                    if cur_turn_id != "NOT_AVAILABLE" and turn_id != "NONE" and turn_id != cur_turn_id:
+                        self.correlation_mismatches_count += 1
+                        self.log(f"WARNING: Logcat event for turn {turn_id} does not match active turn {cur_turn_id}")
+                        return
+
                     if evt_type == "transcript.final" or evt_type == "server.turn.completed":
                         self.current_turn_data["android_final_received_timestamp"] = wall_ms
+                        if elapsed_ms:
+                            self.current_turn_data["android_final_received_monotonic_ms"] = elapsed_ms
                         self.log(f"Android received {evt_type} (wallMs={wall_ms})")
                         self._check_turn_completed()
 
@@ -297,8 +297,8 @@ class InteractiveValidationRunner:
                 response_id = data.get("response_id")
                 session_id = data.get("session_id")
                 ts = data.get("timestamp_ms") or int(time.time() * 1000)
+                mono = data.get("monotonic_ms") or round(time.monotonic() * 1000, 1)
 
-                # Check for stale response
                 if turn_id in self.seen_turn_ids:
                     self.stale_responses_count += 1
                     self.log(f"WARNING: Stale turn_id {turn_id} detected!")
@@ -311,104 +311,156 @@ class InteractiveValidationRunner:
                 self.current_turn_data["response_id"] = response_id
                 if self.current_turn_data["turn_start_timestamp"] == "NOT_AVAILABLE":
                     self.current_turn_data["turn_start_timestamp"] = ts
+                    self.current_turn_data["turn_start_monotonic_ms"] = mono
                 self.log(f"Backend started turn: turn_id={turn_id}, response_id={response_id}")
 
             elif event == "voice.pcm.accepted":
-                frames = data.get("frames_accepted") or 0
-                bytes_cnt = data.get("bytes_received") or 0
-                if frames > self.current_turn_data["pcm_frames"]:
-                    self.current_turn_data["pcm_frames"] = frames
-                    self.current_turn_data["pcm_bytes"] = bytes_cnt
+                turn_id = data.get("turn_id")
+                if self._matches_current_turn(turn_id):
+                    frames = data.get("frames_accepted") or 0
+                    bytes_cnt = data.get("bytes_received") or 0
+                    if frames > self.current_turn_data["pcm_frames"]:
+                        self.current_turn_data["pcm_frames"] = frames
+                        self.current_turn_data["pcm_bytes"] = bytes_cnt
 
             elif event == "voice.audio.commit.received":
-                ts = data.get("backend_commit_received_timestamp_ms") or int(time.time() * 1000)
-                self.current_turn_data["backend_commit_received_timestamp"] = ts
-                frame_cnt = data.get("frame_count") or 0
-                byte_cnt = data.get("byte_count") or 0
-                if frame_cnt:
-                    self.current_turn_data["pcm_frames"] = frame_cnt
-                    self.current_turn_data["pcm_bytes"] = byte_cnt
-                self.log(f"Backend received audio commit: {frame_cnt} frames, {byte_cnt} bytes")
+                turn_id = data.get("turn_id")
+                if self._matches_current_turn(turn_id):
+                    ts = data.get("backend_commit_received_timestamp_ms") or int(time.time() * 1000)
+                    mono = data.get("backend_commit_received_monotonic_ms") or round(time.monotonic() * 1000, 1)
+                    self.current_turn_data["backend_commit_received_timestamp"] = ts
+                    self.current_turn_data["backend_commit_received_monotonic_ms"] = mono
+                    frame_cnt = data.get("frame_count") or 0
+                    byte_cnt = data.get("byte_count") or 0
+                    if frame_cnt:
+                        self.current_turn_data["pcm_frames"] = frame_cnt
+                        self.current_turn_data["pcm_bytes"] = byte_cnt
+                    self.log(f"Backend received audio commit: {frame_cnt} frames, {byte_cnt} bytes")
+
+            elif event == "stt.audio.started":
+                turn_id = data.get("turn_id")
+                if self._matches_current_turn(turn_id):
+                    ts = data.get("audio_start_timestamp_ms") or int(time.time() * 1000)
+                    mono = data.get("audio_start_monotonic_ms") or round(time.monotonic() * 1000, 1)
+                    if self.current_turn_data["speech_start_timestamp"] == "NOT_AVAILABLE":
+                        self.current_turn_data["speech_start_timestamp"] = ts
+                        self.current_turn_data["speech_start_monotonic_ms"] = mono
 
             elif event == "stt.inference.submitted":
-                kind = data.get("inference_kind")
-                ts = data.get("submitted_timestamp_ms") or int(time.time() * 1000)
-                dur = data.get("audio_duration_ms") or 0
-                self.current_turn_data["audio_duration_ms"] = dur
-                self.log(f"STT inference submitted: kind={kind}, audio_duration={dur}ms")
+                turn_id = data.get("turn_id")
+                if self._matches_current_turn(turn_id):
+                    kind = data.get("inference_kind")
+                    dur = data.get("audio_duration_ms") or 0
+                    self.current_turn_data["audio_duration_ms"] = dur
+                    self.log(f"STT inference submitted: kind={kind}, audio_duration={dur}ms")
 
             elif event == "stt.inference.started":
-                kind = data.get("inference_kind")
-                ts = data.get("inference_start_timestamp_ms") or int(time.time() * 1000)
-                if kind == "partial":
-                    self.current_turn_data["partial_inference_started"] = ts
-                elif kind == "final":
-                    self.current_turn_data["final_inference_started"] = ts
-                self.log(f"STT inference started: kind={kind} at {ts}")
+                turn_id = data.get("turn_id")
+                if self._matches_current_turn(turn_id):
+                    kind = data.get("inference_kind")
+                    ts = data.get("inference_start_timestamp_ms") or int(time.time() * 1000)
+                    if kind == "partial":
+                        self.current_turn_data["partial_inference_started"] = ts
+                    elif kind == "final":
+                        self.current_turn_data["final_inference_started"] = ts
+                    self.log(f"STT inference started: kind={kind} at {ts}")
 
             elif event == "stt.partial.emitted":
-                ts = data.get("timestamp_ms") or int(time.time() * 1000)
-                text = data.get("text") or ""
-                if self.current_turn_data["first_partial_timestamp"] == "NOT_AVAILABLE":
-                    self.current_turn_data["first_partial_timestamp"] = ts
-                    self.log(f'Partial transcript: "{text}"')
-                self.current_turn_data["last_partial_timestamp"] = ts
-                self.current_turn_data["partials"].append({"timestamp": ts, "text": text})
+                turn_id = data.get("turn_id")
+                if self._matches_current_turn(turn_id):
+                    ts = data.get("timestamp_ms") or int(time.time() * 1000)
+                    mono = data.get("monotonic_ms") or round(time.monotonic() * 1000, 1)
+                    text = data.get("text") or ""
+                    if self.current_turn_data["first_partial_timestamp"] == "NOT_AVAILABLE":
+                        self.current_turn_data["first_partial_timestamp"] = ts
+                        self.current_turn_data["first_partial_monotonic_ms"] = mono
+                        self.log(f'Partial transcript: "{text}"')
+                    self.current_turn_data["last_partial_timestamp"] = ts
+                    self.current_turn_data["partials"].append({"timestamp": ts, "text": text})
 
             elif event == "stt.finalize.requested":
-                partial_running = data.get("partial_task_running", False)
-                ts = data.get("finalize_requested_timestamp_ms") or int(time.time() * 1000)
-                self.current_turn_data["cancellation_requested"] = ts
-                self.log(f"STT finalization requested (partial_task_running={partial_running})")
+                turn_id = data.get("turn_id")
+                if self._matches_current_turn(turn_id):
+                    partial_running = data.get("partial_task_running", False)
+                    ts = data.get("finalize_requested_timestamp_ms") or int(time.time() * 1000)
+                    self.current_turn_data["cancellation_requested"] = ts
+                    self.log(f"STT finalization requested (partial_task_running={partial_running})")
+
+            elif event == "stt.speech_end.marked":
+                turn_id = data.get("turn_id")
+                if self._matches_current_turn(turn_id):
+                    ts = data.get("speech_end_timestamp_ms") or int(time.time() * 1000)
+                    mono = data.get("speech_end_monotonic_ms") or round(time.monotonic() * 1000, 1)
+                    self.current_turn_data["speech_end_timestamp"] = ts
+                    self.current_turn_data["speech_end_monotonic_ms"] = mono
 
             elif event == "stt.inference.completed":
-                kind = data.get("inference_kind")
-                ts = data.get("completed_timestamp_ms") or int(time.time() * 1000)
-                dur = data.get("inference_duration_ms") or 0
-                text = data.get("text") or ""
-                if kind == "partial":
-                    self.current_turn_data["partial_inference_finished"] = ts
-                elif kind == "final":
-                    self.current_turn_data["final_inference_finished"] = ts
-                self.log(f"STT inference completed: kind={kind}, dur={dur}ms, text='{text}'")
+                turn_id = data.get("turn_id")
+                if self._matches_current_turn(turn_id):
+                    kind = data.get("inference_kind")
+                    ts = data.get("completed_timestamp_ms") or int(time.time() * 1000)
+                    dur = data.get("inference_duration_ms") or 0
+                    text = data.get("text") or ""
+                    if kind == "partial":
+                        self.current_turn_data["partial_inference_finished"] = ts
+                    elif kind == "final":
+                        self.current_turn_data["final_inference_finished"] = ts
+                    self.log(f"STT inference completed: kind={kind}, dur={dur}ms, text='{text}'")
 
             elif event == "stt.final.completed":
-                ts = data.get("final_transcript_timestamp_ms") or int(time.time() * 1000)
-                text = data.get("text") or ""
-                lang = data.get("language") or "en"
-                metrics = data.get("metrics") or {}
+                turn_id = data.get("turn_id")
+                if self._matches_current_turn(turn_id):
+                    ts = data.get("final_transcript_timestamp_ms") or int(time.time() * 1000)
+                    mono = data.get("final_transcript_monotonic_ms") or round(time.monotonic() * 1000, 1)
+                    text = data.get("text") or ""
+                    lang = data.get("language") or "en"
+                    metrics = data.get("metrics") or {}
 
-                self.current_turn_data["final_count"] += 1
-                if self.current_turn_data["final_count"] > 1:
-                    self.duplicate_finals_count += 1
-                    self.log(f"WARNING: Duplicate final transcript received! count={self.current_turn_data['final_count']}")
+                    self.current_turn_data["final_count"] += 1
+                    if self.current_turn_data["final_count"] > 1:
+                        self.duplicate_finals_count += 1
+                        self.log(f"WARNING: Duplicate final transcript received! count={self.current_turn_data['final_count']}")
 
-                self.current_turn_data["final_transcript_timestamp"] = ts
-                self.current_turn_data["final_transcript"] = text
-                self.current_turn_data["language"] = lang
-                if metrics.get("audio_duration_ms"):
-                    self.current_turn_data["audio_duration_ms"] = metrics["audio_duration_ms"]
-                self.log(f'Final transcript: "{text}"')
-                self._check_turn_completed()
+                    self.current_turn_data["final_transcript_timestamp"] = ts
+                    self.current_turn_data["final_transcript_monotonic_ms"] = mono
+                    self.current_turn_data["final_transcript"] = text
+                    self.current_turn_data["language"] = lang
+                    if metrics.get("audio_duration_ms"):
+                        self.current_turn_data["audio_duration_ms"] = metrics["audio_duration_ms"]
+                    self.log(f'Final transcript: "{text}"')
+                    self._check_turn_completed()
 
             elif event == "voice.response.cancel.received":
-                ts = int(time.time() * 1000)
-                self.current_turn_data["cancellation_completed"] = ts
-                self.current_turn_data["status"] = "FAIL"
-                self.current_turn_data["failure_reason"] = "cancelled_by_client"
-                self.log(f"Voice turn cancelled: {data}")
-                self._check_turn_completed()
+                turn_id = data.get("turn_id")
+                if self._matches_current_turn(turn_id):
+                    ts = int(time.time() * 1000)
+                    self.current_turn_data["cancellation_completed"] = ts
+                    self.current_turn_data["status"] = "FAIL"
+                    self.current_turn_data["failure_reason"] = "cancelled_by_client"
+                    self.log(f"Voice turn cancelled: {data}")
+                    self._check_turn_completed()
 
             elif event in ["stt.inference.failed", "voice.error"]:
-                self.current_turn_data["status"] = "FAIL"
-                self.current_turn_data["failure_reason"] = str(data.get("message") or event)
-                self.log(f"Voice error/failure: {data}")
-                self._check_turn_completed()
+                turn_id = data.get("turn_id")
+                if self._matches_current_turn(turn_id):
+                    self.current_turn_data["status"] = "FAIL"
+                    self.current_turn_data["failure_reason"] = str(data.get("message") or event)
+                    self.log(f"Voice error/failure: {data}")
+                    self._check_turn_completed()
+
+    def _matches_current_turn(self, event_turn_id: str | None) -> bool:
+        if not event_turn_id:
+            return True
+        cur_id = self.current_turn_data.get("turn_id")
+        if cur_id in [None, "NOT_AVAILABLE"]:
+            return True
+        return str(event_turn_id) == str(cur_id)
 
     def _check_turn_completed(self):
         d = self.current_turn_data
-        if d["final_transcript"] != "NOT_AVAILABLE" or d["status"] == "FAIL":
+        if d["final_transcript"] != "NOT_AVAILABLE" or d["status"].startswith("FAIL"):
             d["turn_completion_timestamp"] = int(time.time() * 1000)
+            d["turn_completion_monotonic_ms"] = round(time.monotonic() * 1000, 1)
             self.turn_completed_event.set()
 
     def _logcat_loop(self):
@@ -438,7 +490,7 @@ class InteractiveValidationRunner:
             return
 
         with open(backend_log_file, "r", encoding="utf-8", errors="replace") as f:
-            f.seek(0, 2)  # Seek to end
+            f.seek(0, 2)
             while self.running:
                 line = f.readline()
                 if not line:
@@ -458,7 +510,6 @@ class InteractiveValidationRunner:
             time.sleep(2)
 
     def start_listeners(self):
-        # Ensure reverse ports
         try:
             subprocess.run(["adb", "reverse", "tcp:8000", "tcp:8000"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["adb", "reverse", "tcp:8081", "tcp:8081"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -473,52 +524,108 @@ class InteractiveValidationRunner:
         self.backend_thread.start()
         self.keepalive_thread.start()
 
-    def finalize_turn_metrics(self, turn_dict: dict[str, Any]):
-        # Calculate latencies
-        speech_start = turn_dict["speech_start_timestamp"]
-        speech_end = turn_dict["speech_end_timestamp"]
-        commit = turn_dict["client_commit_timestamp"]
-        if commit == "NOT_AVAILABLE":
-            commit = turn_dict["backend_commit_received_timestamp"]
-        final_ts = turn_dict["final_transcript_timestamp"]
-        first_partial = turn_dict["first_partial_timestamp"]
-        turn_start = turn_dict["turn_start_timestamp"]
-        turn_comp = turn_dict["turn_completion_timestamp"]
+    def validate_turn_invariants(self, turn_dict: dict[str, Any]) -> tuple[bool, str]:
+        """Validate all required invariants before a turn can be classified as PASS."""
+        # 1. Final count must be exactly 1
+        final_count = turn_dict.get("final_count", 0)
+        if final_count != 1:
+            return False, f"FAIL_FINAL_COUNT: final_count={final_count} (expected 1)"
 
-        if speech_start != "NOT_AVAILABLE" and speech_end != "NOT_AVAILABLE":
-            turn_dict["speech_duration_ms"] = max(0, speech_end - speech_start)
+        # 2. Final transcript must be non-empty string
+        final_text = turn_dict.get("final_transcript")
+        if not final_text or final_text in ["NOT_AVAILABLE", ""]:
+            return False, "FAIL_TRANSCRIPT_INTEGRITY: empty or missing final transcript"
+
+        # 3. Response correlation identifiers must be present
+        turn_id = turn_dict.get("turn_id")
+        response_id = turn_dict.get("response_id")
+        if not turn_id or turn_id == "NOT_AVAILABLE" or not response_id or response_id == "NOT_AVAILABLE":
+            return False, "FAIL_RESPONSE_CORRELATION: missing turn_id or response_id"
+
+        # 4. Invariant: ALL durations must be non-negative (>= 0)
+        duration_fields = [
+            "speech_duration_ms",
+            "commit_to_final_ms",
+            "speech_to_final_ms",
+            "turn_processing_ms",
+        ]
+        for field in duration_fields:
+            val = turn_dict.get(field)
+            if isinstance(val, (int, float)):
+                if val < 0:
+                    return False, f"FAIL_TIMESTAMP_INTEGRITY: negative duration in {field} ({val} ms)"
+
+        first_part_lat = turn_dict.get("first_partial_latency_ms")
+        if isinstance(first_part_lat, (int, float)) and first_part_lat < 0:
+            return False, f"FAIL_TIMESTAMP_INTEGRITY: negative first_partial_latency_ms ({first_part_lat} ms)"
+
+        # 5. Latency timeout check
+        c2f = turn_dict.get("commit_to_final_ms")
+        if isinstance(c2f, (int, float)) and c2f > 180000:
+            return False, f"FAIL_LATENCY: commit_to_final_ms={c2f} exceeds 180000ms timeout"
+
+        return True, "PASS"
+
+    def finalize_turn_metrics(self, turn_dict: dict[str, Any]):
+        # Calculate latencies strictly within the server monotonic clock domain
+        s_audio_start_mono = turn_dict.get("server_audio_start_monotonic_ms")
+        s_end_mono = turn_dict.get("speech_end_monotonic_ms")
+        commit_mono = turn_dict.get("backend_commit_received_monotonic_ms")
+        final_mono = turn_dict.get("final_transcript_monotonic_ms")
+        t_start_mono = turn_dict.get("turn_start_monotonic_ms")
+        t_comp_mono = turn_dict.get("turn_completion_monotonic_ms")
+
+        # 1. Speech duration
+        if s_end_mono not in [None, "NOT_AVAILABLE"] and s_audio_start_mono not in [None, "NOT_AVAILABLE"]:
+            turn_dict["speech_duration_ms"] = round(s_end_mono - s_audio_start_mono, 1)
+        elif turn_dict["audio_duration_ms"] > 0:
+            turn_dict["speech_duration_ms"] = turn_dict["audio_duration_ms"]
+        elif turn_dict["speech_start_timestamp"] != "NOT_AVAILABLE" and turn_dict["speech_end_timestamp"] != "NOT_AVAILABLE":
+            turn_dict["speech_duration_ms"] = round(turn_dict["speech_end_timestamp"] - turn_dict["speech_start_timestamp"], 1)
         else:
             turn_dict["speech_duration_ms"] = turn_dict["audio_duration_ms"]
 
-        if first_partial != "NOT_AVAILABLE" and speech_end != "NOT_AVAILABLE":
-            turn_dict["first_partial_latency_ms"] = max(0, first_partial - speech_end)
-        elif first_partial != "NOT_AVAILABLE" and speech_start != "NOT_AVAILABLE":
-            turn_dict["first_partial_latency_ms"] = max(0, first_partial - speech_start)
-        else:
-            turn_dict["first_partial_latency_ms"] = None
-
-        if final_ts != "NOT_AVAILABLE" and speech_end != "NOT_AVAILABLE":
-            turn_dict["speech_to_final_ms"] = max(0, final_ts - speech_end)
-        else:
-            turn_dict["speech_to_final_ms"] = "N/A"
-
-        if final_ts != "NOT_AVAILABLE" and commit != "NOT_AVAILABLE":
-            turn_dict["commit_to_final_ms"] = max(0, final_ts - commit)
+        # 2. Commit -> Final (server monotonic)
+        if commit_mono not in [None, "NOT_AVAILABLE"] and final_mono not in [None, "NOT_AVAILABLE"]:
+            turn_dict["commit_to_final_ms"] = round(final_mono - commit_mono, 1)
+        elif turn_dict["final_transcript_timestamp"] != "NOT_AVAILABLE" and turn_dict["backend_commit_received_timestamp"] != "NOT_AVAILABLE":
+            turn_dict["commit_to_final_ms"] = round(turn_dict["final_transcript_timestamp"] - turn_dict["backend_commit_received_timestamp"], 1)
         else:
             turn_dict["commit_to_final_ms"] = "N/A"
 
-        if turn_comp != "NOT_AVAILABLE" and turn_start != "NOT_AVAILABLE":
-            turn_dict["turn_processing_ms"] = max(0, turn_comp - turn_start)
+        # 3. Speech -> Final (server monotonic)
+        if s_end_mono not in [None, "NOT_AVAILABLE"] and final_mono not in [None, "NOT_AVAILABLE"]:
+            turn_dict["speech_to_final_ms"] = round(final_mono - s_end_mono, 1)
+        elif turn_dict["final_transcript_timestamp"] != "NOT_AVAILABLE" and turn_dict["speech_end_timestamp"] != "NOT_AVAILABLE":
+            turn_dict["speech_to_final_ms"] = round(turn_dict["final_transcript_timestamp"] - turn_dict["speech_end_timestamp"], 1)
         else:
+            turn_dict["speech_to_final_ms"] = "N/A"
+
+        # 4. Partial latency (server monotonic)
+        f_part_mono = turn_dict.get("first_partial_monotonic_ms")
+        if f_part_mono not in [None, "NOT_AVAILABLE"] and s_audio_start_mono not in [None, "NOT_AVAILABLE"]:
+            turn_dict["first_partial_latency_ms"] = round(f_part_mono - s_audio_start_mono, 1)
+        elif turn_dict["first_partial_timestamp"] != "NOT_AVAILABLE" and turn_dict["speech_start_timestamp"] != "NOT_AVAILABLE":
+            turn_dict["first_partial_latency_ms"] = round(turn_dict["first_partial_timestamp"] - turn_dict["speech_start_timestamp"], 1)
+        else:
+            turn_dict["first_partial_latency_ms"] = None
+
+        # 5. Turn processing (server monotonic domain only!)
+        if t_comp_mono not in [None, "NOT_AVAILABLE"] and t_start_mono not in [None, "NOT_AVAILABLE"]:
+            turn_dict["turn_processing_ms"] = round(t_comp_mono - t_start_mono, 1)
+        elif turn_dict["turn_completion_timestamp"] != "NOT_AVAILABLE" and turn_dict["turn_start_timestamp"] != "NOT_AVAILABLE":
+            turn_dict["turn_processing_ms"] = round(turn_dict["turn_completion_timestamp"] - turn_dict["turn_start_timestamp"], 1)
+        elif not isinstance(turn_dict.get("turn_processing_ms"), (int, float)):
             turn_dict["turn_processing_ms"] = "N/A"
 
-        # Validate turn criteria
-        if turn_dict["final_count"] == 1 and turn_dict["final_transcript"] != "NOT_AVAILABLE":
-            turn_dict["status"] = "PASS"
+        # Run strict invariant validation
+        is_valid, validation_status = self.validate_turn_invariants(turn_dict)
+        if not is_valid:
+            turn_dict["status"] = validation_status.split(":")[0].strip()
+            turn_dict["failure_reason"] = validation_status
         else:
-            turn_dict["status"] = "FAIL"
-            if not turn_dict["failure_reason"]:
-                turn_dict["failure_reason"] = f"final_count={turn_dict['final_count']}"
+            turn_dict["status"] = "PASS"
+            turn_dict["failure_reason"] = None
 
     def print_turn_banner(self, turn_num: int):
         banner = f"""
@@ -569,12 +676,11 @@ PCM bytes:               {turn_dict['pcm_bytes']}
 Response ID:             {turn_dict['response_id']}
 Final count:             {turn_dict['final_count']}
 
-Status: {turn_dict['status']}
+Status: {turn_dict['status']} {f'({turn_dict.get("failure_reason")})' if turn_dict.get("failure_reason") else ''}
 """
         self.log(report)
 
     def save_json_and_summary(self):
-        # Save JSON
         data = {
             "phase": 4,
             "device": self.target_device,
@@ -583,12 +689,12 @@ Status: {turn_dict['status']}
             "completed_turns": len(self.turns),
             "duplicate_finals": self.duplicate_finals_count,
             "stale_responses": self.stale_responses_count,
+            "correlation_mismatches": self.correlation_mismatches_count,
             "turns": self.turns,
         }
         with open(self.json_file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
-        # Aggregate stats
         speech_to_finals = [
             float(t["speech_to_final_ms"]) for t in self.turns if isinstance(t["speech_to_final_ms"], (int, float))
         ]
@@ -637,15 +743,15 @@ Completed turns: {len(self.turns)} / {self.required_turns}
         summary_md += f"""
 ## Event Statistics
 
-- **Total valid turns**: {len(self.turns)} / {self.required_turns}
+- **Total completed turns**: {len(self.turns)} / {self.required_turns}
 - **Turns with partials**: {len(partial_latencies)} / {len(self.turns)}
 - **Duplicate finals**: {self.duplicate_finals_count}
 - **Stale responses**: {self.stale_responses_count}
+- **Correlation mismatches**: {self.correlation_mismatches_count}
 """
         with open(self.summary_file_path, "w", encoding="utf-8") as f:
             f.write(summary_md)
 
-        # Write Final Acceptance Report
         self._write_final_acceptance_report(summary_md, stf_stats, ctf_stats, part_stats)
 
     def _write_final_acceptance_report(
@@ -655,6 +761,9 @@ Completed turns: {len(self.turns)} / {self.required_turns}
         ctf_stats: dict[str, float],
         part_stats: dict[str, float],
     ):
+        pass_count = sum(1 for t in self.turns if t["status"] == "PASS")
+        report_status = "PASS" if pass_count == self.required_turns and len(self.turns) == self.required_turns else "FAIL"
+
         report = f"""# Phase 4 — Final Physical English Validation Report
 
 Validation timestamp: {self.timestamp}  
@@ -662,36 +771,14 @@ Scope: English-only, CPU-only Phase 4 physical acceptance audit on physical `{se
 
 ## Status
 
-`IMPLEMENTED — ACCEPTANCE PENDING (Ground-truth WER pending)`
-
-The 10-turn interactive physical speech-to-text validation on `{self.target_device}` has completed. All 10 turns completed with legitimate microphone speech audio and verified STT transcript hypotheses.
-
-## Physical Device
-
-`VERIFIED`
-
-- Device model: `{self.target_device}`
-- Language: English
-- Audio Pipeline: 16 kHz Mono PCM16 over WebSocket `/v1/voice`
+`PHASE 4 POST-FIX PHYSICAL TEST: {report_status}`
 
 {summary_md}
-
-## 106-Second Latency Investigation & Resolution
-
-- **Root Cause Verified**: Previously, partial inference ran with `beam_size=5` on CPU, occupying the worker thread for ~38s per 2s chunk and starving final inference upon commit.
-- **Resolution**: Partial inference decoding updated to fast greedy search (`beam_size=1`) while preserving `stt_beam_size=5` for final commitments.
-- **Result**: Commit-to-final latency maintained within normal CPU inference bounds without worker starvation.
-
-## Word Error Rate (WER)
-
-`PENDING — manual physical run does not provide ground-truth references`
-
-The 10-turn manual physical test captured real-world speech transcripts from spoken audio. Because reference transcripts were not typed in advance during manual speaking, WER calculation against formal ground truth is documented as PENDING.
 
 ## Final Gate
 
 ```text
-PHASE 4: IMPLEMENTED — ACCEPTANCE PENDING
+PHASE 4: {'ACCEPTED' if report_status == 'PASS' else 'ACCEPTANCE PENDING'}
 ```
 """
         with open(self.final_acceptance_report_path, "w", encoding="utf-8") as f:
@@ -711,11 +798,6 @@ Validation log: {self.log_file_path}
 
         self.start_listeners()
         time.sleep(1)
-
-        # Print Turn 1 result
-        self.log("\n=================== RECORDED TURN 1 / 10 ===================")
-        self.print_turn_results(self.turn_1_seed)
-        self.save_json_and_summary()
 
         while self.current_turn <= self.required_turns:
             self.turn_completed_event.clear()
@@ -764,6 +846,7 @@ Partial events: {sum(1 for t in self.turns if t['first_partial_latency_ms'] is n
 Final events: {len(self.turns)} / {self.required_turns}
 Duplicate finals: {self.duplicate_finals_count}
 Stale responses: {self.stale_responses_count}
+Correlation mismatches: {self.correlation_mismatches_count}
 
 Average speech → final: {stf_stats['avg']} ms
 P50 speech → final:     {stf_stats['p50']} ms
@@ -790,7 +873,14 @@ P95 commit → final:     {ctf_stats['p95']} ms
 
 
 if __name__ == "__main__":
-    runner = InteractiveValidationRunner()
+    parser = argparse.ArgumentParser(description="Run Phase 4 physical STT validation")
+    parser.add_argument("--device", default="RMX5070", help="ADB target device")
+    parser.add_argument("--turns", type=int, default=10, help="Required turns")
+    parser.add_argument("--output-dir", type=str, default=None, help="Directory to store outputs")
+    args = parser.parse_args()
+
+    out_path = Path(args.output_dir) if args.output_dir else None
+    runner = InteractiveValidationRunner(target_device=args.device, required_turns=args.turns, output_dir=out_path)
     try:
         runner.run()
     except KeyboardInterrupt:

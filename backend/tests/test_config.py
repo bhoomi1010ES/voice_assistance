@@ -23,8 +23,9 @@ def test_settings_loads_connection_urls_from_environment(monkeypatch) -> None:
     assert settings.stt_device == "cpu"
     assert settings.stt_compute_type == "int8"
     assert settings.stt_language is None
-    assert settings.stt_beam_size == 5
-    assert settings.stt_workers == 1
+    assert settings.stt_beam_size == 1
+    assert settings.stt_threads == 4
+    assert settings.stt_workers == 2
     assert settings.stt_timeout == 180.0
 
 
