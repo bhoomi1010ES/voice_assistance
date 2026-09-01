@@ -384,7 +384,7 @@ class STTService:
             )
             return result
         options: dict[str, Any] = {
-            "beam_size": self.settings.stt_beam_size,
+            "beam_size": self.settings.stt_beam_size if inference_kind == "final" else 1,
             "condition_on_previous_text": False,
             "task": "transcribe",
             "vad_filter": False,

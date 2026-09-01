@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     stt_model_path: str = "models/whisper-large-v3-turbo-ct2"
     stt_device: str = "cpu"
     stt_compute_type: str = "int8"
-    stt_language: str | None = None
+    stt_language: str | None = "en"
     stt_beam_size: int = Field(default=5, ge=1, le=20)
     stt_workers: int = Field(default=1, ge=1, le=4)
     # CPU Large-v3-Turbo inference can take longer than the audio capture

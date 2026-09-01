@@ -1,0 +1,287 @@
+=================== RECORDED TURN 1 / 10 ===================
+------------------------------------------------------------
+TURN 1 RESULTS
+------------------------------------------------------------
+
+Final transcript:
+"Hello, what is your name? Hi, my name is Emily. Hello, what is your name? Hi, my name is Emily."
+
+Speech start:            18:06:21.952
+Speech end:              18:06:27.802
+First partial:           18:06:25.699 (3747 ms)
+Commit:                  18:06:35.330
+Final transcript:        18:07:56.623
+Final received:          18:07:56.630
+
+Speech duration:         5850 ms
+First partial latency:   3747 ms
+Speech -> final:         88821 ms
+Commit -> final:         81293 ms
+Turn processing:         92879 ms
+
+PCM frames:              580
+PCM bytes:               371200
+Response ID:             83f6d4e6-c00d-4aa9-9d05-e3de3d544e08
+Final count:             1
+
+Status: PASS
+
+=================== RECORDED TURN 2 / 10 ===================
+------------------------------------------------------------
+TURN 2 RESULTS
+------------------------------------------------------------
+
+Final transcript:
+"Yes I understand. Do you understand? Yes I understand."
+
+Speech start:            18:14:14.828
+Speech end:              18:14:16.119
+First partial:           N/A
+Commit:                  18:14:19.661
+Final transcript:        18:15:38.967
+Final received:          18:15:40.746
+
+Speech duration:         1291 ms
+First partial latency:   N/A ms
+Speech -> final:         82848 ms
+Commit -> final:         79306 ms
+Turn processing:         87318 ms
+
+PCM frames:              400
+PCM bytes:               256000
+Response ID:             26884a55-a4b9-4301-b054-83d48ae46efa
+Final count:             1
+
+Status: PASS
+
+=================== RECORDED TURN 3 / 10 ===================
+------------------------------------------------------------
+TURN 3 RESULTS
+------------------------------------------------------------
+
+Final transcript:
+"you do for work i'm a teacher what do you do for work i'm a teacher"
+
+Speech start:            18:16:50.196
+Speech end:              18:16:50.914
+First partial:           N/A
+Commit:                  18:16:55.307
+Final transcript:        18:18:20.257
+Final received:          18:18:22.025
+
+Speech duration:         718 ms
+First partial latency:   N/A ms
+Speech -> final:         89343 ms
+Commit -> final:         84950 ms
+Turn processing:         93984 ms
+
+PCM frames:              449
+PCM bytes:               287360
+Response ID:             e4238f9b-7c39-418d-9c29-c32600a3b39e
+Final count:             1
+
+Status: PASS
+
+=================== RECORDED TURN 4 / 10 ===================
+------------------------------------------------------------
+TURN 4 RESULTS
+------------------------------------------------------------
+
+Final transcript:
+"Do you have any siblings? Yes, I have a brother. Do you have any siblings?"
+
+Speech start:            18:18:23.071
+Speech end:              18:18:21.387
+First partial:           N/A
+Commit:                  18:18:57.473
+Final transcript:        18:20:16.465
+Final received:          18:20:18.299
+
+Speech duration:         0 ms
+First partial latency:   N/A ms
+Speech -> final:         115078 ms
+Commit -> final:         78992 ms
+Turn processing:         85895 ms
+
+PCM frames:              348
+PCM bytes:               222720
+Response ID:             4b4eb1a2-2e44-4fbd-af04-8f23dd034afb
+Final count:             1
+
+Status: PASS
+
+=================== RECORDED TURN 5 / 10 ===================
+------------------------------------------------------------
+TURN 5 RESULTS
+------------------------------------------------------------
+
+Final transcript:
+"From? I am from Mumbai. Where are you from? I am from Mumbai."
+
+Speech start:            18:21:08.352
+Speech end:              18:20:44.860
+First partial:           N/A
+Commit:                  18:20:44.860
+Final transcript:        18:21:57.402
+Final received:          18:22:00.152
+
+Speech duration:         0 ms
+First partial latency:   N/A ms
+Speech -> final:         72542 ms
+Commit -> final:         72542 ms
+Turn processing:         80635 ms
+
+PCM frames:              404
+PCM bytes:               258560
+Response ID:             12157a20-74fa-43f4-87cc-7bc3eabadf3f
+Final count:             1
+
+Status: PASS
+
+=================== RECORDED TURN 6 / 10 ===================
+------------------------------------------------------------
+TURN 6 RESULTS
+------------------------------------------------------------
+
+Final transcript:
+"How old are you? I am 20 years old. How old are you? I am 20 years old."
+
+Speech duration:         9760 ms
+PCM frames:              488
+PCM bytes:               312320
+Final transcript:        18:28:03.833
+Final received:          18:28:05.642
+Response ID:             03a1867b-5d22-45ed-801d-30c60ad99411
+Final count:             1
+
+Status: PASS
+
+=================== RECORDED TURN 7 / 10 ===================
+------------------------------------------------------------
+TURN 7 RESULTS
+------------------------------------------------------------
+
+Final transcript:
+"Are you married? No, I am not married. Are you married?"
+
+Speech start:            18:28:14.072
+Speech end:              18:28:15.110
+First partial:           N/A
+Commit:                  18:28:41.029
+Final transcript:        18:29:52.301
+Final received:          18:29:54.118
+
+Speech duration:         1038 ms
+First partial latency:   N/A ms
+Speech -> final:         97191 ms
+Commit -> final:         71272 ms
+Turn processing:         78129 ms
+
+PCM frames:              344
+PCM bytes:               220160
+Response ID:             f9f4e15d-f2e4-4915-b9cb-b74a5b907c0d
+Final count:             1
+
+Status: PASS
+
+=================== RECORDED TURN 8 / 10 ===================
+------------------------------------------------------------
+TURN 8 RESULTS
+------------------------------------------------------------
+
+Final transcript:
+"What day is it today? It's Monday What day is it today?"
+
+Speech start:            18:29:54.301
+Speech end:              18:29:54.859
+First partial:           N/A
+Commit:                  18:30:31.996
+Final transcript:        18:31:49.083
+Final received:          18:29:54.119
+
+Speech duration:         558 ms
+First partial latency:   N/A ms
+Speech -> final:         114224 ms
+Commit -> final:         77087 ms
+Turn processing:         84106 ms
+
+PCM frames:              348
+PCM bytes:               222720
+Response ID:             c4989439-21c3-47bd-a7e4-482c10bcfc1b
+Final count:             1
+
+Status: PASS
+
+=================== RECORDED TURN 9 / 10 ===================
+------------------------------------------------------------
+TURN 9 RESULTS
+------------------------------------------------------------
+
+Final transcript:
+"Can you help me? Of course. What do you need?"
+
+Speech start:            18:31:50.867
+Speech end:              18:31:52.309
+First partial:           N/A
+Commit:                  18:32:18.717
+Final transcript:        18:33:41.627
+Final received:          18:31:50.925
+
+Speech duration:         1442 ms
+First partial latency:   N/A ms
+Speech -> final:         109318 ms
+Commit -> final:         82910 ms
+Turn processing:         88591 ms
+
+PCM frames:              284
+PCM bytes:               181760
+Response ID:             f326271c-3868-41a0-a647-2229112294de
+Final count:             1
+
+Status: PASS
+
+=================== RECORDED TURN 10 / 10 ===================
+------------------------------------------------------------
+TURN 10 RESULTS
+------------------------------------------------------------
+
+Final transcript:
+"What are your hobbies? I like to cook. What are your hobbies?"
+
+Speech start:            18:34:15.189
+Speech end:              18:34:15.742
+First partial:           N/A
+Commit:                  18:34:44.170
+Final transcript:        18:36:02.768
+Final received:          18:33:43.424
+
+Speech duration:         553 ms
+First partial latency:   N/A ms
+Speech -> final:         107026 ms
+Commit -> final:         78598 ms
+Turn processing:         86161 ms
+
+PCM frames:              376
+PCM bytes:               240640
+Response ID:             b4d15c10-1dfd-47d8-80f1-5178e5612d63
+Final count:             1
+
+Status: PASS
+
+============================================================
+PHASE 4 — 10 TURN PHYSICAL ACCEPTANCE TEST COMPLETE
+============================================================
+
+Valid turns:             10 / 10 (100% PASS)
+Partial events:          1 / 10
+Final events:            10 / 10
+Duplicate finals:        0
+Stale responses:         0
+
+Average speech -> final: 97376.8 ms
+P50 speech -> final:     97191.0 ms
+P95 speech -> final:     115078.0 ms
+
+Average commit -> final: 78550.0 ms
+P50 commit -> final:     78992.0 ms
+P95 commit -> final:     84950.0 ms

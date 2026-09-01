@@ -1,0 +1,115 @@
+INFO:     Started server process [8488]
+INFO:     Waiting for application startup.
+{"timestamp":"2026-09-01T01:23:58.740942+00:00","level":"INFO","service":"voice-assistance-backend","event":"service.started","message":"application started","taskName":"Task-2"}
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:55941 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-01T01:24:57.641627+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.session.started","message":"Voice session started","taskName":"Task-9","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","user_id":"942d3747-6ce1-4e53-8dcc-33a893f694fa","device_id":"b3902a38-d766-464a-b349-a00b551e1e7b","stt_enabled":true,"stt_language":null,"reconnect":false,"timestamp_ms":1788225897641}
+{"timestamp":"2026-09-01T01:24:59.263252+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.turn.started","message":"Voice turn started","taskName":"Task-9","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","turn_number":1,"timestamp_ms":1788225899263}
+{"timestamp":"2026-09-01T01:24:59.268383+00:00","level":"INFO","service":"voice-assistance-backend","event":"stt.model.load.started","message":"STT model initialization started","taskName":"Task-9","model_path":"C:\\Users\\lenovo\\Desktop\\voice_assistance\\models\\whisper-large-v3-turbo-ct2","model_format":"CTranslate2","device":"cpu","compute_type":"int8","workers":1}
+{"timestamp":"2026-09-01T01:25:05.581763+00:00","level":"INFO","service":"voice-assistance-backend","event":"stt.model.load.completed","message":"STT model initialization completed","taskName":"Task-9","model_path":"C:\\Users\\lenovo\\Desktop\\voice_assistance\\models\\whisper-large-v3-turbo-ct2","model_format":"CTranslate2","device":"cpu","compute_type":"int8","workers":1,"load_time_ms":6314.4}
+{"timestamp":"2026-09-01T01:25:05.586679+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-9","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","sequence_no":0,"payload_bytes":640,"frames_accepted":1,"bytes_received":640,"queue_depth":36,"timestamp_ms":1788225905586}
+{"timestamp":"2026-09-01T01:25:05.586679+00:00","level":"INFO","service":"voice-assistance-backend","event":"stt.audio.started","message":"STT audio started","taskName":"Task-9","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","audio_start_timestamp_ms":1788225905586,"audio_start_monotonic_ms":4965453.0}
+{"timestamp":"2026-09-01T01:25:05.589563+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-9","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","sequence_no":50,"payload_bytes":640,"frames_accepted":51,"bytes_received":32640,"queue_depth":83,"timestamp_ms":1788225905589}
+{"timestamp":"2026-09-01T01:25:05.590599+00:00","level":"INFO","service":"voice-assistance-backend","event":"stt.partial.scheduled","message":"STT partial inference scheduled","taskName":"Task-9","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","audio_duration_ms":2000,"scheduled_timestamp_ms":1788225905590}
+{"timestamp":"2026-09-01T01:25:05.590599+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-9","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","sequence_no":100,"payload_bytes":640,"frames_accepted":101,"bytes_received":64640,"queue_depth":33,"timestamp_ms":1788225905590}
+{"timestamp":"2026-09-01T01:25:05.592703+00:00","level":"INFO","service":"voice-assistance-backend","event":"stt.inference.submitted","message":"STT inference submitted","taskName":"stt-partial-cb4f216c-eba2-4890-b38f-ec68d9545e56","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","inference_kind":"partial","audio_duration_ms":2000,"submitted_timestamp_ms":1788225905592,"submitted_monotonic_ms":4965453.0}
+{"timestamp":"2026-09-01T01:25:05.593749+00:00","level":"INFO","service":"voice-assistance-backend","event":"stt.inference.started","message":"STT inference started","taskName":null,"session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","inference_kind":"partial","inference_start_timestamp_ms":1788225905593,"inference_start_monotonic_ms":4965453.0,"audio_duration_ms":2000}
+{"timestamp":"2026-09-01T01:25:05.595396+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-9","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","sequence_no":150,"payload_bytes":640,"frames_accepted":151,"bytes_received":96640,"queue_depth":81,"timestamp_ms":1788225905595}
+{"timestamp":"2026-09-01T01:25:05.596444+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-9","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","sequence_no":200,"payload_bytes":640,"frames_accepted":201,"bytes_received":128640,"queue_depth":31,"timestamp_ms":1788225905595}
+{"timestamp":"2026-09-01T01:25:05.600659+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-9","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","sequence_no":250,"payload_bytes":640,"frames_accepted":251,"bytes_received":160640,"queue_depth":78,"timestamp_ms":1788225905600}
+{"timestamp":"2026-09-01T01:25:05.601185+00:00","level":"INFO","service":"voice-assistance-backend","event":"log","message":"Processing audio with duration 00:02.000","taskName":null}
+{"timestamp":"2026-09-01T01:25:05.601709+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-9","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","sequence_no":300,"payload_bytes":640,"frames_accepted":301,"bytes_received":192640,"queue_depth":28,"timestamp_ms":1788225905601}
+{"timestamp":"2026-09-01T01:25:05.605761+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-9","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","sequence_no":350,"payload_bytes":640,"frames_accepted":351,"bytes_received":224640,"queue_depth":1,"timestamp_ms":1788225905605}
+{"timestamp":"2026-09-01T01:25:06.277269+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.audio.commit.received","message":"Voice audio commit received","duration_ms":0,"taskName":"Task-9","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","last_sequence_no":383,"frame_count":384,"byte_count":245760,"backend_commit_received_timestamp_ms":1788225906277,"backend_commit_received_monotonic_ms":4966140.0}
+{"timestamp":"2026-09-01T01:25:06.279282+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.turn.finalization.started","message":"Voice turn finalization started","taskName":"stt-finalize-cb4f216c-eba2-4890-b38f-ec68d9545e56","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","timestamp_ms":1788225906279}
+{"timestamp":"2026-09-01T01:25:06.279804+00:00","level":"INFO","service":"voice-assistance-backend","event":"stt.finalize.requested","message":"STT finalization requested","taskName":"stt-finalize-cb4f216c-eba2-4890-b38f-ec68d9545e56","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","audio_duration_ms":7680,"partial_task_running":true,"finalize_requested_timestamp_ms":1788225906279}
+{"timestamp":"2026-09-01T01:25:06.280412+00:00","level":"INFO","service":"voice-assistance-backend","event":"stt.speech_end.marked","message":"STT speech end marked from client commit","taskName":"stt-finalize-cb4f216c-eba2-4890-b38f-ec68d9545e56","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","speech_end_source":"client.audio.commit","speech_end_timestamp_ms":1788225906279,"speech_end_monotonic_ms":4966140.0}
+{"timestamp":"2026-09-01T01:25:06.280951+00:00","level":"INFO","service":"voice-assistance-backend","event":"stt.inference.submitted","message":"STT inference submitted","taskName":"stt-final-cb4f216c-eba2-4890-b38f-ec68d9545e56","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","inference_kind":"final","audio_duration_ms":7680,"submitted_timestamp_ms":1788225906280,"submitted_monotonic_ms":4966140.0}
+{"timestamp":"2026-09-01T01:25:24.497533+00:00","level":"INFO","service":"voice-assistance-backend","event":"log","message":"Detected language 'en' with probability 0.63","taskName":null}
+{"timestamp":"2026-09-01T01:25:43.544607+00:00","level":"INFO","service":"voice-assistance-backend","event":"stt.inference.started","message":"STT inference started","taskName":null,"session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","inference_kind":"final","inference_start_timestamp_ms":1788225943542,"inference_start_monotonic_ms":5003406.0,"audio_duration_ms":7680}
+{"timestamp":"2026-09-01T01:25:43.545653+00:00","level":"INFO","service":"voice-assistance-backend","event":"log","message":"Processing audio with duration 00:07.680","taskName":null}
+{"timestamp":"2026-09-01T01:26:03.842629+00:00","level":"INFO","service":"voice-assistance-backend","event":"log","message":"Detected language 'en' with probability 0.98","taskName":null}
+{"timestamp":"2026-09-01T01:26:24.461112+00:00","level":"INFO","service":"voice-assistance-backend","event":"stt.inference.completed","message":"STT inference completed","taskName":null,"session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","inference_kind":"final","inference_duration_ms":40918.1,"text":"Hello, how was your play? Can you help me?","language":"en","completed_timestamp_ms":1788225984461}
+{"timestamp":"2026-09-01T01:26:24.463117+00:00","level":"INFO","service":"voice-assistance-backend","event":"stt.final.completed","message":"STT final transcript ready","taskName":"stt-finalize-cb4f216c-eba2-4890-b38f-ec68d9545e56","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","text":"Hello, how was your play? Can you help me?","language":"en","final_transcript_timestamp_ms":1788225984463,"metrics":{"audio_duration_ms":7680,"inference_duration_ms":40918.1,"first_partial_latency_ms":null,"speech_end_to_final_transcript_ms":78188.0,"real_time_factor":5.3279}}
+{"timestamp":"2026-09-01T01:26:26.318448+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.transcript.final.sent","message":"Voice transcript event sent","taskName":"stt-finalize-cb4f216c-eba2-4890-b38f-ec68d9545e56","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","text":"Hello, how was your play? Can you help me?","language":"en","final":true,"transcript_sequence":1,"timestamp_ms":1788225986318,"transcript_timestamp_ms":1788225984463,"metrics":{"audio_duration_ms":7680,"inference_duration_ms":40918.1,"first_partial_latency_ms":null,"speech_end_to_final_transcript_ms":78188.0,"real_time_factor":5.3279}}
+{"timestamp":"2026-09-01T01:26:26.322111+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.transcript.final.delivered","message":"Voice final transcript delivered","taskName":"stt-finalize-cb4f216c-eba2-4890-b38f-ec68d9545e56","session_id":"0a4b20ff-8924-41be-b591-260b6c6bae59","turn_id":"cb4f216c-eba2-4890-b38f-ec68d9545e56","response_id":"3da7b37e-dab5-4b71-b022-596c1f8078ca","text":"Hello, how was your play? Can you help me?","language":"en","timestamp_ms":1788225986322,"transcript_timestamp_ms":1788225984463,"metrics":{"audio_duration_ms":7680,"inference_duration_ms":40918.1,"first_partial_latency_ms":null,"speech_end_to_final_transcript_ms":78188.0,"real_time_factor":5.3279}}
+INFO:     127.0.0.1:51676 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51677 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51678 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51679 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51680 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51681 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51683 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51684 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51685 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51686 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51687 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51688 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51689 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51690 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51691 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51692 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51693 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51694 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51695 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51696 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51698 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51699 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51700 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51701 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51702 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51703 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51704 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51705 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51706 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51707 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51708 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51709 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51710 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51711 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51712 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     127.0.0.1:51713 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+{"timestamp":"2026-09-01T01:33:44.212588+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"9a168f1b-5701-44f4-b138-82f298ec16c4","method":"POST","path":"/auth/register","status_code":201,"duration_ms":99.145,"taskName":"Task-175"}
+{"timestamp":"2026-09-01T01:33:44.321480+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"a158a2b6-8f31-471e-9e9b-83029d68f2e6","method":"POST","path":"/auth/login","status_code":200,"duration_ms":100.272,"taskName":"Task-178"}
+INFO:     127.0.0.1:51737 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-01T01:34:10.866932+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.session.started","message":"Voice session started","taskName":"Task-184","session_id":"68057374-78dd-4c9a-af19-073b98589373","user_id":"6439be5a-9af8-4a9c-bb6d-1a8c0c5ab053","device_id":"3872564c-b4ad-49cb-95b9-4beb4d7011be","stt_enabled":true,"stt_language":null,"reconnect":false,"timestamp_ms":1788226450866}
+{"timestamp":"2026-09-01T01:34:12.729733+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.turn.started","message":"Voice turn started","taskName":"Task-184","session_id":"68057374-78dd-4c9a-af19-073b98589373","turn_id":"16c77714-92ac-401f-b231-c25ffcecaaaf","response_id":"29d17c80-102f-42bc-9b83-bcd2c6a519ba","turn_number":1,"timestamp_ms":1788226452729}

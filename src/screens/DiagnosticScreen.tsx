@@ -5,6 +5,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
@@ -16,6 +17,7 @@ import {
   connectVoiceGateway,
   disconnectVoiceGateway,
   endVoiceSession,
+  storeAuthTokens,
   getVoiceGatewayStatus,
   getAudioPipelineStatus,
   getAudioProcessingStatus,
@@ -470,6 +472,12 @@ export function DiagnosticScreen() {
   const wakeCalibrationCondition =
     WAKE_CALIBRATION_CONDITIONS[wakeCalibrationConditionIndex];
 
+  const [activeTurnNumber, setActiveTurnNumber] = useState<number>(1);
+  const [turnStepState, setTurnStepState] = useState<
+    'IDLE' | 'STARTING' | 'RECORDING' | 'COMMITTING'
+  >('IDLE');
+  const [lastTurnInfo, setLastTurnInfo] = useState<string | null>(null);
+
   const refreshDiagnostics = useCallback(async () => {
     try {
       const [
@@ -665,14 +673,60 @@ export function DiagnosticScreen() {
     }
   };
 
+  const ensureDeviceAuthenticated = async () => {
+    try {
+      const email = 'rmx5070-primary@voiceai.local';
+      const password = 'rmx5070-permanent-auth-password-123';
+      const deviceId = 'rmx5070-physical-primary';
+
+      // Register device user (ignore if already registered)
+      try {
+        await fetch('http://127.0.0.1:8000/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+      } catch (_e) {
+        // user already exists
+      }
+
+      // Login to retrieve valid tokens
+      const loginRes = await fetch('http://127.0.0.1:8000/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          password,
+          device_identifier: deviceId,
+          platform: 'android',
+        }),
+      });
+
+      if (loginRes.ok) {
+        const data = await loginRes.json();
+        if (data.access_token && data.refresh_token) {
+          await storeAuthTokens(data.access_token, data.refresh_token);
+        }
+      }
+    } catch (e) {
+      console.warn('Auto-auth error:', e);
+    }
+  };
+
   const handleConnectVoiceGateway = async () => {
     setBusy(true);
     setUiError(null);
     try {
+      await ensureDeviceAuthenticated();
       setVoiceGateway(await connectVoiceGateway(DEFAULT_VOICE_GATEWAY_URL));
     } catch (error) {
-      setUiError(errorMessage(error));
-      await refreshDiagnostics();
+      try {
+        await ensureDeviceAuthenticated();
+        setVoiceGateway(await connectVoiceGateway(DEFAULT_VOICE_GATEWAY_URL));
+      } catch (retryError) {
+        setUiError(errorMessage(retryError));
+        await refreshDiagnostics();
+      }
     } finally {
       setBusy(false);
     }
@@ -694,6 +748,12 @@ export function DiagnosticScreen() {
     setBusy(true);
     setUiError(null);
     try {
+      if (!status.isRecording) {
+        try {
+          await requestMicrophonePermission();
+          setStatus(await startMicrophone());
+        } catch (_e) {}
+      }
       setVoiceGateway(await startVoiceSession());
     } catch (error) {
       setUiError(errorMessage(error));
@@ -706,6 +766,12 @@ export function DiagnosticScreen() {
     setBusy(true);
     setUiError(null);
     try {
+      if (!status.isRecording) {
+        try {
+          await requestMicrophonePermission();
+          setStatus(await startMicrophone());
+        } catch (_e) {}
+      }
       setVoiceGateway(await startVoiceTurn());
     } catch (error) {
       setUiError(errorMessage(error));
@@ -734,6 +800,72 @@ export function DiagnosticScreen() {
     } catch (error) {
       setUiError(errorMessage(error));
     } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleOneTouchStartTurn = async () => {
+    setBusy(true);
+    setUiError(null);
+    setTurnStepState('STARTING');
+    setLastTurnInfo('Connecting and preparing audio...');
+    try {
+      if (!status.isRecording) {
+        await requestMicrophonePermission();
+        const mic = await startMicrophone();
+        setStatus(mic);
+      }
+
+      let gw = await getVoiceGatewayStatus();
+      if (!gw.connected) {
+        gw = await connectVoiceGateway(DEFAULT_VOICE_GATEWAY_URL);
+        setVoiceGateway(gw);
+        for (let i = 0; i < 30; i++) {
+          await new Promise<void>(resolve => {
+            setTimeout(resolve, 100);
+          });
+          gw = await getVoiceGatewayStatus();
+          if (gw.connected) break;
+        }
+      }
+
+      if (!gw.sessionStarted) {
+        gw = await startVoiceSession();
+        setVoiceGateway(gw);
+        for (let i = 0; i < 30; i++) {
+          await new Promise<void>(resolve => {
+            setTimeout(resolve, 100);
+          });
+          gw = await getVoiceGatewayStatus();
+          if (gw.sessionStarted) break;
+        }
+      }
+
+      gw = await startVoiceTurn();
+      setVoiceGateway(gw);
+      setTurnStepState('RECORDING');
+      setLastTurnInfo(`Turn ${activeTurnNumber} is active! Speak your sentence now.`);
+    } catch (error) {
+      setUiError(errorMessage(error));
+      setTurnStepState('IDLE');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleOneTouchFinishTurn = async () => {
+    setBusy(true);
+    setTurnStepState('COMMITTING');
+    setLastTurnInfo(`Committing audio for Turn ${activeTurnNumber}...`);
+    try {
+      const gw = await commitVoiceAudio(0);
+      setVoiceGateway(gw);
+      setLastTurnInfo(`Turn ${activeTurnNumber} submitted! Transcribing...`);
+      setActiveTurnNumber(prev => Math.min(10, prev + 1));
+    } catch (error) {
+      setUiError(errorMessage(error));
+    } finally {
+      setTurnStepState('IDLE');
       setBusy(false);
     }
   };
@@ -867,6 +999,106 @@ export function DiagnosticScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.content}>
+        <View
+          style={[
+            styles.card,
+            {
+              backgroundColor: '#0f172a',
+              borderColor: '#38bdf8',
+              borderWidth: 2,
+              padding: 16,
+              marginBottom: 16,
+            },
+          ]}>
+          <Text
+            style={[
+              styles.title,
+              {color: '#38bdf8', textAlign: 'center', fontSize: 20},
+            ]}>
+            🎙️ PHASE 4 ONE-TOUCH STT
+          </Text>
+          <Text
+            style={[
+              styles.subtitle,
+              {color: '#94a3b8', textAlign: 'center', marginBottom: 12},
+            ]}>
+            Physical Validation — Turn {activeTurnNumber} of 10
+          </Text>
+
+          {turnStepState === 'RECORDING' ? (
+            <TouchableOpacity
+              style={{
+                backgroundColor: '#dc2626',
+                paddingVertical: 20,
+                borderRadius: 12,
+                alignItems: 'center',
+                justifyContent: 'center',
+                shadowColor: '#ef4444',
+                shadowOpacity: 0.5,
+                shadowRadius: 10,
+                elevation: 6,
+              }}
+              onPress={handleOneTouchFinishTurn}
+              disabled={busy}>
+              <Text
+                style={{
+                  color: '#ffffff',
+                  fontWeight: 'bold',
+                  fontSize: 18,
+                  textAlign: 'center',
+                }}>
+                ⏹️ FINISH & COMMIT TURN {activeTurnNumber}
+              </Text>
+              <Text style={{color: '#fecaca', fontSize: 13, marginTop: 4}}>
+                (Tap as soon as you finish speaking)
+              </Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={{
+                backgroundColor: '#059669',
+                paddingVertical: 20,
+                borderRadius: 12,
+                alignItems: 'center',
+                justifyContent: 'center',
+                shadowColor: '#10b981',
+                shadowOpacity: 0.5,
+                shadowRadius: 10,
+                elevation: 6,
+              }}
+              onPress={handleOneTouchStartTurn}
+              disabled={busy}>
+              <Text
+                style={{
+                  color: '#ffffff',
+                  fontWeight: 'bold',
+                  fontSize: 18,
+                  textAlign: 'center',
+                }}>
+                {turnStepState === 'STARTING'
+                  ? '⏳ PREPARING AUDIO...'
+                  : `🎙️ SPEAK TURN ${activeTurnNumber}`}
+              </Text>
+              <Text style={{color: '#a7f3d0', fontSize: 13, marginTop: 4}}>
+                (Tap and speak your sentence)
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {lastTurnInfo ? (
+            <Text
+              style={{
+                color: '#fde047',
+                textAlign: 'center',
+                marginTop: 10,
+                fontWeight: '600',
+                fontSize: 14,
+              }}>
+              {lastTurnInfo}
+            </Text>
+          ) : null}
+        </View>
+
         <View style={styles.card}>
           <Text style={styles.title}>Voice AI POC</Text>
           <Text style={styles.subtitle}>

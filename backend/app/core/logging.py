@@ -15,6 +15,14 @@ REQUEST_ID_HEADER = "X-Request-ID"
 class JsonFormatter(logging.Formatter):
     """Small JSON formatter for application and request logs."""
 
+    _STANDARD_FIELDS = {
+        "args", "asctime", "created", "exc_info", "exc_text", "filename",
+        "funcName", "levelname", "levelno", "lineno", "module", "msecs",
+        "msg", "name", "pathname", "process", "processName", "relativeCreated",
+        "stack_info", "thread", "threadName", "message", "event", "service",
+        "timestamp", "request_id", "method", "path", "status_code", "duration_ms"
+    }
+
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, object] = {
             "timestamp": datetime.now(UTC).isoformat(),
@@ -30,12 +38,19 @@ class JsonFormatter(logging.Formatter):
             field_value = getattr(record, field_name, None)
             if field_value is not None:
                 payload[field_name] = field_value
+                
+        # Include all custom extra fields
+        for key, val in record.__dict__.items():
+            if key not in self._STANDARD_FIELDS and not key.startswith("_"):
+                payload[key] = val
+                
         if record.exc_info:
             payload["error"] = {
                 "type": record.exc_info[0].__name__ if record.exc_info[0] else "Error",
                 "message": str(record.exc_info[1]),
             }
         return json.dumps(payload, separators=(",", ":"), default=str)
+
 
 
 def configure_logging(level: str) -> None:

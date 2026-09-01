@@ -23,6 +23,7 @@ def create_app(
         configure_logging(app_settings.log_level)
         active_infrastructure = infrastructure or Infrastructure(app_settings)
         active_stt_service = stt_service or STTService(app_settings)
+        await active_stt_service.initialize()
         app.state.settings = app_settings
         app.state.infrastructure = active_infrastructure
         app.state.stt_service = active_stt_service
