@@ -94,6 +94,14 @@ backend/htmlcov/
 # Local STT model weights; never commit model binaries.
 /models/whisper-large-v3-turbo-ct2/
 
+# Local Phase 4 validation/build artifacts; regenerate when needed.
+/.dotnet-phase4-final2/
+/android/.gradle-phase4-validation/
+/backend/.pytest_tmp/
+/backend/physical_uvicorn.*.log
+/scratch/pytest_temp/
+/scratch/phase4_stt_diagnostics/
+
 # Yarn
 .yarn/*
 !.yarn/patches

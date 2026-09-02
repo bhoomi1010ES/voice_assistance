@@ -17,6 +17,8 @@ def test_settings_loads_connection_urls_from_environment(monkeypatch) -> None:
         "postgresql+asyncpg://user:password@db.example:55432/voice_assistance"
     )
     assert settings.redis_url == "redis://cache.example:56379/2"
+    assert settings.stt_engine == "windows"
+    assert settings.stt_windows_language == "en-US"
     assert settings.database_dsn == settings.database_url
     assert settings.redis_dsn == settings.redis_url
     assert settings.stt_model_path == "models/whisper-large-v3-turbo-ct2"
@@ -47,6 +49,24 @@ def test_settings_loads_stt_configuration_from_environment(monkeypatch) -> None:
     assert settings.stt_beam_size == 3
     assert settings.stt_workers == 2
     assert settings.stt_timeout == 12.5
+
+
+def test_settings_loads_windows_stt_configuration_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("STT_ENGINE", "windows")
+    monkeypatch.setenv("STT_WINDOWS_WORKER_PATH", "C:/workers/WindowsSttWorker.exe")
+    monkeypatch.setenv("STT_WINDOWS_LANGUAGE", "en-US")
+    monkeypatch.setenv("STT_START_TIMEOUT_SECONDS", "7")
+    monkeypatch.setenv("STT_FINAL_TIMEOUT_SECONDS", "22")
+    monkeypatch.setenv("STT_WORKER_TIMEOUT_SECONDS", "3")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.stt_engine == "windows"
+    assert settings.stt_windows_worker_path == "C:/workers/WindowsSttWorker.exe"
+    assert settings.stt_windows_language == "en-US"
+    assert settings.stt_start_timeout_seconds == 7
+    assert settings.stt_final_timeout_seconds == 22
+    assert settings.stt_worker_timeout_seconds == 3
 
 
 def test_database_dsn_normalizes_postgresql_scheme_to_asyncpg() -> None:

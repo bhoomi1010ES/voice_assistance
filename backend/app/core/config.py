@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import Field
@@ -24,8 +25,23 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
 
-    # Phase 4 local CPU STT settings. The isolated service consumes these
-    # values and initializes the reusable model lazily.
+    # Phase 4 STT engine settings. Windows Speech is the active default;
+    # Whisper settings remain available only for the explicit legacy adapter.
+    stt_engine: Literal["windows", "whisper"] = "windows"
+    stt_windows_worker_path: str = "backend/windows_stt/publish/WindowsSttWorker.exe"
+    stt_dotnet_path: str | None = None
+    stt_windows_language: str = "en-US"
+    stt_start_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    stt_final_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    stt_worker_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    stt_worker_max_line_bytes: int = Field(default=2 * 1024 * 1024, ge=1024, le=16 * 1024 * 1024)
+    # One-turn physical audio diagnostic. Disabled by default so ordinary
+    # backend sessions never write microphone data to disk.
+    stt_diagnostic_capture_enabled: bool = False
+    stt_diagnostic_capture_dir: str = "scratch/phase4_stt_diagnostics"
+
+    # Legacy local CPU Whisper settings. They are not loaded by the default
+    # Windows engine and can be removed after the migration is accepted.
     stt_model_path: str = "models/whisper-large-v3-turbo-ct2"
     stt_device: str = "cpu"
     stt_compute_type: str = "int8"
@@ -89,6 +105,29 @@ class Settings(BaseSettings):
         """Return the configured STT model path resolved against the project root."""
 
         path = Path(self.stt_model_path).expanduser()
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+    @property
+    def stt_windows_worker_path_resolved(self) -> Path:
+        """Return the configured Windows worker executable path."""
+
+        path = Path(self.stt_windows_worker_path).expanduser()
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+    @property
+    def stt_dotnet_path_resolved(self) -> Path | None:
+        """Return an optional explicitly configured dotnet host path."""
+
+        if not self.stt_dotnet_path:
+            return None
+        path = Path(self.stt_dotnet_path).expanduser()
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+    @property
+    def stt_diagnostic_capture_dir_resolved(self) -> Path:
+        """Return the bounded physical-diagnostic output directory."""
+
+        path = Path(self.stt_diagnostic_capture_dir).expanduser()
         return path if path.is_absolute() else PROJECT_ROOT / path
 
     @property

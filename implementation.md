@@ -2209,36 +2209,66 @@ process memory was not independently measured.
 ## Phase 4 — STT
 
 **Implementation: COMPLETE. Acceptance: IMPLEMENTED — ACCEPTANCE PENDING.**
-The isolated `backend/app/stt/` service loads and reuses the approved local
-Whisper Large-v3-Turbo CTranslate2 model through faster-whisper on CPU `int8`.
+The active `backend/app/stt/` runtime is now the local Windows Speech
+Recognition Engine. `STTService` orchestrates a typed `STTEngine` contract;
+`WindowsSpeechEngine` streams bounded 16 kHz mono signed PCM16 chunks to one
+reusable isolated C# worker using `System.Speech.Recognition`,
+`SpeechRecognitionEngine`, and `DictationGrammar`. The worker discovers an
+installed English recognizer, emits correlated hypothesis/final results over
+newline-framed JSON IPC, and never opens the Windows host microphone.
 The existing `/v1/voice` transport now supports opt-in STT session configuration,
 bounded PCM16 chunk processing, partial/final transcript events, language
 configuration, cancellation, and persisted final-turn metrics. The Android
 transport opts into STT without changing the native PCM/audio pipeline.
 
-Acceptance remains pending because the repository contains no legitimate
-English speech evaluation set with reference transcripts, and the physical run
-did not complete the required ten consecutive English turns. The connected
-RMX5070 did produce two committed microphone turn records, including one
-English-looking transcript and one non-English detected transcript, but no
-spoken reference text was captured and physical partial-event evidence was not
-verified. Actual-model synthetic concurrency and process-memory measurements
-are recorded separately. Phase 4 acceptance is English-only; multilingual
-evaluation is outside this gate. See the latest Phase 4 final acceptance
-report.
+The previous `faster-whisper` + CTranslate2 + Whisper Large-v3-Turbo path is
+preserved as an explicit optional `WhisperEngine` legacy adapter only. It is
+not initialized when `STT_ENGINE=windows`; its dependencies are in the
+optional `backend[whisper]` group rather than mandatory runtime dependencies.
+The active deployment is Windows-only and requires a built worker plus an
+installed compatible English Windows speech package. No cloud STT or remote
+model is used.
+
+Windows runtime validation is now available on this host through the
+project-local .NET 8.0.424 SDK/runtime used for the checks. The worker builds,
+its five focused .NET contract tests pass, and actual recognizer discovery
+found the local `MS-1033-80-DESK` `en-US` recognizer. The historical Whisper
+physical final latency remains approximately 63–66 seconds.
+
+One real local SAPI-generated English WAV was sent through the production
+Python adapter, C# worker, and `SpeechRecognitionEngine`: it produced eight
+non-empty hypotheses and the final text “The weather is pleasant outside
+today”. Measured synthetic results were 812 ms to first partial and 94 ms
+speech-end-to-final. The same runtime harness also verified cancellation with
+no final event, post-cancel reuse, two isolated concurrent turns, controlled
+worker-crash reporting, restart, and post-restart recognition. Resource
+snapshots for the validation Python process and worker are stored in the
+acceptance evidence; they are not a substitute for FastAPI/device resource
+measurements.
+
+Acceptance remains pending because no physical RMX5070 run completed the
+required ten consecutive human-spoken English turns. Therefore physical
+partial/final evidence, ten-turn WER, Android APK installation/launch, and
+device-side CPU/memory measurements are still pending. The Android Gradle
+path also remains blocked before compilation by the React Native
+`com.facebook.react.settings` configuration and missing offline
+`foojay-resolver:1.0.0` cache; this was not changed because the current
+evidence points to environment/dependency resolution rather than a Phase 4
+Android defect. Phase 4 acceptance is English-only; multilingual evaluation
+is outside this gate. See the latest Phase 4 final acceptance report.
 
 ### Steps
 
 - [x] Create isolated STT service.
-- [x] Load Whisper Large-v3-Turbo.
-- [x] Integrate faster-whisper/CTranslate2.
+- [x] Define the `STTEngine` abstraction and engine selection configuration.
+- [x] Implement the isolated Windows `System.Speech.Recognition` worker.
+- [x] Integrate the Python adapter with framed, correlated local IPC.
 - [x] Accept bounded streaming audio buffers.
-- [x] Emit partial text.
-- [x] Emit final text on the existing audio-commit/VAD-end contract.
-- [x] Add language handling.
-- [x] Add cancellation.
-- [x] Add per-turn latency metrics.
-- [ ] Build and run the English clean/noisy ground-truth evaluation set.
+- [x] Emit Windows hypothesis partial text and final text on the existing audio-commit/VAD-end contract.
+- [x] Add explicit installed-recognizer language handling and cancellation.
+- [x] Add per-turn monotonic latency metrics, stale-result protection, and structured lifecycle logging.
+- [x] Build and run one real local en-US synthetic speech validation through the production adapter.
+- [ ] Complete the ten-turn human-spoken clean/noisy ground-truth evaluation set.
 
 ### Gate
 
@@ -2253,6 +2283,11 @@ failure recovery
 ```
 
 Do not approve based only on one clean English microphone test.
+
+The migration implementation and Windows worker/runtime checks are validated,
+but the required Android/device and ten-turn human-spoken English evidence
+remain to be collected. Therefore the current status remains
+`PHASE 4: IMPLEMENTED — ACCEPTANCE PENDING`.
 
 ---
 

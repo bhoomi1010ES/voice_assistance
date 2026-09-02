@@ -2,9 +2,9 @@
 
 This repository contains the React Native Android proof of concept and the
 Phase 1/2 backend foundation with the Phase 3 bounded WebSocket voice gateway.
-Phase 4 now includes an isolated local CPU speech-to-text service integrated
-with the gateway. Its implementation is complete, but acceptance remains
-pending evaluation evidence.
+Phase 4 now includes an isolated Windows Speech Recognition STT worker
+integrated with the gateway. Its implementation is complete, but acceptance
+remains pending Windows integration and physical evaluation evidence.
 
 Current gates:
 
@@ -21,8 +21,8 @@ instrumentation passed, and Android JVM validation completed successfully. The
 Phase 3 backend and physical-device gateway validation passed, including the
 10-turn microphone run, cancellation, heartbeat, reconnect, and credential
 checks. Phase 4 backend/STT tests pass, and actual-model synthetic concurrency
-and process-memory measurements were completed. Physical Android validation
-now confirms the installed CPU/int8 STT path produced committed microphone
+and process-memory measurements were completed. The historical physical run
+confirmed the previous CPU/int8 Whisper path produced committed microphone
 turns, but it did not complete the required ten consecutive English turns;
 physical partial-event evidence and legitimate English WER data remain
 unverified. Phase 4 therefore remains implemented with acceptance pending.
@@ -31,28 +31,35 @@ Phase 1 through Phase 3 do not change the Android microphone, AEC/NS, VAD,
 wake-word model, threshold, cooldown, or native audio pipeline. Phase 3 adds
 an authenticated `/v1/voice` gateway, exact binary PCM framing, bounded
 transport queues, explicit session/turn controls, PostgreSQL metadata, and
-Redis active-session state. Phase 4 adds opt-in local Whisper
-Large-v3-Turbo transcription over that existing 16 kHz mono PCM16 stream,
-with partial/final transcript events, cancellation, and per-turn metrics.
+Redis active-session state. Phase 4 adds opt-in Windows Speech Recognition
+transcription over that existing 16 kHz mono PCM16 stream, with partial/final
+transcript events, cancellation, and per-turn metrics. Python uses a typed
+engine abstraction and a reusable local C# `System.Speech.Recognition` worker
+over newline-framed stdin/stdout IPC. `STT_ENGINE=windows` is the active
+default; the previous Whisper runtime is an optional legacy adapter only.
 Qwen/LLM reasoning, RAG, tools, reminders, Kokoro TTS, audio playback, and
 barge-in remain deferred.
 
-The original local Whisper candidate at
+The original local Whisper candidate and its approximately 63–66 second
+physical final-latency result are historical evidence only. The candidate at
 `C:\\Users\\lenovo\\.lmstudio\\models\\xkeyC\\whisper-large-v3-turbo-gguf\\model_q4_k.gguf`
 is an LM Studio GGUF artifact and is not loaded directly by
 faster-whisper/CTranslate2. The approved CTranslate2 conversion is now
 available locally at
 `models/whisper-large-v3-turbo-ct2/` and loaded successfully on CPU `int8`.
-The model directory is local and Git-ignored. The service reuses one model
-instance and runs inference in bounded worker threads; the configured
-production path is CPU-only and does not require CUDA, LM Studio, or Kokoro.
+The model directory is local and Git-ignored. The historical implementation
+reused one model instance and ran inference in bounded worker threads. The
+active Windows path does not load this model, does not require CUDA, LM
+Studio, cloud speech, or Kokoro, and requires an installed English Windows
+recognizer plus the built worker executable.
 
 ## Repository structure
 
 ```text
 android/                 Existing React Native Android project
 backend/app/             FastAPI application, auth, ownership, and infrastructure clients
-backend/app/stt/         Isolated local CPU Whisper STT service and WER utility
+backend/app/stt/         STT abstraction, Windows adapter, legacy Whisper adapter, and WER utility
+backend/windows_stt/     Isolated System.Speech.Recognition C# worker
 backend/migrations/      Async Alembic environment and schema migrations
 backend/tests/           Backend unit, integration, and isolation tests
 docker/                  Backend image and PostgreSQL initialization
