@@ -3,8 +3,14 @@
 This directory contains the Phase 1 infrastructure foundation, the Phase 2
 authentication/user/device foundation with ownership-scoped memory/task CRUD,
 the bounded Phase 3 WebSocket voice gateway, and the Phase 4 isolated local
-CPU STT service. The Phase 4 implementation uses the approved
-CTranslate2-compatible Whisper Large-v3-Turbo model at
+STT service. The active Phase 4 runtime is the Windows Speech Recognition
+Engine through `System.Speech.Recognition` in a reusable isolated C# worker.
+It receives the existing 16 kHz mono PCM16 stream through newline-framed local
+stdin/stdout IPC and uses `DictationGrammar`; it never listens to the Windows
+host microphone. `STT_ENGINE=windows` is the default and requires an installed
+English recognizer plus a built worker executable. The historical
+CTranslate2-compatible Whisper Large-v3-Turbo model remains available only
+through the optional legacy adapter at
 `models/whisper-large-v3-turbo-ct2/`, `faster-whisper` 1.2.1, and CTranslate2
 4.8.1 with CPU `int8`. The LM Studio GGUF artifact is not loaded by the
 backend or silently substituted. Phase 4 implementation is complete, but the
@@ -16,7 +22,9 @@ Legitimate English ground-truth data is also unavailable, so WER remains
 blocked. Actual-model synthetic 1/2/4-stream and process-memory measurements
 are recorded separately and are not real-speech acceptance evidence. The Phase
 4 acceptance language is English only; multilingual evaluation is outside this
-gate.
+gate. The Windows worker build, synthetic speech run, and ten-turn physical
+English/WER evidence are not yet available in this environment, so acceptance
+remains pending.
 
 Qwen/LLM reasoning, RAG, tools, reminders, Kokoro TTS, playback, barge-in,
 and other Phase 5+ voice application features remain deferred.
@@ -47,6 +55,24 @@ pytest
 ruff check .
 ruff format --check .
 ```
+
+On the Windows deployment host, build and test the local speech worker with:
+
+```powershell
+dotnet build .\windows_stt\WindowsSttWorker.csproj -c Release
+dotnet test .\windows_stt.Tests\WindowsSttWorker.Tests.csproj
+dotnet publish .\windows_stt\WindowsSttWorker.csproj -c Release -r win-x64 --self-contained true -o .\windows_stt\publish
+```
+
+The backend starts the self-contained published worker once at application
+startup when `STT_ENGINE=windows`. The published directory carries its .NET
+runtime, so backend startup does not depend on an interactive `DOTNET_ROOT` or
+the machine `PATH`. `STT_WINDOWS_WORKER_PATH` remains configurable, and
+`STT_DOTNET_PATH` is available only for an explicitly selected framework-
+dependent DLL. The worker streams the existing 16 kHz mono PCM16 audio over
+local stdin/stdout IPC; it uses the installed Windows recognizer and does not
+access the host microphone. The former Whisper implementation is an explicit
+optional `backend[whisper]` adapter only.
 
 The integration tests require running PostgreSQL with pgvector and Redis and
 `RUN_INTEGRATION_TESTS=1`. Unit tests use dependency stubs where appropriate;

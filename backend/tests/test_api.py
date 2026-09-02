@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.main import create_app
+from tests.test_support import NoopSTTService
 
 
 class StubInfrastructure:
@@ -19,7 +20,7 @@ class StubInfrastructure:
 
 
 def test_health_does_not_require_dependencies() -> None:
-    app = create_app(settings=Settings(_env_file=None))
+    app = create_app(settings=Settings(_env_file=None), stt_service=NoopSTTService())
 
     with TestClient(app) as client:
         response = client.get("/health")
@@ -30,7 +31,7 @@ def test_health_does_not_require_dependencies() -> None:
 
 
 def test_ready_reports_missing_connection_urls_without_crashing() -> None:
-    app = create_app(settings=Settings(_env_file=None))
+    app = create_app(settings=Settings(_env_file=None), stt_service=NoopSTTService())
 
     with TestClient(app) as client:
         response = client.get("/ready")
@@ -54,7 +55,9 @@ def test_ready_returns_200_when_dependencies_are_healthy() -> None:
         },
     }
     app = create_app(
-        settings=Settings(_env_file=None), infrastructure=StubInfrastructure(readiness)
+        settings=Settings(_env_file=None),
+        infrastructure=StubInfrastructure(readiness),
+        stt_service=NoopSTTService(),
     )
 
     with TestClient(app) as client:
@@ -73,7 +76,9 @@ def test_ready_returns_503_with_dependency_details_when_unavailable() -> None:
         },
     }
     app = create_app(
-        settings=Settings(_env_file=None), infrastructure=StubInfrastructure(readiness)
+        settings=Settings(_env_file=None),
+        infrastructure=StubInfrastructure(readiness),
+        stt_service=NoopSTTService(),
     )
 
     with TestClient(app) as client:
@@ -92,7 +97,9 @@ def test_ready_returns_503_when_redis_is_unavailable() -> None:
         },
     }
     app = create_app(
-        settings=Settings(_env_file=None), infrastructure=StubInfrastructure(readiness)
+        settings=Settings(_env_file=None),
+        infrastructure=StubInfrastructure(readiness),
+        stt_service=NoopSTTService(),
     )
 
     with TestClient(app) as client:

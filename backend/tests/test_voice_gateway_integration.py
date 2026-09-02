@@ -17,6 +17,7 @@ from app.main import create_app
 from app.models import ConversationTurn, User, VoiceSession
 from app.services.voice_registry import VoiceRegistry, VoiceRegistryOwner
 from app.websocket.binary import encode_pcm_frame
+from tests.test_support import NoopSTTService
 
 pytestmark = pytest.mark.integration
 
@@ -53,7 +54,7 @@ def voice_client():
         refresh_token_expire_days=1,
     )
     emails: set[str] = set()
-    with TestClient(create_app(settings=settings)) as client:
+    with TestClient(create_app(settings=settings, stt_service=NoopSTTService())) as client:
         readiness = client.get("/ready")
         if readiness.status_code != 200:
             pytest.skip(f"Infrastructure unavailable: {readiness.json()}")

@@ -375,3 +375,134 @@ Waiting for speech...
 [2026-09-01 12:30:09.887] STT finalization requested (partial_task_running=True)
 [2026-09-01 12:30:09.892] STT inference submitted: kind=final, audio_duration=8700ms
 [2026-09-01 12:30:09.901] STT inference started: kind=final at 1788291009810
+
+
+
+19:04:28 AUTH /register       409 already exists
+19:04:28 AUTH /login          200
+19:04:28 WebSocket accepted   /v1/voice
+19:04:28 connection.opened
+19:04:29 session.started      stt_enabled=true
+19:04:30 turn.started         turn_number=1
+19:04:30 STT_TURN_STARTED     Windows Speech
+19:04:30 PCM accepted         sequence=0 frames=1 bytes=640
+19:04:30 STT_AUDIO_RECEIVED
+
+Partials:
+01: the
+02: ooh
+03: soon
+04: newman was
+05: soon would have
+06: soon would have had
+07: soon would have
+08: van wagoner
+09: soon would have had a loss how
+10: van wagoner was highly
+11: soon with the anaheim new
+12: van wagoner was how I knew how I
+13: soon with the anaheim new hours than
+14: soon with the anaheim new hours ended
+15: soon with the anaheim new hours ended any
+16: soon with the anaheim new hours ended an E.
+
+19:04:36 audio.commit.received
+           frames=308
+           bytes=197120
+           last_sequence=307
+
+19:04:36 STT_COMMIT_RECEIVED
+           audio_duration=6160 ms
+           speech_end_monotonic=75941031
+
+19:04:36 STT_FINAL
+           transcript="Soon with the Anaheim new hours ended an E"
+           first_partial_latency=110 ms
+           speech_end_to_final=62 ms
+           language=en-US
+
+19:04:37 final transcript delivered
+19:04:37 STT_TURN_CLOSED
+
+19:06:30 turn.started
+           turn_number=2
+           turn_id=1b9d706f-77b0-4c36-97b8-e1b6365f686e
+
+19:06:30 STT_TURN_STARTED
+19:06:30 PCM accepted
+           frames=309
+           bytes=197760
+
+19:06:30 STT_AUDIO_RECEIVED
+           audio_start_monotonic=76055015
+
+Partials:
+01: the
+02: and
+03: nis
+04: nissen
+05: nissen who
+06: nissen one NFC east
+07: nissen one NFC east and
+08: nissen one NFC east and the
+09: nissen one NFC east has entered
+10: nissen one NFC east has entered the
+
+19:06:34 audio.commit.received
+           frames=248
+           bytes=158720
+           last_sequence=247
+
+19:06:34 STT_FINAL
+           transcript="Nissen one NFC east has entered the"
+           language=en-US
+           first_partial_latency=1375 ms
+           speech_end_to_final=156 ms
+           audio_duration=4960 ms
+
+19:06:36 final transcript delivered
+19:06:36 STT_TURN_CLOSED
+
+
+19:08:23 turn.started
+           turn_number=3
+           turn_id=ec40c41b-5e31-4772-a28e-c24c85f3ae2e
+
+19:08:23 STT_TURN_STARTED
+19:08:23 PCM received
+           frames=452
+           bytes=289280
+           audio_duration=9040 ms
+
+Partials:
+01: and
+02: and when
+03: and when it's
+04: and what has
+05: and when it's who have
+06: and what you have to have her
+07: and when it's who have high
+08: and when it's who have high on
+09: and when it's who have high and
+10: and when it's who have high on one's
+11: and when it's who have high on what you think
+12: and when it's who have high on what you think
+13: and when it's who have high on what you think this
+14: and when it's who have high on one shift as he
+15: and when it's who have high on one shift as his
+16: and when it's who have high on what you think us who have
+17: and when it's who have high on what you think us who have played a
+18: and when it's who have high on one shift as he says it has
+
+19:08:31 audio.commit.received
+           frames=452
+           bytes=289280
+           last_sequence=451
+
+19:08:31 STT_FINAL
+           first_partial_latency=125 ms
+           speech_end_to_final=109 ms
+           language=en-US
+
+19:08:33 final transcript delivered
+19:08:33 STT_TURN_CLOSED

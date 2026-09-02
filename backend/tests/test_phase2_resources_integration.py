@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.config import Settings
 from app.main import create_app
 from app.models import AuditLog, User, VoiceSession
+from tests.test_support import NoopSTTService
 
 pytestmark = pytest.mark.integration
 
@@ -70,7 +71,7 @@ def resource_client():
         refresh_token_expire_days=1,
     )
     emails: set[str] = set()
-    with TestClient(create_app(settings=settings)) as client:
+    with TestClient(create_app(settings=settings, stt_service=NoopSTTService())) as client:
         readiness = client.get("/ready")
         if readiness.status_code != 200:
             pytest.skip(f"Infrastructure unavailable: {readiness.json()}")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -28,9 +29,8 @@ from app.services.voice_registry import (
     VoiceRegistryOwner,
     VoiceSessionConflict,
 )
+from app.stt.base import STTCancelledError, STTError
 from app.stt.service import (
-    STTCancelledError,
-    STTError,
     STTService,
     STTTranscriptEvent,
     STTTranscriptResult,
@@ -141,8 +141,17 @@ class VoiceGateway:
         self._close_reason: str | None = None
         self._session_status = "disconnected"
         self._finalized = False
+        self._connection_close_logged = False
 
     async def run(self) -> None:
+        LOGGER.info(
+            "Voice WebSocket connection opened",
+            extra={
+                "event": "voice.connection.opened",
+                "backend_pid": os.getpid(),
+                "monotonic_ms": round(time.monotonic() * 1000, 1),
+            },
+        )
         self._processor_task = asyncio.create_task(self._process_loop())
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
         receive_task = asyncio.create_task(self._receive_loop())
@@ -179,12 +188,14 @@ class VoiceGateway:
             except WebSocketDisconnect as disconnect:
                 self._close_code = disconnect.code
                 self._close_reason = "client_disconnect"
+                self._log_connection_closed()
                 return
 
             message_type = message.get("type")
             if message_type == "websocket.disconnect":
                 self._close_code = message.get("code")
                 self._close_reason = "client_disconnect"
+                self._log_connection_closed()
                 return
 
             if message_type == "websocket.receive" and message.get("bytes") is not None:
@@ -351,6 +362,8 @@ class VoiceGateway:
                 "stt_language": self._stt_language or self.settings.stt_language,
                 "reconnect": self.stats.reconnect,
                 "timestamp_ms": int(time.time() * 1000),
+                "monotonic_ms": round(time.monotonic() * 1000, 1),
+                "backend_pid": os.getpid(),
             },
         )
         self._session_started = time.monotonic()
@@ -406,6 +419,7 @@ class VoiceGateway:
                 "response_id": str(response_id),
                 "turn_number": turn.turn_number,
                 "timestamp_ms": int(time.time() * 1000),
+                "monotonic_ms": round(self._turn_started * 1000, 1),
             },
         )
         if self._stt_enabled:
@@ -457,6 +471,7 @@ class VoiceGateway:
                     "bytes_received": self.stats.bytes_received,
                     "queue_depth": self.queue.qsize(),
                     "timestamp_ms": int(time.time() * 1000),
+                    "monotonic_ms": round(time.monotonic() * 1000, 1),
                 },
             )
         if self.stt_turn is not None:
@@ -571,6 +586,7 @@ class VoiceGateway:
                         "language": stt_result.event.language,
                         "timestamp_ms": int(time.time() * 1000),
                         "transcript_timestamp_ms": stt_result.event.timestamp_ms,
+                        "monotonic_ms": round(time.monotonic() * 1000, 1),
                         "metrics": stt_result.metrics,
                     },
                 )
@@ -889,6 +905,22 @@ class VoiceGateway:
             )
         )
 
+    def _log_connection_closed(self) -> None:
+        if self._connection_close_logged:
+            return
+        self._connection_close_logged = True
+        LOGGER.info(
+            "Voice WebSocket connection closed",
+            extra={
+                "event": "voice.connection.closed",
+                "session_id": str(self.voice_session.id) if self.voice_session else None,
+                "close_code": self._close_code,
+                "close_reason": self._close_reason or "connection_closed",
+                "backend_pid": os.getpid(),
+                "monotonic_ms": round(time.monotonic() * 1000, 1),
+            },
+        )
+
     async def _send(self, event: dict[str, Any]) -> None:
         if self._closing.is_set() and event.get("type") not in {
             "server.error",
@@ -906,6 +938,7 @@ class VoiceGateway:
             return
         self._finalized = True
         self._closing.set()
+        self._log_connection_closed()
         current = asyncio.current_task()
         for task in (self._processor_task, self._watchdog_task, self._receive_task):
             if task is not None and task is not current and not task.done():
