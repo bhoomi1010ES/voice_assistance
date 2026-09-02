@@ -42,7 +42,7 @@ MANDATORY_TURN_FIELDS = (
     "pcm_frames",
     "websocket_session_id",
     "stt_engine",
-    "recognizer_id",
+    "stt_provider",
     "language",
     "per_turn_wer",
     "error",
@@ -101,9 +101,9 @@ def calculate_turn_wer(turn: dict[str, Any]) -> dict[str, Any] | None:
 def validate_turn_evidence(
     turn: dict[str, Any],
     *,
-    expected_engine: str = "windows",
-    expected_recognizer: str = "MS-1033-80-DESK",
-    expected_language: str = "en-US",
+    expected_engine: str = "remote",
+    expected_provider: str | None = None,
+    expected_language: str = "en",
 ) -> list[str]:
     """Return every missing or invalid mandatory evidence item for a turn."""
 
@@ -126,8 +126,12 @@ def validate_turn_evidence(
             errors.append("reference_normalized does not match the fixed reference")
     if turn.get("stt_engine") != expected_engine:
         errors.append(f"wrong STT engine: {turn.get('stt_engine')!r}")
-    if turn.get("recognizer_id") != expected_recognizer:
-        errors.append(f"wrong recognizer: {turn.get('recognizer_id')!r}")
+    if expected_engine == "windows":
+        errors.append("Windows Speech Recognition is no longer a Phase 4 engine")
+    if not is_present(turn.get("stt_provider")):
+        errors.append("missing remote STT provider")
+    elif expected_provider and turn.get("stt_provider") != expected_provider:
+        errors.append(f"wrong STT provider: {turn.get('stt_provider')!r}")
     if turn.get("language", "").casefold() != expected_language.casefold():
         errors.append(f"wrong language: {turn.get('language')!r}")
 
@@ -235,11 +239,19 @@ def evaluate_acceptance_gates(
     *,
     required_turns: int,
     evidence: dict[str, Any],
+    expected_engine: str = "remote",
+    expected_provider: str | None = None,
+    expected_language: str = "en",
 ) -> dict[str, Any]:
     """Evaluate the non-bypassable Phase 4 acceptance predicate."""
 
     turn_errors = {
-        str(turn.get("turn_number", turn.get("turn"))): validate_turn_evidence(turn)
+        str(turn.get("turn_number", turn.get("turn"))): validate_turn_evidence(
+            turn,
+            expected_engine=expected_engine,
+            expected_provider=expected_provider,
+            expected_language=expected_language,
+        )
         for turn in turns
     }
     all_turns_valid = bool(turns) and all(not errors for errors in turn_errors.values())
@@ -252,9 +264,11 @@ def evaluate_acceptance_gates(
     ]
     partial_count = sum(int(turn.get("partial_count", 0)) for turn in turns)
     turns_with_partials = sum(1 for turn in turns if int(turn.get("partial_count", 0)) > 0)
-    resources_ok = bool(evidence.get("backend_resource_samples")) and bool(
-        evidence.get("worker_resource_samples")
-    )
+    resources_ok = bool(evidence.get("backend_resource_samples"))
+    if expected_engine == "remote":
+        resources_ok = resources_ok and bool(evidence.get("remote_request_samples"))
+    else:
+        resources_ok = resources_ok and bool(evidence.get("worker_resource_samples"))
     reconnect = evidence.get("reconnect") or {}
     reconnect_ok = bool(
         reconnect.get("disconnect_observed")
@@ -284,12 +298,18 @@ def evaluate_acceptance_gates(
         "physical_device_visible": bool(evidence.get("android_device")),
         "apk_install_launch": bool(evidence.get("apk_install_launch")),
         "websocket_physical_path": bool(evidence.get("websocket_physical_path")),
-        "windows_worker_deployment": bool(evidence.get("windows_worker_deployment")),
+        "remote_stt_deployment": expected_engine == "remote"
+        and bool(evidence.get("remote_stt_deployment")),
         "automated_validation": bool(evidence.get("automated_validation_passed")),
-        "windows_stt_only": all(
-            turn.get("stt_engine") == "windows"
-            and turn.get("recognizer_id") == "MS-1033-80-DESK"
-            and turn.get("language", "").casefold() == "en-us"
+        "remote_stt_only": expected_engine == "remote"
+        and all(
+            turn.get("stt_engine") == "remote"
+            and is_present(turn.get("stt_provider"))
+            and (
+                expected_provider is None
+                or turn.get("stt_provider") == expected_provider
+            )
+            and turn.get("language", "").casefold() == expected_language.casefold()
             for turn in turns
         ),
         "no_turn_failures": len(turns) == required_turns

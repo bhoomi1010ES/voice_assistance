@@ -1,508 +1,199 @@
-=================== RECORDED TURN 1 / 10 ===================
-------------------------------------------------------------
-TURN 1 RESULTS
-------------------------------------------------------------
-
-Final transcript:
-"Hello, what is your name? Hi, my name is Emily. Hello, what is your name? Hi, my name is Emily."
-
-Speech start:            18:06:21.952
-Speech end:              18:06:27.802
-First partial:           18:06:25.699 (3747 ms)
-Commit:                  18:06:35.330
-Final transcript:        18:07:56.623
-Final received:          18:07:56.630
-
-Speech duration:         5850 ms
-First partial latency:   3747 ms
-Speech -> final:         88821 ms
-Commit -> final:         81293 ms
-Turn processing:         92879 ms
-
-PCM frames:              580
-PCM bytes:               371200
-Response ID:             83f6d4e6-c00d-4aa9-9d05-e3de3d544e08
-Final count:             1
-
-Status: PASS
-
-=================== RECORDED TURN 2 / 10 ===================
-------------------------------------------------------------
-TURN 2 RESULTS
-------------------------------------------------------------
-
-Final transcript:
-"Yes I understand. Do you understand? Yes I understand."
-
-Speech start:            18:14:14.828
-Speech end:              18:14:16.119
-First partial:           N/A
-Commit:                  18:14:19.661
-Final transcript:        18:15:38.967
-Final received:          18:15:40.746
-
-Speech duration:         1291 ms
-First partial latency:   N/A ms
-Speech -> final:         82848 ms
-Commit -> final:         79306 ms
-Turn processing:         87318 ms
-
-PCM frames:              400
-PCM bytes:               256000
-Response ID:             26884a55-a4b9-4301-b054-83d48ae46efa
-Final count:             1
-
-Status: PASS
-
-=================== RECORDED TURN 3 / 10 ===================
-------------------------------------------------------------
-TURN 3 RESULTS
-------------------------------------------------------------
-
-Final transcript:
-"you do for work i'm a teacher what do you do for work i'm a teacher"
-
-Speech start:            18:16:50.196
-Speech end:              18:16:50.914
-First partial:           N/A
-Commit:                  18:16:55.307
-Final transcript:        18:18:20.257
-Final received:          18:18:22.025
-
-Speech duration:         718 ms
-First partial latency:   N/A ms
-Speech -> final:         89343 ms
-Commit -> final:         84950 ms
-Turn processing:         93984 ms
-
-PCM frames:              449
-PCM bytes:               287360
-Response ID:             e4238f9b-7c39-418d-9c29-c32600a3b39e
-Final count:             1
-
-Status: PASS
-
-=================== RECORDED TURN 4 / 10 ===================
-------------------------------------------------------------
-TURN 4 RESULTS
-------------------------------------------------------------
-
-Final transcript:
-"Do you have any siblings? Yes, I have a brother. Do you have any siblings?"
-
-Speech start:            18:18:23.071
-Speech end:              18:18:21.387
-First partial:           N/A
-Commit:                  18:18:57.473
-Final transcript:        18:20:16.465
-Final received:          18:20:18.299
-
-Speech duration:         0 ms
-First partial latency:   N/A ms
-Speech -> final:         115078 ms
-Commit -> final:         78992 ms
-Turn processing:         85895 ms
-
-PCM frames:              348
-PCM bytes:               222720
-Response ID:             4b4eb1a2-2e44-4fbd-af04-8f23dd034afb
-Final count:             1
-
-Status: PASS
-
-=================== RECORDED TURN 5 / 10 ===================
-------------------------------------------------------------
-TURN 5 RESULTS
-------------------------------------------------------------
-
-Final transcript:
-"From? I am from Mumbai. Where are you from? I am from Mumbai."
-
-Speech start:            18:21:08.352
-Speech end:              18:20:44.860
-First partial:           N/A
-Commit:                  18:20:44.860
-Final transcript:        18:21:57.402
-Final received:          18:22:00.152
-
-Speech duration:         0 ms
-First partial latency:   N/A ms
-Speech -> final:         72542 ms
-Commit -> final:         72542 ms
-Turn processing:         80635 ms
-
-PCM frames:              404
-PCM bytes:               258560
-Response ID:             12157a20-74fa-43f4-87cc-7bc3eabadf3f
-Final count:             1
-
-Status: PASS
-
-=================== RECORDED TURN 6 / 10 ===================
-------------------------------------------------------------
-TURN 6 RESULTS
-------------------------------------------------------------
-
-Final transcript:
-"How old are you? I am 20 years old. How old are you? I am 20 years old."
-
-Speech duration:         9760 ms
-PCM frames:              488
-PCM bytes:               312320
-Final transcript:        18:28:03.833
-Final received:          18:28:05.642
-Response ID:             03a1867b-5d22-45ed-801d-30c60ad99411
-Final count:             1
-
-Status: PASS
-
-=================== RECORDED TURN 7 / 10 ===================
-------------------------------------------------------------
-TURN 7 RESULTS
-------------------------------------------------------------
-
-Final transcript:
-"Are you married? No, I am not married. Are you married?"
-
-Speech start:            18:28:14.072
-Speech end:              18:28:15.110
-First partial:           N/A
-Commit:                  18:28:41.029
-Final transcript:        18:29:52.301
-Final received:          18:29:54.118
-
-Speech duration:         1038 ms
-First partial latency:   N/A ms
-Speech -> final:         97191 ms
-Commit -> final:         71272 ms
-Turn processing:         78129 ms
-
-PCM frames:              344
-PCM bytes:               220160
-Response ID:             f9f4e15d-f2e4-4915-b9cb-b74a5b907c0d
-Final count:             1
-
-Status: PASS
-
-=================== RECORDED TURN 8 / 10 ===================
-------------------------------------------------------------
-TURN 8 RESULTS
-------------------------------------------------------------
-
-Final transcript:
-"What day is it today? It's Monday What day is it today?"
-
-Speech start:            18:29:54.301
-Speech end:              18:29:54.859
-First partial:           N/A
-Commit:                  18:30:31.996
-Final transcript:        18:31:49.083
-Final received:          18:29:54.119
-
-Speech duration:         558 ms
-First partial latency:   N/A ms
-Speech -> final:         114224 ms
-Commit -> final:         77087 ms
-Turn processing:         84106 ms
-
-PCM frames:              348
-PCM bytes:               222720
-Response ID:             c4989439-21c3-47bd-a7e4-482c10bcfc1b
-Final count:             1
-
-Status: PASS
-
-=================== RECORDED TURN 9 / 10 ===================
-------------------------------------------------------------
-TURN 9 RESULTS
-------------------------------------------------------------
-
-Final transcript:
-"Can you help me? Of course. What do you need?"
-
-Speech start:            18:31:50.867
-Speech end:              18:31:52.309
-First partial:           N/A
-Commit:                  18:32:18.717
-Final transcript:        18:33:41.627
-Final received:          18:31:50.925
-
-Speech duration:         1442 ms
-First partial latency:   N/A ms
-Speech -> final:         109318 ms
-Commit -> final:         82910 ms
-Turn processing:         88591 ms
-
-PCM frames:              284
-PCM bytes:               181760
-Response ID:             f326271c-3868-41a0-a647-2229112294de
-Final count:             1
-
-Status: PASS
-
-=================== RECORDED TURN 10 / 10 ===================
-------------------------------------------------------------
-TURN 10 RESULTS
-------------------------------------------------------------
-
-Final transcript:
-"What are your hobbies? I like to cook. What are your hobbies?"
-
-Speech start:            18:34:15.189
-Speech end:              18:34:15.742
-First partial:           N/A
-Commit:                  18:34:44.170
-Final transcript:        18:36:02.768
-Final received:          18:33:43.424
-
-Speech duration:         553 ms
-First partial latency:   N/A ms
-Speech -> final:         107026 ms
-Commit -> final:         78598 ms
-Turn processing:         86161 ms
-
-PCM frames:              376
-PCM bytes:               240640
-Response ID:             b4d15c10-1dfd-47d8-80f1-5178e5612d63
-Final count:             1
-
-Status: PASS
-
-============================================================
-PHASE 4 — 10 TURN PHYSICAL ACCEPTANCE TEST COMPLETE
-============================================================
-
-Valid turns:             10 / 10 (100% PASS)
-Partial events:          1 / 10
-Final events:            10 / 10
-Duplicate finals:        0
-Stale responses:         0
-
-Average speech -> final: 97376.8 ms
-P50 speech -> final:     97191.0 ms
-P95 speech -> final:     115078.0 ms
-
-Average commit -> final: 78550.0 ms
-P50 commit -> final:     78992.0 ms
-P95 commit -> final:     84950.0 ms
-
-
-
-Waiting for speech...
-[2026-09-01 12:24:32.259] Speech detected (wallMs=1788290672315)
-[2026-09-01 12:24:36.107] [VAD END] Speech stopped (wallMs=1788290676168)
-[2026-09-01 12:27:31.334] 
-Turn rejected - insufficient audio or timeout.
-Retrying Turn 1...
-[2026-09-01 12:27:32.337] 
-************************************************************
-*                                                          *
-*                 TURN 1 / 10 — READY                    *
-*                                                          *
-*               SPEAK YOUR SENTENCE NOW                    *
-*                                                          *
-************************************************************
-
-READY — Speak your English sentence now.
-
-[Microphone is active]
-
-Waiting for speech...
-[2026-09-01 12:27:37.450] Speech detected (wallMs=1788290857508)
-[2026-09-01 12:27:41.062] [VAD END] Speech stopped (wallMs=1788290861117)
-[2026-09-01 12:28:44.018] Client turn start sent (wallMs=1788290924089)
-[2026-09-01 12:28:44.745] Backend started turn: turn_id=0d04bd1b-c236-4e3a-8371-062feb8007d9, response_id=d207f3ea-c061-4791-995e-284bdb62e22a
-[2026-09-01 12:28:45.601] STT inference submitted: kind=partial, audio_duration=1500ms
-[2026-09-01 12:28:45.601] STT inference started: kind=partial at 1788290925566
-[2026-09-01 12:28:51.948] Client audio commit sent (wallMs=1788290932006)
-[2026-09-01 12:28:52.025] Backend received audio commit: 396 frames, 253440 bytes
-[2026-09-01 12:28:52.038] STT finalization requested (partial_task_running=True)
-[2026-09-01 12:28:52.039] STT inference submitted: kind=final, audio_duration=7920ms      
-[2026-09-01 12:28:52.041] STT inference started: kind=final at 1788290931971
-[2026-09-01 12:29:54.702] STT inference completed: kind=final, dur=62690.7ms, text='Pizza. How was your weekend? It was relaxing.'
-[2026-09-01 12:29:54.702] Final transcript: "Pizza. How was your weekend? It was relaxing."
-[2026-09-01 12:29:54.702]
-------------------------------------------------------------
-TURN 1 RESULTS
-------------------------------------------------------------
-
-Final transcript:
-"Pizza. How was your weekend? It was relaxing."
-
-Speech start:            19:27:37.508
-Speech end:              19:28:51.970
-First partial:           N/A
-Commit:                  19:28:52.006
-Final transcript:        19:29:54.663
-Final received:          N/A
-
-Speech duration:         74462 ms
-First partial latency:   N/A ms
-Speech -> final:          62703.0 ms
-Commit -> final:          62703.0 ms
-Turn processing:         -371153348.0 ms
-
-PCM frames:              396
-PCM bytes:               253440
-Response ID:             d207f3ea-c061-4791-995e-284bdb62e22a
-Final count:             1
-
-Status: PASS
-
-[2026-09-01 12:29:55.715] 
-************************************************************
-*                                                          *
-*                 TURN 2 / 10 — READY                    *
-*                                                          *
-*               SPEAK YOUR SENTENCE NOW                    *
-*                                                          *
-************************************************************
-
-READY — Speak your English sentence now.
-
-[Microphone is active]
-
-Waiting for speech...
-[2026-09-01 12:29:56.496] Android received transcript.final (wallMs=1788290996555)
-[2026-09-01 12:29:56.509] Android received server.turn.completed (wallMs=1788290996564)
-[2026-09-01 12:30:01.102] Client turn start sent (wallMs=1788291001160)
-[2026-09-01 12:30:01.819] Backend started turn: turn_id=8f747161-2cca-4c89-a80d-f3176f025dab, response_id=30cadb70-2dc4-4beb-bbd8-cb1715c4ee33
-[2026-09-01 12:30:02.624] STT inference submitted: kind=partial, audio_duration=1500ms
-[2026-09-01 12:30:02.624] STT inference started: kind=partial at 1788291002609
-[2026-09-01 12:30:03.851] [VAD END] Speech stopped (wallMs=1788291003908)
-[2026-09-01 12:30:09.775] Client audio commit sent (wallMs=1788291009834)
-[2026-09-01 12:30:09.872] Backend received audio commit: 435 frames, 278400 bytes
-[2026-09-01 12:30:09.887] STT finalization requested (partial_task_running=True)
-[2026-09-01 12:30:09.892] STT inference submitted: kind=final, audio_duration=8700ms
-[2026-09-01 12:30:09.901] STT inference started: kind=final at 1788291009810
-
-
-
-19:04:28 AUTH /register       409 already exists
-19:04:28 AUTH /login          200
-19:04:28 WebSocket accepted   /v1/voice
-19:04:28 connection.opened
-19:04:29 session.started      stt_enabled=true
-19:04:30 turn.started         turn_number=1
-19:04:30 STT_TURN_STARTED     Windows Speech
-19:04:30 PCM accepted         sequence=0 frames=1 bytes=640
-19:04:30 STT_AUDIO_RECEIVED
-
-Partials:
-01: the
-02: ooh
-03: soon
-04: newman was
-05: soon would have
-06: soon would have had
-07: soon would have
-08: van wagoner
-09: soon would have had a loss how
-10: van wagoner was highly
-11: soon with the anaheim new
-12: van wagoner was how I knew how I
-13: soon with the anaheim new hours than
-14: soon with the anaheim new hours ended
-15: soon with the anaheim new hours ended any
-16: soon with the anaheim new hours ended an E.
-
-19:04:36 audio.commit.received
-           frames=308
-           bytes=197120
-           last_sequence=307
-
-19:04:36 STT_COMMIT_RECEIVED
-           audio_duration=6160 ms
-           speech_end_monotonic=75941031
-
-19:04:36 STT_FINAL
-           transcript="Soon with the Anaheim new hours ended an E"
-           first_partial_latency=110 ms
-           speech_end_to_final=62 ms
-           language=en-US
-
-19:04:37 final transcript delivered
-19:04:37 STT_TURN_CLOSED
-
-19:06:30 turn.started
-           turn_number=2
-           turn_id=1b9d706f-77b0-4c36-97b8-e1b6365f686e
-
-19:06:30 STT_TURN_STARTED
-19:06:30 PCM accepted
-           frames=309
-           bytes=197760
-
-19:06:30 STT_AUDIO_RECEIVED
-           audio_start_monotonic=76055015
-
-Partials:
-01: the
-02: and
-03: nis
-04: nissen
-05: nissen who
-06: nissen one NFC east
-07: nissen one NFC east and
-08: nissen one NFC east and the
-09: nissen one NFC east has entered
-10: nissen one NFC east has entered the
-
-19:06:34 audio.commit.received
-           frames=248
-           bytes=158720
-           last_sequence=247
-
-19:06:34 STT_FINAL
-           transcript="Nissen one NFC east has entered the"
-           language=en-US
-           first_partial_latency=1375 ms
-           speech_end_to_final=156 ms
-           audio_duration=4960 ms
-
-19:06:36 final transcript delivered
-19:06:36 STT_TURN_CLOSED
-
-
-19:08:23 turn.started
-           turn_number=3
-           turn_id=ec40c41b-5e31-4772-a28e-c24c85f3ae2e
-
-19:08:23 STT_TURN_STARTED
-19:08:23 PCM received
-           frames=452
-           bytes=289280
-           audio_duration=9040 ms
-
-Partials:
-01: and
-02: and when
-03: and when it's
-04: and what has
-05: and when it's who have
-06: and what you have to have her
-07: and when it's who have high
-08: and when it's who have high on
-09: and when it's who have high and
-10: and when it's who have high on one's
-11: and when it's who have high on what you think
-12: and when it's who have high on what you think
-13: and when it's who have high on what you think this
-14: and when it's who have high on one shift as he
-15: and when it's who have high on one shift as his
-16: and when it's who have high on what you think us who have
-17: and when it's who have high on what you think us who have played a
-18: and when it's who have high on one shift as he says it has
-
-19:08:31 audio.commit.received
-           frames=452
-           bytes=289280
-           last_sequence=451
-
-19:08:31 STT_FINAL
-           first_partial_latency=125 ms
-           speech_end_to_final=109 ms
-           language=en-US
-
-19:08:33 final transcript delivered
-19:08:33 STT_TURN_CLOSED
+Turn 1
+session: 7f090cfd-...
+frames: 360
+bytes: 230400
+remote HTTP: 200
+remote request: 2303.9 ms
+speech-end → final: 2312.0 ms
+transcript: "The quick brown fox jumps over the lazy dog."
+
+Turn 2
+session: same session
+frames: 348
+bytes: 222720
+remote HTTP: 200
+remote request: 1558.7 ms
+speech-end → final: 1578.0 ms
+transcript: "The quick brown fox jumps over the daisy dog."
+
+
+Turn 1 completed successfully.
+Server transcript:
+“Hello, what is your name? How can you help me?”
+
+Log:
+- Session: 76f545fd-73c2-4090-b0f4-5a599d71a07a
+- Turn: 1
+- Audio: 308 frames, 197120 bytes, 6160 ms
+- Remote HTTP: 200
+- Remote request: 2032.6 ms
+- Speech-end → final: 2031 ms
+- Final delivered: PASS
+- STT engine: Remote transcription API
+The live monitor remains active. After each subsequent audio commit, I’ll print that turn’s server transcript and relevant log details.
+
+
+Turn 2 completed.
+Server transcript:
+“Do you play any musical instruments? Yes, I play the guitar. Do you play any musical instruments? Yes.”
+
+Log:
+- Session: 76f545fd-73c2-4090-b0f4-5a599d71a07a
+- Turn: 2
+- Audio: 500 frames, 320000 bytes, 10000 ms
+- Remote HTTP: 200
+- Remote request: 2116.5 ms
+- Speech-end → final: 2125 ms
+- Final delivered: PASS
+- STT engine: Remote transcription API
+The monitor remains active and will report each next turn after you commit the audio.
+
+Turn 3 completed.
+Server transcript:
+“What’s your dream vacation? I’d love to visit the Maldives. What’s your dream vacation? I’d love to visit the Maldives. Did you enjoy the concert? Yes, it was amazing.”
+
+Log:
+- Session: 76f545fd-73c2-4090-b0f4-5a599d71a07a
+- Turn: 3
+- Audio: 820 frames, 524800 bytes, 16400 ms
+- Remote HTTP: 200
+- Remote request: 2347.3 ms
+- Speech-end → final: 2360 ms
+- Final delivered: PASS
+- STT engine: Remote transcription API
+The monitor remains active for the next committed turn.
+
+
+Turn 4 completed.
+
+Server transcript:
+
+> “How’s your family doing? They’re doing well, thank you. How’s your family doing? They’re doing well, thank you.”
+
+Log:
+
+- Session: `76f545fd-73c2-4090-b0f4-5a599d71a07a`
+- Turn: `4`
+- Audio: `468 frames`, `299520 bytes`, `9360 ms`
+- Remote HTTP: `200`
+- Remote request: `1924 ms`
+- Speech-end → final: `1937 ms`
+- Final delivered: `PASS`
+- Partials: none — remote API is final-only
+- STT engine: Remote transcription API
+
+Monitoring continues for Turn 5 and later commits.
+
+Turn 5 completed.
+Server transcript:
+“Do you exercise regularly? Yes, I go to the gym. Do you exercise regularly? Yes, I go to the gym. What’s your favorite movie genre?”
+
+Log:
+- Session: 76f545fd-73c2-4090-b0f4-5a599d71a07a
+- Turn: 5
+- Audio: 692 frames, 442880 bytes, 13840 ms
+- Remote HTTP: 200
+- Remote request: 2203.4 ms
+- Speech-end → final: 2203 ms
+- Final delivered: PASS
+- Partials: none — remote API is final-only
+- STT engine: Remote transcription API
+Monitoring continues for the next committed turn.
+
+Turn 6 completed.
+
+Server transcript:
+
+> “I like comedies. How do you relax? I watch TV or read. How do you…”
+
+Log:
+
+- Session: `76f545fd-73c2-4090-b0f4-5a599d71a07a`
+- Turn: `6`
+- Audio: `632 frames`, `404480 bytes`, `12640 ms`
+- Remote HTTP: `200`
+- Remote request: `2146.2 ms`
+- Speech-end → final: `2140 ms`
+- Final delivered: `PASS`
+- Partials: none — remote API is final-only
+- STT engine: Remote transcription API
+
+Monitoring continues for the next committed turn.
+
+
+Turn 7 completed.
+Server transcript:
+“I like dolphins. What’s your favorite animal? My name is Boomy. I like dolphins. Have you ever tried sushi? Yeah.”
+
+Log:
+- Session: 76f545fd-73c2-4090-b0f4-5a599d71a07a
+- Turn: 7
+- Audio: 540 frames, 345600 bytes, 10800 ms
+- Remote HTTP: 200
+- Remote request: 1795.2 ms
+- Speech-end → final: 1797 ms
+- Final delivered: PASS
+- Partials: none — remote API is final-only
+- STT engine: Remote transcription API
+Monitoring continues for Turn 8.
+
+Turn 8 completed.
+
+Server transcript:
+
+> “Yes, I am. Are you sick? Can you? Yes, I am. When will the meeting finish?”
+
+Log:
+
+- Session: `76f545fd-73c2-4090-b0f4-5a599d71a07a`
+- Turn: `8`
+- Audio: `587 frames`, `375680 bytes`, `11740 ms`
+- Remote HTTP: `200`
+- Remote request: `2063.2 ms`
+- Speech-end → final: `2062 ms`
+- Final delivered: `PASS`
+- Partials: none — remote API is final-only
+- STT engine: Remote transcription API
+
+Monitoring continues for Turn 9.
+
+
+Turn 9 completed.
+
+Server transcript:
+
+> “Finish. I don’t know how long. Have you been working here? I’ve been working here for seven years.”
+
+Log:
+
+- Session: `76f545fd-73c2-4090-b0f4-5a599d71a07a`
+- Turn: `9`
+- Audio: `484 frames`, `309760 bytes`, `9680 ms`
+- Remote HTTP: `200`
+- Remote request: `2035.4 ms`
+- Speech-end → final: `2047 ms`
+- Final delivered: `PASS`
+- Partials: none — remote API is final-only
+- STT engine: Remote transcription API
+
+Monitoring continues for Turn 10.
+
+Turn 10 completed.
+
+Server transcript:
+
+> “To leave a message, please ask him to call me back. Would you like to leave a message? Please ask him to call me back.”
+
+Log:
+
+- Session: `76f545fd-73c2-4090-b0f4-5a599d71a07a`
+- Turn: `10`
+- Audio: `628 frames`, `401920 bytes`, `12560 ms`
+- Remote HTTP: `200`
+- Remote request: `2266.3 ms`
+- Speech-end → final: `2266 ms`
+- Final delivered: `PASS`
+- Partials: none — remote API is final-only
+- STT engine: Remote transcription API
+
+All 10 free-speech diagnostic turns have now completed. These were not the fixed-reference acceptance turns.

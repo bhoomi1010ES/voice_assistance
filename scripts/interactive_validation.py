@@ -39,6 +39,8 @@ BACKEND_DIR = WORKSPACE_ROOT / "backend"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from app.stt.evaluation import normalize_transcript
+
 from scripts.phase4_acceptance import (
     PHASE4_REFERENCE_SENTENCES,
     calculate_turn_wer,
@@ -47,8 +49,6 @@ from scripts.phase4_acceptance import (
     latency_statistics,
     validate_turn_evidence,
 )
-
-from app.stt.evaluation import normalize_transcript
 
 
 def get_latest_backend_log_file() -> Path | None:
@@ -134,7 +134,7 @@ class InteractiveValidationRunner:
         self.json_file_path = self.output_dir / "phase4_10turn_results.json"
         self.summary_file_path = self.output_dir / "phase4_10turn_summary.md"
         self.final_acceptance_report_path = DOCS_DIR / (
-            f"{self.timestamp}_phase_4_windows_stt_final_acceptance.md"
+            f"{self.timestamp}_phase_4_remote_stt_final_acceptance.md"
         )
         self.references_path = self.output_dir / "references.json"
         self.turns_path = self.output_dir / "turns.jsonl"
@@ -170,6 +170,7 @@ class InteractiveValidationRunner:
         self.events: list[dict[str, Any]] = []
         self.backend_resource_samples: list[dict[str, Any]] = []
         self.worker_resource_samples: list[dict[str, Any]] = []
+        self.remote_request_samples: list[dict[str, Any]] = []
         self.resource_thread: threading.Thread | None = None
         self.resource_stop_event = threading.Event()
         self.backend_pid: int | None = None
@@ -189,6 +190,7 @@ class InteractiveValidationRunner:
         self.apk_install_launch = False
         self.websocket_physical_path = False
         self.windows_worker_deployment = False
+        self.remote_stt_deployment = False
         self.automated_validation_passed = self._read_automated_validation_manifest()
         self._resource_previous: dict[int, tuple[float, float]] = {}
 
@@ -449,6 +451,7 @@ class InteractiveValidationRunner:
             "error": None,
             "stt_engine": "NOT_AVAILABLE",
             "recognizer_id": "NOT_AVAILABLE",
+            "stt_provider": "NOT_AVAILABLE",
             "runtime": "NOT_AVAILABLE",
             "language": "en-US",
         }
@@ -590,14 +593,18 @@ class InteractiveValidationRunner:
                 self.worker_log.write(redacted_line + "\n")
                 self.worker_log.flush()
             elif event == "STT_ENGINE_STARTED":
+                provider = data.get("endpoint_host") or data.get("recognizer_name")
                 self.engine_info.update(
                     {
                         "engine": data.get("engine"),
                         "runtime": data.get("runtime"),
-                        "recognizer_id": data.get("recognizer_name"),
-                        "language": data.get("recognizer_language"),
+                        "stt_provider": provider,
+                        "recognizer_id": data.get("recognizer_name") or "NOT_APPLICABLE",
+                        "language": data.get("language") or data.get("recognizer_language"),
                     }
                 )
+                if data.get("engine") == "remote":
+                    self.remote_stt_deployment = True
                 self.record_event("stt.engine.started", details=self.engine_info.copy())
             elif event == "STT_WORKER_READY":
                 self.windows_worker_deployment = True
@@ -605,6 +612,9 @@ class InteractiveValidationRunner:
                     {
                         "engine": data.get("engine", self.engine_info.get("engine")),
                         "runtime": data.get("runtime", self.engine_info.get("runtime")),
+                        "stt_provider": data.get(
+                            "endpoint_host", self.engine_info.get("stt_provider")
+                        ),
                         "recognizer_id": data.get(
                             "recognizer_name", self.engine_info.get("recognizer_id")
                         ),
@@ -618,6 +628,17 @@ class InteractiveValidationRunner:
                     "stt.worker.started",
                     details={"pid": self.worker_pid, "path": data.get("path")},
                 )
+            elif event == "STT_REMOTE_FINAL":
+                sample = {
+                    "turn_id": data.get("turn_id"),
+                    "status_code": data.get("status_code"),
+                    "request_id": data.get("request_id"),
+                    "audio_bytes": data.get("audio_bytes"),
+                    "request_duration_ms": data.get("request_duration_ms"),
+                    "utc_timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+                }
+                self.remote_request_samples.append(sample)
+                self.record_event("stt.remote.final", details=sample)
             elif event == "voice.connection.opened":
                 self.backend_pid = data.get("backend_pid") or self.backend_pid
                 self.record_event(
@@ -682,6 +703,9 @@ class InteractiveValidationRunner:
                         self.current_turn_data["turn_start_monotonic_ms"] = mono
                 self.current_turn_data["stt_engine"] = self.engine_info.get(
                     "engine", "NOT_AVAILABLE"
+                )
+                self.current_turn_data["stt_provider"] = self.engine_info.get(
+                    "stt_provider", "NOT_AVAILABLE"
                 )
                 self.current_turn_data["recognizer_id"] = self.engine_info.get(
                     "recognizer_id", "NOT_AVAILABLE"
@@ -884,6 +908,9 @@ class InteractiveValidationRunner:
                     self.current_turn_data["language"] = lang
                     self.current_turn_data["stt_engine"] = self.engine_info.get(
                         "engine", self.current_turn_data["stt_engine"]
+                    )
+                    self.current_turn_data["stt_provider"] = self.engine_info.get(
+                        "stt_provider", self.current_turn_data["stt_provider"]
                     )
                     self.current_turn_data["recognizer_id"] = self.engine_info.get(
                         "recognizer_id", self.current_turn_data["recognizer_id"]
@@ -1459,6 +1486,7 @@ Status: {turn_dict["status"]} {f"({turn_dict.get('failure_reason')})" if turn_di
         resource_summary = {
             "backend": self._resource_summary(self.backend_resource_samples),
             "worker": self._resource_summary(self.worker_resource_samples),
+            "remote_requests": self.remote_request_samples,
         }
         with open(self.resource_summary_path, "w", encoding="utf-8") as handle:
             json.dump(resource_summary, handle, indent=2)
@@ -1471,13 +1499,16 @@ Status: {turn_dict["status"]} {f"({turn_dict.get('failure_reason')})" if turn_di
                 "references_stored_before_recognition": self.references_path.exists(),
                 "backend_resource_samples": self.backend_resource_samples,
                 "worker_resource_samples": self.worker_resource_samples,
+                "remote_request_samples": self.remote_request_samples,
                 "android_device": getattr(self, "device_verified", False),
                 "apk_install_launch": self.apk_install_launch,
                 "websocket_physical_path": self.websocket_physical_path,
                 "windows_worker_deployment": self.windows_worker_deployment,
+                "remote_stt_deployment": self.remote_stt_deployment,
                 "automated_validation_passed": self.automated_validation_passed,
                 "reconnect": self.reconnect_evidence,
             },
+            expected_engine="remote",
         )
         with open(self.validation_summary_path, "w", encoding="utf-8") as handle:
             json.dump(
@@ -1621,8 +1652,8 @@ The non-bypassable acceptance result is **{report_status}**.
 
 ## 2. Exact code/environment changes
 
-The active STT path remains Windows `System.Speech.Recognition`; no cloud or
-Whisper runtime is accepted by this report.
+The active STT path is the configured remote transcription API; Windows Speech
+and Whisper runtimes are not accepted by this report.
 
 ## 3. Gradle blocker resolution
 
@@ -1635,11 +1666,10 @@ the Gradle Plugin Portal; the failure was dependency availability to Gradle.
 Device identity and ADB results are recorded in `android_or_adb.log` and
 `events.jsonl`. A missing or unauthorized device keeps the result pending.
 
-## 5. Windows worker runtime resolution
+## 5. Remote STT API configuration
 
-The configured worker is the self-contained published executable. Its runtime
-does not depend on interactive `DOTNET_ROOT`; `STT_WINDOWS_WORKER_PATH` stays
-configurable and a DLL path may use `STT_DOTNET_PATH` explicitly.
+The remote endpoint is configured by `STT_API_URL` and the credential by
+`STT_API_KEY`. Credentials are not included in this report or its logs.
 
 ## 6. Automated test results
 
@@ -1651,7 +1681,7 @@ cannot satisfy the physical-turn gates.
 Device: `{self.target_device}`; ADB serial: `{self.adb_serial}`; verified:
 `{self.device_verified}`.
 
-## 8. Recognizer/runtime information
+## 8. Remote provider/runtime information
 
 ```json
 {json.dumps(self.engine_info, indent=2)}
@@ -1668,8 +1698,9 @@ Corpus WER and authoritative latency statistics are in `wer.json` and
 
 ## 16–17. Backend and worker CPU/memory
 
-Resource summaries are in `resource_summary.json`; raw samples are in
-`resources.jsonl`. Missing samples fail the acceptance predicate.
+Backend resource summaries and remote request samples are in
+`resource_summary.json`; raw process samples are in `resources.jsonl`.
+Missing backend or remote request evidence fails the acceptance predicate.
 
 ## 18. Disconnect/reconnect evidence
 

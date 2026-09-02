@@ -38,9 +38,9 @@ def _valid_turn(number: int = 1) -> dict:
         "audio_bytes": 640,
         "pcm_frames": 1,
         "websocket_session_id": "session",
-        "stt_engine": "windows",
-        "recognizer_id": "MS-1033-80-DESK",
-        "language": "en-US",
+        "stt_engine": "remote",
+        "stt_provider": "stt.example.test",
+        "language": "en",
         "error": None,
         "status": "PASS",
     }
@@ -71,11 +71,11 @@ def test_acceptance_requires_resources_reconnect_and_all_ten_turns() -> None:
     evidence = {
         "references_stored_before_recognition": True,
         "backend_resource_samples": [{"pid": 1}],
-        "worker_resource_samples": [{"pid": 2}],
+        "remote_request_samples": [{"status_code": 200}],
         "android_device": True,
         "apk_install_launch": True,
         "websocket_physical_path": True,
-        "windows_worker_deployment": True,
+        "remote_stt_deployment": True,
         "automated_validation_passed": True,
         "reconnect": {
             "disconnect_observed": True,

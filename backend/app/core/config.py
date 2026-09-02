@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -25,9 +25,21 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
 
-    # Phase 4 STT engine settings. Windows Speech is the active default;
-    # Whisper settings remain available only for the explicit legacy adapter.
-    stt_engine: Literal["windows", "whisper"] = "windows"
+    # Phase 4 uses the remote transcription adapter. Windows remains importable
+    # only for legacy diagnostics and is rejected by the production selector.
+    stt_engine: Literal["windows", "remote", "whisper"] = "remote"
+    stt_api_url: str | None = None
+    stt_api_key: SecretStr | None = None
+    stt_api_auth_header: str = "Authorization"
+    stt_api_auth_scheme: str = "Bearer"
+    stt_api_model: str | None = None
+    stt_api_file_field: str = "file"
+    stt_api_filename: str = "audio.wav"
+    stt_api_response_format: str = "json"
+    stt_api_language: str | None = "en"
+    stt_api_connect_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    stt_api_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
+    stt_api_max_response_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=32 * 1024 * 1024)
     stt_windows_worker_path: str = "backend/windows_stt/publish/WindowsSttWorker.exe"
     stt_dotnet_path: str | None = None
     stt_windows_language: str = "en-US"
@@ -113,6 +125,20 @@ class Settings(BaseSettings):
 
         path = Path(self.stt_windows_worker_path).expanduser()
         return path if path.is_absolute() else PROJECT_ROOT / path
+
+    @property
+    def stt_api_url_resolved(self) -> str:
+        """Return the configured remote transcription endpoint."""
+
+        if not self.stt_api_url or not self.stt_api_url.strip():
+            raise RuntimeError("STT_API_URL is required when STT_ENGINE=remote")
+        value = self.stt_api_url.strip()
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise RuntimeError("STT_API_URL must be an absolute HTTP(S) URL")
+        if parsed.query or parsed.fragment:
+            raise RuntimeError("STT_API_URL must not contain query parameters or fragments")
+        return value.rstrip("/")
 
     @property
     def stt_dotnet_path_resolved(self) -> Path | None:

@@ -19,7 +19,8 @@ from app.stt.base import (
     STTEngineTurn,
 )
 from app.stt.protocol import WorkerProtocolError, WorkerRequest, WorkerResponse, parse_response
-from app.stt.service import STTService
+from app.stt.remote_engine import RemoteTranscriptionEngine
+from app.stt.service import STTConfigurationError, STTService
 from app.stt.windows_engine import WindowsSpeechEngine, _WindowsTurnState
 
 
@@ -98,10 +99,15 @@ class FakeStreamingEngine(STTEngine):
 
 
 @pytest.mark.asyncio
-async def test_windows_is_the_default_engine_without_initializing_it() -> None:
+async def test_remote_is_the_default_engine_without_initializing_it() -> None:
     service = STTService(Settings(_env_file=None))
-    assert isinstance(service.engine, WindowsSpeechEngine)
+    assert isinstance(service.engine, RemoteTranscriptionEngine)
     await service.close()
+
+
+def test_windows_engine_is_rejected_by_production_selector() -> None:
+    with pytest.raises(STTConfigurationError, match="STT_ENGINE=windows is retired"):
+        STTService(Settings(_env_file=None, stt_engine="windows"))
 
 
 def test_language_normalization_can_preserve_windows_culture() -> None:

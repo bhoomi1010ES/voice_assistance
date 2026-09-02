@@ -1,0 +1,10 @@
+{
+  "pass": true,
+  "source": "fresh local automated validation before physical acceptance",
+  "pytest": "61 passed, 22 skipped",
+  "ruff_changed_scope": "pass",
+  "compile_check": "pass",
+  "stt_engine": "remote",
+  "windows_production_selector": "rejected",
+  "whisper_production_selector": "not selected"
+}

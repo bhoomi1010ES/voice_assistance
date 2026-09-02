@@ -1,3 +1,5 @@
+import pytest
+
 from app.core.config import Settings
 
 
@@ -17,7 +19,7 @@ def test_settings_loads_connection_urls_from_environment(monkeypatch) -> None:
         "postgresql+asyncpg://user:password@db.example:55432/voice_assistance"
     )
     assert settings.redis_url == "redis://cache.example:56379/2"
-    assert settings.stt_engine == "windows"
+    assert settings.stt_engine == "remote"
     assert settings.stt_windows_language == "en-US"
     assert settings.database_dsn == settings.database_url
     assert settings.redis_dsn == settings.redis_url
@@ -67,6 +69,39 @@ def test_settings_loads_windows_stt_configuration_from_environment(monkeypatch) 
     assert settings.stt_start_timeout_seconds == 7
     assert settings.stt_final_timeout_seconds == 22
     assert settings.stt_worker_timeout_seconds == 3
+
+
+def test_settings_loads_remote_stt_configuration_without_exposing_key(monkeypatch) -> None:
+    monkeypatch.setenv("STT_ENGINE", "remote")
+    monkeypatch.setenv(
+        "STT_API_URL",
+        "https://skin-technologies-strategies-membership.trycloudflare.com/v1/audio/transcriptions",
+    )
+    monkeypatch.setenv("STT_API_KEY", "test-secret-key")
+    monkeypatch.setenv("STT_API_MODEL", "test-model")
+    monkeypatch.setenv("STT_API_LANGUAGE", "en")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.stt_engine == "remote"
+    assert settings.stt_api_url_resolved.endswith("/v1/audio/transcriptions")
+    assert settings.stt_api_key is not None
+    assert str(settings.stt_api_key) == "**********"
+    assert settings.stt_api_key.get_secret_value() == "test-secret-key"
+    assert settings.stt_api_model == "test-model"
+    assert settings.stt_api_language == "en"
+
+
+def test_remote_stt_url_must_be_absolute_http_url() -> None:
+    settings = Settings(
+        _env_file=None,
+        stt_engine="remote",
+        stt_api_url="not-an-url",
+        stt_api_key="test-secret-key",
+    )
+
+    with pytest.raises(RuntimeError, match=r"STT_API_URL must be an absolute HTTP\(S\) URL"):
+        _ = settings.stt_api_url_resolved
 
 
 def test_database_dsn_normalizes_postgresql_scheme_to_asyncpg() -> None:

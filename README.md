@@ -2,9 +2,10 @@
 
 This repository contains the React Native Android proof of concept and the
 Phase 1/2 backend foundation with the Phase 3 bounded WebSocket voice gateway.
-Phase 4 now includes an isolated Windows Speech Recognition STT worker
-integrated with the gateway. Its implementation is complete, but acceptance
-remains pending Windows integration and physical evaluation evidence.
+Phase 4 now includes a remote transcription API adapter integrated with the
+gateway. The Windows Speech Recognition worker is retained only for legacy
+diagnostics and is rejected by the production engine selector. Implementation
+and acceptance remain pending final remote validation evidence.
 
 Current gates:
 
@@ -31,12 +32,12 @@ Phase 1 through Phase 3 do not change the Android microphone, AEC/NS, VAD,
 wake-word model, threshold, cooldown, or native audio pipeline. Phase 3 adds
 an authenticated `/v1/voice` gateway, exact binary PCM framing, bounded
 transport queues, explicit session/turn controls, PostgreSQL metadata, and
-Redis active-session state. Phase 4 adds opt-in Windows Speech Recognition
-transcription over that existing 16 kHz mono PCM16 stream, with partial/final
-transcript events, cancellation, and per-turn metrics. Python uses a typed
-engine abstraction and a reusable local C# `System.Speech.Recognition` worker
-over newline-framed stdin/stdout IPC. `STT_ENGINE=windows` is the active
-default; the previous Whisper runtime is an optional legacy adapter only.
+Redis active-session state. Phase 4 adds a remote transcription adapter over
+that existing 16 kHz mono PCM16 stream, with final transcript events,
+cancellation, bounded HTTP requests, and per-turn metrics. Python uses a typed
+engine abstraction and submits one in-memory WAV per committed turn to the
+configured `STT_API_URL`. `STT_ENGINE=remote` is the target configuration;
+Windows and the previous Whisper runtime are temporary explicit adapters only.
 Qwen/LLM reasoning, RAG, tools, reminders, Kokoro TTS, audio playback, and
 barge-in remain deferred.
 
@@ -49,9 +50,9 @@ available locally at
 `models/whisper-large-v3-turbo-ct2/` and loaded successfully on CPU `int8`.
 The model directory is local and Git-ignored. The historical implementation
 reused one model instance and ran inference in bounded worker threads. The
-active Windows path does not load this model, does not require CUDA, LM
-Studio, cloud speech, or Kokoro, and requires an installed English Windows
-recognizer plus the built worker executable.
+The remote path does not load this model. The legacy Windows diagnostic path
+does not require CUDA, LM Studio, cloud speech, or Kokoro, and requires an
+installed English Windows recognizer plus the built worker executable.
 
 ## Repository structure
 

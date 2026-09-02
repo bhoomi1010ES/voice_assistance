@@ -2208,14 +2208,18 @@ process memory was not independently measured.
 
 ## Phase 4 — STT
 
-**Implementation: COMPLETE. Acceptance: IMPLEMENTED — ACCEPTANCE PENDING.**
-The active `backend/app/stt/` runtime is now the local Windows Speech
-Recognition Engine. `STTService` orchestrates a typed `STTEngine` contract;
-`WindowsSpeechEngine` streams bounded 16 kHz mono signed PCM16 chunks to one
-reusable isolated C# worker using `System.Speech.Recognition`,
-`SpeechRecognitionEngine`, and `DictationGrammar`. The worker discovers an
-installed English recognizer, emits correlated hypothesis/final results over
-newline-framed JSON IPC, and never opens the Windows host microphone.
+**Implementation: STARTED. Acceptance: IMPLEMENTED — ACCEPTANCE PENDING.**
+The active `backend/app/stt/` runtime is now the remote transcription adapter.
+`STTService` orchestrates a typed `STTEngine` contract;
+`RemoteTranscriptionEngine` buffers one bounded turn and submits an in-memory
+16 kHz mono signed PCM16 WAV to the configured `STT_API_URL` using an API key
+loaded only from runtime configuration. The adapter emits only the genuine
+final returned by the remote service and never fabricates partial results.
+
+The former `WindowsSpeechEngine` and isolated C# worker remain in the tree only
+for legacy diagnostics and focused regression coverage. The production engine
+selector rejects `STT_ENGINE=windows`, so Windows Speech Recognition is no
+longer an active Phase 4 runtime.
 The existing `/v1/voice` transport now supports opt-in STT session configuration,
 bounded PCM16 chunk processing, partial/final transcript events, language
 configuration, cancellation, and persisted final-turn metrics. The Android
@@ -2223,13 +2227,14 @@ transport opts into STT without changing the native PCM/audio pipeline.
 
 The previous `faster-whisper` + CTranslate2 + Whisper Large-v3-Turbo path is
 preserved as an explicit optional `WhisperEngine` legacy adapter only. It is
-not initialized when `STT_ENGINE=windows`; its dependencies are in the
-optional `backend[whisper]` group rather than mandatory runtime dependencies.
-The active deployment is Windows-only and requires a built worker plus an
-installed compatible English Windows speech package. No cloud STT or remote
-model is used.
+not initialized by the default remote configuration; its dependencies are in
+the optional `backend[whisper]` group rather than mandatory runtime
+dependencies. No Windows Speech or Whisper fallback is selected silently.
 
-Windows runtime validation is now available on this host through the
+Remote adapter behavior is covered by focused in-memory HTTP transport tests.
+Live endpoint contract/authentication, physical device smoke testing, and the
+authoritative ten-turn run remain pending. Historical Windows runtime
+validation was available on this host through the
 project-local .NET 8.0.424 SDK/runtime used for the checks. The worker builds,
 its five focused .NET contract tests pass, and actual recognizer discovery
 found the local `MS-1033-80-DESK` `en-US` recognizer. The historical Whisper
@@ -2257,7 +2262,7 @@ evidence points to environment/dependency resolution rather than a Phase 4
 Android defect. Phase 4 acceptance is English-only; multilingual evaluation
 is outside this gate. See the latest Phase 4 final acceptance report.
 
-### Steps
+### Existing Windows implementation checklist (historical)
 
 - [x] Create isolated STT service.
 - [x] Define the `STTEngine` abstraction and engine selection configuration.
@@ -2269,6 +2274,227 @@ is outside this gate. See the latest Phase 4 final acceptance report.
 - [x] Add per-turn monotonic latency metrics, stale-result protection, and structured lifecycle logging.
 - [x] Build and run one real local en-US synthetic speech validation through the production adapter.
 - [ ] Complete the ten-turn human-spoken clean/noisy ground-truth evaluation set.
+
+### Planned replacement: remote transcription API
+
+**Implementation status: STARTED; remote adapter, configuration, and focused
+regression tests are implemented. Remote contract/live validation, physical
+acceptance, and final Windows removal remain pending.**
+
+Phase 4 will migrate from the local Windows Speech Recognition worker to an
+authenticated remote transcription adapter. The target endpoint is configured
+through `STT_API_URL`; the current environment target is:
+
+```text
+https://skin-technologies-strategies-membership.trycloudflare.com/v1/audio/transcriptions
+```
+
+The credential must be supplied only through `STT_API_KEY` in the runtime
+environment or an untracked local `.env`. The real key must never be placed in
+this plan, `.env.example`, logs, evidence bundles, exceptions, or test fixtures.
+Because the current key was shared in an interactive prompt, rotate it before
+production or acceptance use.
+
+The Android PCM16, `/v1/voice` WebSocket, VAD, turn correlation, cancellation,
+and monotonic timing contracts remain unchanged. The new engine will adapt a
+completed bounded PCM turn to the remote HTTP API. No Windows Speech, Whisper,
+or cloud fallback other than the configured `STT_API_URL` may be selected
+silently.
+
+#### Stage 0 - verify the API contract before implementation
+
+- [ ] Rotate the exposed API key and provision the replacement as a secret.
+- [ ] Confirm the authentication scheme without logging the credential:
+      `Authorization: Bearer`, `X-API-Key`, or the provider's documented header.
+- [ ] Confirm the request contract: HTTP method, multipart field names, accepted
+      container/codec, optional language/model fields, and maximum upload size.
+- [ ] Confirm the response schema for success and errors, including the exact
+      transcript field, language, confidence, request ID, and usage metadata.
+- [ ] Determine whether this endpoint is final-only or supports genuine partial
+      transcripts through streaming/SSE/WebSocket. Do not synthesize partials.
+- [ ] Confirm timeout, rate-limit, retention, privacy, and retry behavior.
+- [ ] Run one disposable, non-acceptance PCM WAV contract probe and retain only
+      redacted status/schema evidence.
+
+The migration is blocked if the endpoint cannot accept a lossless representation
+of 16 kHz, mono, signed PCM16 little-endian speech or cannot return a correlated
+final transcript.
+
+#### Stage 1 - configuration and secret handling
+
+- [ ] Change the production engine selector to `STT_ENGINE=remote`.
+- [ ] Add `STT_API_URL`, secret `STT_API_KEY`, request timeout, connect timeout,
+      maximum response size, maximum concurrent requests, and optional model
+      settings to `Settings`.
+- [ ] Validate an HTTPS URL, positive bounded timeouts, and the presence of the
+      key when `STT_ENGINE=remote`.
+- [ ] Represent the key with a secret type and ensure its string representation
+      is redacted.
+- [ ] Add placeholders only to `.env.example`; never commit a usable key.
+- [ ] Fail backend startup/readiness clearly when remote STT is selected but its
+      required configuration is missing. Do not fall back to Windows or Whisper.
+- [ ] Treat the current `trycloudflare.com` URL as environment-specific because
+      quick-tunnel hostnames may be replaced; do not hard-code it in Python.
+
+#### Stage 2 - remote STT engine
+
+- [ ] Add `backend/app/stt/remote_engine.py` implementing the existing
+      `STTEngine` lifecycle as `RemoteTranscriptionEngine`.
+- [ ] Keep isolated bounded audio state per `(session_id, turn_id)` and reject
+      empty, odd-byte, oversized, stale-generation, or post-cancel audio.
+- [ ] Preserve Android/Python PCM bytes exactly and create an in-memory WAV with
+      `16000 Hz`, one channel, 16-bit signed little-endian PCM at commit time.
+- [ ] Use one lifecycle-managed asynchronous HTTP client with connection pooling,
+      bounded concurrency, TLS verification, response-size limits, and no proxy
+      surprises unless explicitly configured.
+- [ ] Build the multipart/body and authentication header from the verified Stage
+      0 contract, not from assumptions about OpenAI-compatible APIs.
+- [ ] Parse success and error responses defensively. Reject missing/blank final
+      text and unexpected content types or oversized payloads.
+- [ ] Map authentication, rate-limit, timeout, malformed-response, provider 5xx,
+      and network failures to stable STT error codes safe for the Android client.
+- [ ] Cancel the active HTTP task when the voice turn is cancelled; clear buffered
+      audio and discard every stale response by generation/session/turn ID.
+- [ ] Use bounded retries only where the provider contract makes them safe. Never
+      retry after cancellation and never create an unbounded billing loop.
+- [ ] Emit `STTEngineInfo` with `engine=remote`, a redacted provider host/runtime,
+      configured language/model, and no API key or query credentials.
+
+#### Stage 3 - service and gateway integration
+
+- [ ] Register `RemoteTranscriptionEngine` in `STTService` and remove the Windows
+      import/factory branch after the remote adapter passes focused tests.
+- [ ] Preserve the existing `/v1/voice` messages, turn IDs, response IDs, audio
+      accounting, VAD-end behavior, and final transcript payload shape.
+- [ ] Keep all latency calculations monotonic. Add upload-start, response-first-
+      byte, provider-complete, and final-emitted timestamps.
+- [ ] Define `speech_end_to_final_ms` as VAD/commit monotonic time to final event
+      emission, including WAV packaging and network/provider latency.
+- [ ] If Stage 0 proves the endpoint is final-only, emit no partial events and
+      record `partial_count=0` with `no_partial_reason=remote_endpoint_final_only`.
+- [ ] If genuine provider partials exist, correlate and forward only those events;
+      do not derive partials by repeatedly uploading growing audio unless that
+      behavior is explicitly supported and accepted for cost/privacy.
+- [ ] Add safe structured logs containing provider host, request ID, status,
+      duration, bytes, and error class while redacting headers, credentials,
+      response bodies, and transcript text where evidence policy requires it.
+
+#### Stage 4 - health, readiness, and operational controls
+
+- [ ] `/health` remains a process liveness check and must not call the paid API.
+- [ ] `/ready` validates remote STT configuration and client initialization. Use a
+      provider health/model route only if Stage 0 confirms a safe non-billable
+      endpoint; otherwise perform the real API smoke test in preflight.
+- [ ] Expose safe metrics for request count, in-flight requests, status classes,
+      timeout count, rate limits, upload bytes, and latency percentiles.
+- [ ] Add a concurrency semaphore, request timeout, circuit-breaker/cooldown for
+      repeated provider failures, and clear recovery logging.
+- [ ] Ensure evidence and logs redact `STT_API_KEY`, Authorization headers, URL
+      query secrets, access/refresh tokens, and provider response internals.
+
+#### Stage 5 - acceptance harness migration
+
+- [ ] Replace the hard-coded `windows`/`MS-1033-80-DESK` acceptance predicate
+      with `stt_engine=remote` plus a safe provider/model identifier established
+      during Stage 0.
+- [ ] Replace `windows_stt_only` with `remote_stt_only`; fail if Windows, Whisper,
+      or any unconfigured fallback runtime handles an acceptance turn.
+- [ ] Replace worker PID/CPU/RSS requirements with backend CPU/RSS and remote
+      request metrics. Provider-side CPU/RSS is not observable from this client.
+- [ ] Preserve ten fixed references, raw/normalized hypotheses, per-turn and
+      corpus WER, monotonic latency, audio bytes/frames, WebSocket session IDs,
+      reconnect evidence, raw events, and failure counts.
+- [ ] Preserve genuine partial evidence when available. For a verified final-only
+      endpoint, require the explicit no-partial reason on every turn and report
+      zero partial coverage honestly.
+- [ ] Record HTTP status class, redacted provider request ID, upload bytes, attempt
+      count, and provider latency for each physical turn without storing secrets.
+- [ ] Keep the physical Android disconnect/reconnect gate and prove a new turn can
+      reach the remote API after reconnect without stale-session contamination.
+
+#### Stage 6 - tests
+
+- [ ] Add unit tests for exact WAV headers/PCM preservation, multipart/body fields,
+      authentication redaction, response parsing, empty transcript rejection,
+      and URL/config validation.
+- [ ] Add asynchronous transport tests for success, 401/403, 413, 429 with
+      `Retry-After`, provider 5xx, malformed JSON, oversized response, connect/read
+      timeout, cancellation, and stale late responses.
+- [ ] Add concurrency tests proving bounded in-flight requests and turn isolation.
+- [ ] Update gateway/integration tests to prove PCM -> commit -> remote final,
+      final-only partial behavior, metrics persistence, and no runtime fallback.
+- [ ] Update acceptance-predicate tests for ten turns, mandatory WER/latency,
+      remote engine identity, resource evidence, and reconnect evidence.
+- [ ] Run Python tests and Ruff for the affected backend/scripts. Run Android tests
+      only if the client contract changes; this plan should not require such a
+      change.
+- [ ] Run one disposable physical smoke test before the authoritative ten turns.
+
+#### Stage 7 - remove Windows Speech Recognition
+
+Perform removal only after the remote contract, focused tests, backend startup,
+and one physical smoke turn pass. This avoids leaving the application without a
+working STT path during migration.
+
+- [ ] Delete `backend/app/stt/windows_engine.py` and remove its exports/imports.
+- [ ] Delete `backend/windows_stt/`, `backend/windows_stt.Tests/`, and the retained
+      self-contained publish/runtime artifacts.
+- [ ] Delete `scripts/publish_windows_stt.ps1`,
+      `scripts/windows_stt_runtime_validation.py`, and
+      `scripts/windows_stt_synthetic.py`.
+- [ ] Remove `STT_WINDOWS_WORKER_PATH`, `STT_DOTNET_PATH`, Windows language/start/
+      worker timeout settings, and their tests/documentation.
+- [ ] Remove `System.Speech`, recognizer discovery, worker PID/resource, JSON IPC,
+      and `MS-1033-80-DESK` assumptions from startup and acceptance code.
+- [ ] Make diagnostic capture engine-neutral and retain it only as an explicit,
+      disabled-by-default troubleshooting feature.
+- [ ] Remove obsolete `.NET`/Windows build ignore entries after confirming no
+      remaining project requires them.
+- [ ] Preserve historical evidence reports; label them as superseded Windows STT
+      evidence rather than rewriting or deleting audit history.
+- [ ] Keep the legacy Whisper adapter disabled and outside Phase 4 acceptance. Its
+      deletion, if desired, is a separate cleanup after remote acceptance.
+
+#### Stage 8 - rollout and final acceptance
+
+- [ ] Deploy `STT_ENGINE=remote` and the rotated secret through the environment.
+- [ ] Verify backend startup, readiness, authenticated API access, no secret logs,
+      and no Windows/Whisper process initialization.
+- [ ] Run one disposable physical Android smoke turn and reset its evidence.
+- [ ] Run the fresh fixed ten-turn physical acceptance and calculate corpus WER,
+      finalization latency percentiles, backend resources, API reliability, and
+      reconnect results.
+- [ ] Classify every provider/network failure honestly; do not backfill transcripts
+      or reuse Windows/synthetic evidence.
+- [ ] Update README/backend documentation and create the timestamped final report.
+- [ ] Change Phase 4 to `PASS` only when every revised remote-STT mandatory gate
+      passes. Until then retain `PHASE 4: IMPLEMENTED - ACCEPTANCE PENDING`.
+
+#### Remote STT acceptance gate
+
+The replacement is accepted only when all of the following are true:
+
+```text
+remote API contract verified
+rotated secret provisioned and redacted
+backend startup/readiness passes with STT_ENGINE=remote
+Windows Speech worker and runtime removed
+no Windows/Whisper fallback used
+exact PCM-to-WAV format verified
+one physical smoke turn passes
+10/10 fresh physical turns complete
+10/10 final hypotheses captured
+corpus WER measured
+monotonic speech-end-to-final latency measured
+partial support measured honestly
+backend resource and remote request metrics captured
+physical WebSocket reconnect passes
+all focused automated tests pass
+```
+
+Planning this replacement does not change the current acceptance status. Phase
+4 remains `IMPLEMENTED - ACCEPTANCE PENDING` until the remote implementation and
+fresh physical acceptance evidence are complete.
 
 ### Gate
 

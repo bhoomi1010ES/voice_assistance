@@ -11,6 +11,7 @@ from app.stt.base import (
     STTInferenceError,
     STTTimeoutError,
 )
+from app.stt.remote_engine import RemoteTranscriptionEngine
 from app.stt.service import (
     STTService,
     STTTranscriptEvent,
@@ -28,6 +29,7 @@ __all__ = [
     "STTTimeoutError",
     "STTTranscriptEvent",
     "STTTranscriptResult",
+    "RemoteTranscriptionEngine",
     "STTEngine",
     "STTEngineInfo",
     "STTEngineTurn",

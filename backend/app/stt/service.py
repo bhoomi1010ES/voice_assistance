@@ -22,6 +22,7 @@ from app.stt.base import (
     STTModelInfo,
 )
 from app.stt.diagnostic_capture import DiagnosticPcmCapture
+from app.stt.remote_engine import RemoteTranscriptionEngine
 from app.stt.whisper_engine import WhisperEngine
 from app.stt.windows_engine import WindowsSpeechEngine
 
@@ -269,7 +270,11 @@ class STTService:
         if model_factory is not None:
             return WhisperEngine(self.settings, model_factory=model_factory)
         if self.settings.stt_engine == "windows":
-            return WindowsSpeechEngine(self.settings)
+            raise STTConfigurationError(
+                "STT_ENGINE=windows is retired for Phase 4; configure STT_ENGINE=remote"
+            )
+        if self.settings.stt_engine == "remote":
+            return RemoteTranscriptionEngine(self.settings)
         if self.settings.stt_engine == "whisper":
             return WhisperEngine(self.settings)
         raise STTConfigurationError(f"unsupported STT_ENGINE: {self.settings.stt_engine}")

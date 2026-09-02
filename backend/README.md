@@ -2,13 +2,13 @@
 
 This directory contains the Phase 1 infrastructure foundation, the Phase 2
 authentication/user/device foundation with ownership-scoped memory/task CRUD,
-the bounded Phase 3 WebSocket voice gateway, and the Phase 4 isolated local
-STT service. The active Phase 4 runtime is the Windows Speech Recognition
-Engine through `System.Speech.Recognition` in a reusable isolated C# worker.
-It receives the existing 16 kHz mono PCM16 stream through newline-framed local
-stdin/stdout IPC and uses `DictationGrammar`; it never listens to the Windows
-host microphone. `STT_ENGINE=windows` is the default and requires an installed
-English recognizer plus a built worker executable. The historical
+the bounded Phase 3 WebSocket voice gateway, and the Phase 4 remote
+transcription service. The target Phase 4 runtime submits each committed turn
+as an in-memory 16 kHz mono PCM16 WAV to the configured `STT_API_URL` using
+`STT_ENGINE=remote`. The API key is loaded from `STT_API_KEY` and is never
+written to logs or source control. The Windows Speech Recognition worker is
+retained only for legacy diagnostics and is not remote acceptance evidence.
+The historical
 CTranslate2-compatible Whisper Large-v3-Turbo model remains available only
 through the optional legacy adapter at
 `models/whisper-large-v3-turbo-ct2/`, `faster-whisper` 1.2.1, and CTranslate2
@@ -56,7 +56,11 @@ ruff check .
 ruff format --check .
 ```
 
-On the Windows deployment host, build and test the local speech worker with:
+For remote Phase 4 setup, copy `.env.example` to `.env`, set
+`STT_ENGINE=remote`, keep the configured `STT_API_URL`, and provision a rotated
+`STT_API_KEY` locally. Do not commit the key.
+
+The legacy Windows diagnostic worker can still be built and tested with:
 
 ```powershell
 dotnet build .\windows_stt\WindowsSttWorker.csproj -c Release
@@ -64,15 +68,10 @@ dotnet test .\windows_stt.Tests\WindowsSttWorker.Tests.csproj
 dotnet publish .\windows_stt\WindowsSttWorker.csproj -c Release -r win-x64 --self-contained true -o .\windows_stt\publish
 ```
 
-The backend starts the self-contained published worker once at application
-startup when `STT_ENGINE=windows`. The published directory carries its .NET
-runtime, so backend startup does not depend on an interactive `DOTNET_ROOT` or
-the machine `PATH`. `STT_WINDOWS_WORKER_PATH` remains configurable, and
-`STT_DOTNET_PATH` is available only for an explicitly selected framework-
-dependent DLL. The worker streams the existing 16 kHz mono PCM16 audio over
-local stdin/stdout IPC; it uses the installed Windows recognizer and does not
-access the host microphone. The former Whisper implementation is an explicit
-optional `backend[whisper]` adapter only.
+When `STT_ENGINE=remote`, the backend creates one bounded asynchronous HTTP
+client and submits final turns to the configured transcription endpoint. It
+does not silently fall back to Windows or Whisper. The previous Whisper
+implementation remains an explicit optional `backend[whisper]` adapter only.
 
 The integration tests require running PostgreSQL with pgvector and Redis and
 `RUN_INTEGRATION_TESTS=1`. Unit tests use dependency stubs where appropriate;

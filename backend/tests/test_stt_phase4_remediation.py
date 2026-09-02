@@ -211,9 +211,10 @@ def test_harness_timestamp_integrity_validation() -> None:
     turn_valid["audio_bytes"] = 640
     turn_valid["pcm_frames"] = 1
     turn_valid["websocket_session_id"] = "session"
-    turn_valid["stt_engine"] = "windows"
-    turn_valid["recognizer_id"] = "MS-1033-80-DESK"
-    turn_valid["language"] = "en-US"
+    turn_valid["stt_engine"] = "remote"
+    turn_valid["stt_provider"] = "stt.example.test"
+    turn_valid["recognizer_id"] = "NOT_APPLICABLE"
+    turn_valid["language"] = "en"
     turn_valid["error"] = None
     turn_valid["final_count"] = 1
     runner.finalize_turn_metrics(turn_valid)
