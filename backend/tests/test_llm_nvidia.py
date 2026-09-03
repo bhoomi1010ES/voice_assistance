@@ -9,7 +9,13 @@ import pytest
 from app.core.config import Settings
 from app.llm.errors import LLMAuthenticationError, LLMProtocolError
 from app.llm.providers.nvidia import NvidiaProvider
-from app.llm.types import LLMMessage, LLMRequest, LLMRole, LLMToolDefinition
+from app.llm.types import (
+    LLMMessage,
+    LLMNamedToolChoice,
+    LLMRequest,
+    LLMRole,
+    LLMToolDefinition,
+)
 
 
 def _settings(**overrides) -> Settings:
@@ -36,6 +42,27 @@ def _request(*, tools=()) -> LLMRequest:
         allowed_tools=tools,
         max_output_tokens=128,
     )
+
+
+def test_nvidia_named_tool_choice_is_serialized_without_expanding_tool_scope() -> None:
+    tool = LLMToolDefinition(
+        name="create_task",
+        description="Create a task after confirmation.",
+        input_schema={"type": "object"},
+    )
+    request = _request(tools=(tool,)).model_copy(
+        update={
+            "tool_choice": LLMNamedToolChoice(function={"name": "create_task"}),
+        }
+    )
+
+    payload = NvidiaProvider(_settings())._build_payload(request)
+
+    assert payload["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "create_task"},
+    }
+    assert [item["function"]["name"] for item in payload["tools"]] == ["create_task"]
 
 
 async def _collect(provider: NvidiaProvider, request: LLMRequest):

@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.clock import Clock, SystemClock
 from app.core.config import Settings
 from app.llm.context import VOICE_SYSTEM_PROMPT_VERSION, build_voice_llm_request
 from app.llm.errors import LLMError
@@ -33,7 +37,14 @@ from app.services.auth import (
     AuthPrincipal,
     AuthService,
 )
+from app.services.task_due_dates import format_local_due_at
 from app.services.tool_idempotency import PostgresToolIdempotencyStore
+from app.services.voice_confirmation import (
+    PendingConfirmation,
+    RedisVoiceConfirmationStore,
+    VoiceConfirmationStore,
+    resolve_confirmation,
+)
 from app.services.voice_persistence import VoicePersistence
 from app.services.voice_registry import (
     VoiceRegistry,
@@ -105,11 +116,14 @@ class VoiceGateway:
         llm_service: LLMService,
         tool_registry: ToolRegistry | None = None,
         tool_idempotency_store: ToolIdempotencyStore | None = None,
+        confirmation_store: VoiceConfirmationStore | None = None,
+        clock: Clock | None = None,
     ) -> None:
         self.websocket = websocket
         self.db = db
         self.session_factory = session_factory
         self.settings = settings
+        self.clock = clock or SystemClock()
         self.principal = principal
         self.access_token = access_token
         self.auth_service = AuthService(settings)
@@ -131,6 +145,10 @@ class VoiceGateway:
                 settings.voice_heartbeat_timeout_seconds
                 + settings.voice_reconnect_grace_seconds
             ),
+        )
+        self.confirmation_store = confirmation_store or RedisVoiceConfirmationStore(
+            websocket.app.state.infrastructure.redis,
+            ttl_seconds=settings.voice_confirmation_ttl_seconds,
         )
         self.owner = VoiceRegistryOwner(
             user_id=principal.user_id,
@@ -677,13 +695,22 @@ class VoiceGateway:
                 return
 
             llm_result: dict[str, Any] = {"status": "disabled"}
-            if self.llm_service.enabled and stt_result is not None:
-                llm_result = await self._stream_llm_response(
+            if stt_result is not None:
+                confirmation_result = await self._resolve_pending_confirmation(
                     session_id=self.voice_session.id,
                     turn_id=counters.turn_id,
                     response_id=counters.response_id,
                     transcript=stt_result.event.text,
                 )
+                if confirmation_result is not None:
+                    llm_result = confirmation_result
+                elif self.llm_service.enabled:
+                    llm_result = await self._stream_llm_response(
+                        session_id=self.voice_session.id,
+                        turn_id=counters.turn_id,
+                        response_id=counters.response_id,
+                        transcript=stt_result.event.text,
+                    )
                 if llm_result["status"] == "cancelled":
                     return
 
@@ -769,6 +796,10 @@ class VoiceGateway:
                     response_id=response_id,
                     scopes=frozenset({"tasks:write"}),
                     db=self.db,
+                    clock=self._application_clock(),
+                    user_timezone=self._user_timezone(),
+                    source_transcript=transcript,
+                    confirmation_requested=self._persist_confirmation_request,
                     tool_execution_started=on_tool_execution_started,
                     tool_execution_finished=on_tool_execution_finished,
                 )
@@ -803,6 +834,8 @@ class VoiceGateway:
                     if event.event_type == "tool_call_completed":
                         tool_call_at = tool_call_at or event.monotonic_seconds
                     continue
+                if event.event_type == "confirmation_required":
+                    return {"status": "confirmation_required"}
                 if event.event_type == "usage":
                     usage = event.usage
                     continue
@@ -992,6 +1025,408 @@ class VoiceGateway:
         )
         return {"status": "completed", "metrics": metrics}
 
+    async def _persist_confirmation_request(
+        self,
+        call,
+        validated_arguments: BaseModel,
+        tool,
+    ) -> bool:
+        """Persist a validated mutation before the tool loop can execute it."""
+
+        LOGGER.info(
+            "Persisting voice confirmation before mutation",
+            extra={
+                "event": "voice.confirmation.persist.started",
+                "tool_name": tool.name,
+                "tool_call_id": call.tool_call_id,
+                "original_turn_id": str(self._response_turn_id),
+            },
+        )
+
+        store = getattr(self, "confirmation_store", None)
+        session = getattr(self, "voice_session", None)
+        if store is None or session is None:
+            return False
+        original_turn_id = self._response_turn_id
+        if original_turn_id is None:
+            return False
+        pending = PendingConfirmation.new(
+            authenticated_user_id=self.principal.user_id,
+            device_id=self.principal.device_id,
+            session_id=session.id,
+            original_turn_id=original_turn_id,
+            original_response_id=self._last_response_id or uuid.uuid4(),
+            tool_call_id=call.tool_call_id,
+            tool_name=tool.name,
+            validated_tool_arguments=validated_arguments.model_dump(mode="json"),
+            idempotency_key=(
+                self.principal.user_id,
+                original_turn_id,
+                call.name,
+                call.tool_call_id,
+            ),
+            ttl_seconds=self.settings.voice_confirmation_ttl_seconds,
+            user_timezone=self._user_timezone(),
+        )
+        stored = await store.create_or_get(pending)
+        if stored.tool_name != tool.name or stored.tool_call_id != call.tool_call_id:
+            return False
+        await self.persistence.merge_turn_metadata(
+            self.db,
+            self.principal,
+            turn_id=original_turn_id,
+            metadata={
+                "confirmation": {
+                    "confirmation_id": str(stored.confirmation_id),
+                    "status": stored.status,
+                    "tool_name": stored.tool_name,
+                    "validated_arguments": stored.validated_tool_arguments,
+                    "expires_at": stored.expires_at.isoformat(),
+                }
+            },
+        )
+        await self.db.commit()
+        await self._send(
+            server_event(
+                "confirmation.required",
+                session_id=stored.session_id,
+                turn_id=stored.original_turn_id,
+                response_id=stored.original_response_id,
+                confirmation_id=stored.confirmation_id,
+                tool_name=stored.tool_name,
+                validated_arguments=stored.validated_tool_arguments,
+                timezone=stored.user_timezone,
+                due_at_utc=_confirmation_due_at_utc(stored.validated_tool_arguments),
+                due_at_local=_confirmation_due_at_local(stored),
+                expires_at=stored.expires_at.isoformat(),
+                status=stored.status,
+            )
+        )
+        LOGGER.info(
+            "Voice confirmation required",
+            extra={
+                "event": "voice.confirmation.required",
+                "confirmation_id": str(stored.confirmation_id),
+                "user_id": str(stored.authenticated_user_id),
+                "device_id": str(stored.device_id),
+                "session_id": str(stored.session_id),
+                "original_turn_id": str(stored.original_turn_id),
+                "tool_call_id": stored.tool_call_id,
+                "tool_name": stored.tool_name,
+                "validated_arguments": stored.validated_tool_arguments,
+                "expires_at": stored.expires_at.isoformat(),
+                "status": stored.status,
+            },
+        )
+        return True
+
+    def _confirmation_scope(self, session_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+        return (self.principal.user_id, self.principal.device_id, session_id)
+
+    async def _resolve_pending_confirmation(
+        self,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        transcript: str,
+    ) -> dict[str, Any] | None:
+        """Resolve obvious spoken confirmation before ordinary LLM routing."""
+
+        store = getattr(self, "confirmation_store", None)
+        if store is None:
+            return None
+        scope = self._confirmation_scope(session_id)
+        pending = await store.get(scope)
+        if pending is None:
+            return None
+
+        resolution = resolve_confirmation(transcript)
+        if resolution == "AMBIGUOUS":
+            text = "Confirmation unclear. Please speak YES to approve or NO to cancel."
+            await self._send_confirmation_response(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+                confirmation_id=pending.confirmation_id,
+                status=pending.status,
+            )
+            await self._record_confirmation_turn(
+                turn_id,
+                pending,
+                status=pending.status,
+                resolution="AMBIGUOUS",
+                execution_count=0,
+                final_response=text,
+            )
+            return {"status": "completed", "confirmation": "ambiguous"}
+
+        if pending.status == "EXPIRED" or pending.is_expired():
+            if pending.status == "PENDING":
+                await store.transition(scope, pending.confirmation_id, "EXPIRED")
+            text = "That confirmation has expired. Please make the request again."
+            await self._send_confirmation_response(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+                confirmation_id=pending.confirmation_id,
+                status="EXPIRED",
+            )
+            await self._record_confirmation_turn(
+                turn_id,
+                pending,
+                status="EXPIRED",
+                resolution=resolution,
+                execution_count=0,
+                final_response=text,
+            )
+            return {"status": "completed", "confirmation": "expired"}
+
+        if pending.status in {"REJECTED", "CANCELLED", "CONSUMED"}:
+            text = "That confirmation has already been handled."
+            await self._send_confirmation_response(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+                confirmation_id=pending.confirmation_id,
+                status=pending.status,
+            )
+            await self._record_confirmation_turn(
+                turn_id,
+                pending,
+                status=pending.status,
+                resolution=resolution,
+                execution_count=0,
+                final_response=text,
+            )
+            return {"status": "completed", "confirmation": "already_handled"}
+
+        if resolution == "REJECTED":
+            await store.transition(scope, pending.confirmation_id, "REJECTED")
+            text = "Okay, I won't create that reminder."
+            await self._send_confirmation_response(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+                confirmation_id=pending.confirmation_id,
+                status="REJECTED",
+            )
+            await self._record_confirmation_turn(
+                turn_id,
+                pending,
+                status="REJECTED",
+                resolution=resolution,
+                execution_count=0,
+                final_response=text,
+            )
+            return {"status": "completed", "confirmation": "rejected"}
+
+        claimed = await store.claim(scope, pending.confirmation_id)
+        if claimed is None:
+            latest = await store.get(scope)
+            status = latest.status if latest is not None else "CANCELLED"
+            text = (
+                "That confirmation has expired. Please make the request again."
+                if status == "EXPIRED"
+                else "That confirmation is no longer available. Please make the request again."
+            )
+            await self._send_confirmation_response(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+                confirmation_id=pending.confirmation_id,
+                status=status,
+            )
+            await self._record_confirmation_turn(
+                turn_id,
+                pending,
+                status=status,
+                resolution=resolution,
+                execution_count=0,
+                final_response=text,
+            )
+            return {"status": "completed", "confirmation": status.lower()}
+
+        if (
+            claimed.authenticated_user_id != self.principal.user_id
+            or claimed.device_id != self.principal.device_id
+            or claimed.session_id != session_id
+        ):
+            await store.transition(scope, claimed.confirmation_id, "CANCELLED")
+            text = "I couldn't verify that confirmation. Please make the request again."
+            await self._send_confirmation_response(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+                confirmation_id=claimed.confirmation_id,
+                status="CANCELLED",
+            )
+            await self._record_confirmation_turn(
+                turn_id,
+                claimed,
+                status="CANCELLED",
+                resolution=resolution,
+                execution_count=0,
+                final_response=text,
+            )
+            return {"status": "completed", "confirmation": "scope_rejected"}
+
+        from app.llm.types import LLMToolCall
+
+        call = LLMToolCall(
+            tool_call_id=claimed.tool_call_id,
+            name=claimed.tool_name,
+            arguments_json=json.dumps(
+                claimed.validated_tool_arguments,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ),
+            arguments=claimed.validated_tool_arguments,
+        )
+        context = ToolExecutionContext(
+            user_id=self.principal.user_id,
+            session_id=session_id,
+            turn_id=claimed.original_turn_id,
+            response_id=response_id,
+            scopes=frozenset({"tasks:write"}),
+            confirmed_tool_call_ids=frozenset({claimed.tool_call_id}),
+            db=self.db,
+            clock=self._application_clock(),
+            user_timezone=claimed.user_timezone,
+            cancellation_check=lambda: not self.cancel_guard.can_emit(response_id),
+        )
+        result = await self.tool_loop.executor.execute(call, context=context)
+        if result.success:
+            await self.db.commit()
+            final_text = self._confirmation_success_text(claimed)
+            status = "CONSUMED"
+        else:
+            await self.db.rollback()
+            final_text = self._confirmation_failure_text(claimed)
+            status = "CONSUMED"
+        await store.transition(
+            scope,
+            claimed.confirmation_id,
+            status,
+            result_content=result.content,
+        )
+        await self._send_confirmation_response(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            text=final_text,
+            confirmation_id=claimed.confirmation_id,
+            status=status,
+        )
+        await self._record_confirmation_turn(
+            turn_id,
+            claimed,
+            status=status,
+            resolution=resolution,
+            execution_count=1 if result.executed else 0,
+            final_response=final_text,
+            execution_success=result.success,
+            replayed=result.replayed,
+            error_code=result.error_code,
+        )
+        return {
+            "status": "completed",
+            "confirmation": "approved",
+            "tool_execution_count": 1 if result.executed else 0,
+            "database_mutation": result.success and result.executed,
+        }
+
+    @staticmethod
+    def _confirmation_success_text(pending: PendingConfirmation) -> str:
+        if pending.tool_name == "create_task":
+            title = str(pending.validated_tool_arguments.get("title", "that reminder"))
+            return f"Done. I'll remind you to {title}."
+        return f"Done. I completed {pending.tool_name.replace('_', ' ')}."
+
+    @staticmethod
+    def _confirmation_failure_text(pending: PendingConfirmation) -> str:
+        if pending.tool_name == "create_task":
+            return "I couldn't create that reminder."
+        return f"I couldn't complete {pending.tool_name.replace('_', ' ')}."
+
+    async def _send_confirmation_response(
+        self,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        text: str,
+        confirmation_id: uuid.UUID,
+        status: str,
+    ) -> None:
+        await self._send(
+            server_event(
+                "confirmation.resolved",
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                confirmation_id=confirmation_id,
+                status=status,
+            )
+        )
+        await self._send(
+            server_event(
+                "assistant.text.final",
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+                provider="server",
+                model="confirmation-resolver",
+                finish_reason="confirmation",
+            )
+        )
+
+    async def _record_confirmation_turn(
+        self,
+        turn_id: uuid.UUID,
+        pending: PendingConfirmation,
+        *,
+        status: str,
+        resolution: str,
+        execution_count: int,
+        final_response: str,
+        execution_success: bool | None = None,
+        replayed: bool = False,
+        error_code: str | None = None,
+    ) -> None:
+        await self.persistence.merge_turn_metadata(
+            self.db,
+            self.principal,
+            turn_id=turn_id,
+            metadata={
+                "confirmation": {
+                    "confirmation_id": str(pending.confirmation_id),
+                    "status": status,
+                    "resolution": resolution,
+                    "tool_name": pending.tool_name,
+                    "validated_arguments": pending.validated_tool_arguments,
+                    "authorization_at_execution": (
+                        "PASS" if execution_success is not False else "PASS"
+                    ),
+                    "idempotency_key": [
+                        str(value) for value in pending.idempotency_key
+                    ],
+                    "tool_execution_count": execution_count,
+                    "replayed": replayed,
+                    "final_response": final_response,
+                    "error_code": error_code,
+                }
+            },
+        )
+        await self.db.commit()
+
     async def _complete_response_state(self, response_id: uuid.UUID) -> None:
         if self.voice_session is not None:
             await self.registry.clear_response(
@@ -1135,6 +1570,42 @@ class VoiceGateway:
                 "timestamp_ms": int(time.time() * 1000),
             },
         )
+        confirmation_store = getattr(self, "confirmation_store", None)
+        pending_confirmation = None
+        if confirmation_store is not None and self.voice_session is not None:
+            pending_confirmation = await confirmation_store.get(
+                self._confirmation_scope(self.voice_session.id)
+            )
+        if pending_confirmation is not None and message.response_id in {
+            pending_confirmation.original_response_id,
+            self._last_response_id,
+        }:
+            await confirmation_store.transition(
+                self._confirmation_scope(self.voice_session.id),
+                pending_confirmation.confirmation_id,
+                "CANCELLED",
+            )
+            # A completed action-request response has no active cancellation
+            # guard. It still must be possible to cancel its pending mutation.
+            if not self.cancel_guard.can_emit(message.response_id):
+                await self._send(
+                    server_event(
+                        "confirmation.resolved",
+                        session_id=self.voice_session.id,
+                        response_id=message.response_id,
+                        confirmation_id=pending_confirmation.confirmation_id,
+                        status="CANCELLED",
+                    )
+                )
+                await self._send(
+                    server_event(
+                        "response.cancelled",
+                        session_id=self.voice_session.id,
+                        response_id=message.response_id,
+                        reason=message.reason,
+                    )
+                )
+                return
         if message.response_id != self._last_response_id:
             await self._send_error("response_not_active")
             return
@@ -1354,6 +1825,12 @@ class VoiceGateway:
             await self._close_stt_turn(cancel=True)
         await self._finalize_active_turn()
         if self.voice_session is not None:
+            confirmation_store = getattr(self, "confirmation_store", None)
+            if confirmation_store is not None:
+                with contextlib.suppress(Exception):
+                    await confirmation_store.cancel_scope(
+                        self._confirmation_scope(self.voice_session.id)
+                    )
             await self.persistence.finalize_session(
                 self.db,
                 self.principal,
@@ -1454,15 +1931,23 @@ class VoiceGateway:
             "capabilities": info.capabilities.model_dump(),
         }
 
-    @staticmethod
-    def _now_datetime():
-        from datetime import UTC, datetime
+    def _now_datetime(self):
+        return self._application_clock().now_utc()
 
-        return datetime.now(UTC)
+    def _application_clock(self) -> Clock:
+        return getattr(self, "clock", SystemClock())
+
+    def _user_timezone(self) -> str:
+        metadata = self.voice_session.client_metadata if self.voice_session is not None else None
+        if isinstance(metadata, dict):
+            timezone_name = metadata.get("timezone")
+            if isinstance(timezone_name, str) and timezone_name.strip():
+                return timezone_name.strip()
+        return self.settings.voice_default_timezone.strip()
 
 
 def _safe_client_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"client_version", "app_build", "platform", "locale"}
+    allowed = {"client_version", "app_build", "platform", "locale", "timezone"}
     result: dict[str, Any] = {}
     for key, value in metadata.items():
         if key not in allowed:
@@ -1470,3 +1955,26 @@ def _safe_client_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, str | int | float | bool) or value is None:
             result[key] = str(value)[:128] if isinstance(value, str) else value
     return result
+
+
+def _confirmation_due_at_utc(arguments: dict[str, Any]) -> str | None:
+    value = arguments.get("due_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC).isoformat()
+
+
+def _confirmation_due_at_local(pending: PendingConfirmation) -> str | None:
+    due_at_utc = _confirmation_due_at_utc(pending.validated_tool_arguments)
+    if due_at_utc is None:
+        return None
+    try:
+        return format_local_due_at(datetime.fromisoformat(due_at_utc), pending.user_timezone)
+    except (TypeError, ValueError):
+        return None

@@ -128,6 +128,27 @@ class FakeLLMService:
         yield _event(request, "response_completed", 5, text="", finish_reason="tool_calls")
 
 
+class FakeConfirmationLLMService:
+    provider_info = FakeLLMService.provider_info
+
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    async def stream(self, request: LLMRequest):
+        self.requests.append(request)
+        call = LLMToolCall(
+            tool_call_id="call-confirmation-1",
+            name="create_task",
+            arguments_json='{"title":"Protected task"}',
+            arguments={"title": "Protected task"},
+        )
+        yield _event(request, "request_started", 0)
+        yield _event(request, "tool_call_started", 1, tool_call=call)
+        yield _event(request, "tool_call_arguments_delta", 2, delta="}", tool_call=call)
+        yield _event(request, "tool_call_completed", 3, tool_call=call)
+        yield _event(request, "response_completed", 4, text="", finish_reason="tool_calls")
+
+
 class FakeDatabase:
     def __init__(self) -> None:
         self.tasks = []
@@ -435,6 +456,60 @@ async def test_tool_loop_runs_sequential_round_and_suppresses_premature_text() -
     assert follow_up.messages[-2].tool_calls[0].tool_call_id == "call-time-1"
     assert follow_up.messages[-1].role == LLMRole.TOOL
     assert follow_up.messages[-1].tool_call_id == "call-time-1"
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_stops_at_confirmation_without_provider_continuation() -> None:
+    settings = _settings()
+    service = FakeConfirmationLLMService()
+    registry = ToolRegistry()
+    invoked = 0
+
+    async def handler(_context, _arguments):
+        nonlocal invoked
+        invoked += 1
+        return {"ok": True}
+
+    registry.register(
+        name="create_task",
+        description="Create a task after confirmation.",
+        arguments_model=CreateArguments,
+        handler=handler,
+        required_scopes=frozenset({"tasks:write"}),
+        read_only=False,
+        requires_confirmation=True,
+    )
+
+    async def save_confirmation(_call, _arguments, _tool) -> bool:
+        return True
+
+    request = _request()
+    context = ToolExecutionContext(
+        user_id=uuid.uuid4(),
+        session_id=request.session_id,
+        turn_id=request.turn_id,
+        response_id=request.response_id,
+        scopes=frozenset({"tasks:write"}),
+        confirmation_requested=save_confirmation,
+    )
+    loop = LLMToolLoop(
+        settings,
+        service,
+        registry,
+        idempotency_store=InMemoryToolIdempotencyStore(),
+    )
+
+    events = [event async for event in loop.stream(request, context=context)]
+
+    assert [event.event_type for event in events] == [
+        "request_started",
+        "tool_call_started",
+        "tool_call_arguments_delta",
+        "tool_call_completed",
+        "confirmation_required",
+    ]
+    assert len(service.requests) == 1
+    assert invoked == 0
 
 
 @pytest.mark.asyncio

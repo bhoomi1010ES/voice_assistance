@@ -16,6 +16,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.TimeZone
 
 /**
  * Native Phase 3 voice gateway transport.
@@ -211,7 +212,10 @@ class VoiceWebSocketTransport(
             )
             .put(
                 "client_metadata",
-                JSONObject().put("platform", "android").put("client_version", "phase3-native"),
+                JSONObject()
+                    .put("platform", "android")
+                    .put("client_version", "phase3-native")
+                    .put("timezone", TimeZone.getDefault().id),
             )
             .put("stt", JSONObject().put("enabled", true))
         if (resumeSessionId != null) message.put("resume_session_id", resumeSessionId)

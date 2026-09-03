@@ -50,6 +50,22 @@ class LLMToolDefinition(BaseModel):
     input_schema: dict[str, Any]
 
 
+class LLMNamedToolFunction(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class LLMNamedToolChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["function"] = "function"
+    function: LLMNamedToolFunction
+
+
+LLMToolChoice = Literal["auto", "none", "required"] | LLMNamedToolChoice
+
+
 class LLMRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -59,8 +75,16 @@ class LLMRequest(BaseModel):
     system_instructions: str = Field(min_length=1, max_length=16_384)
     messages: tuple[LLMMessage, ...] = Field(min_length=1)
     allowed_tools: tuple[LLMToolDefinition, ...] = ()
-    tool_choice: Literal["auto", "none", "required"] = "auto"
+    tool_choice: LLMToolChoice = "auto"
     max_output_tokens: int = Field(ge=1, le=16_384)
+
+    @model_validator(mode="after")
+    def validate_named_tool_choice(self) -> LLMRequest:
+        if isinstance(self.tool_choice, LLMNamedToolChoice) and not any(
+            tool.name == self.tool_choice.function.name for tool in self.allowed_tools
+        ):
+            raise ValueError("A named tool choice must reference an allowed registered tool.")
+        return self
 
 
 class LLMCapabilities(BaseModel):
@@ -102,6 +126,7 @@ LLMEventType = Literal[
     "tool_call_started",
     "tool_call_arguments_delta",
     "tool_call_completed",
+    "confirmation_required",
     "usage",
     "response_completed",
     "response_failed",

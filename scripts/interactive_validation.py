@@ -42,13 +42,13 @@ BACKEND_DIR = WORKSPACE_ROOT / "backend"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app.core.config import Settings  # noqa: E402
-from app.stt.base import STTConfigurationError  # noqa: E402
-from app.stt.evaluation import normalize_transcript  # noqa: E402
-from app.stt.remote_engine import RemoteTranscriptionEngine  # noqa: E402
-from app.stt.service import STTService  # noqa: E402
+from app.core.config import Settings
+from app.stt.base import STTConfigurationError
+from app.stt.evaluation import normalize_transcript
+from app.stt.remote_engine import RemoteTranscriptionEngine
+from app.stt.service import STTService
 
-from scripts.phase4_acceptance import (  # noqa: E402
+from scripts.phase4_acceptance import (
     PHASE4_REFERENCE_SENTENCES,
     calculate_turn_wer,
     evaluate_acceptance_gates,
@@ -830,6 +830,43 @@ class InteractiveValidationRunner:
                             self.preflight.setdefault("checks", {})[
                                 "no_stale_gateway_session"
                             ] = {"pass": False, "error": error_code}
+                    elif evt_type == "confirmation.required":
+                        try:
+                            payload_data = json.loads(m.group(5))
+                        except (TypeError, ValueError):
+                            payload_data = {}
+                        arguments = payload_data.get("validated_arguments") or {}
+                        title = arguments.get("title", "the requested action")
+                        due_at = arguments.get("due_at")
+                        due_line = f"\nDue: {due_at}" if due_at else ""
+                        self.record_event(
+                            "confirmation.required",
+                            turn=self.current_turn_data.get("turn_number"),
+                            session_id=session_id,
+                            details={
+                                "confirmation_id": payload_data.get("confirmation_id"),
+                                "tool_name": payload_data.get("tool_name"),
+                                "title": title,
+                                "due_at": due_at,
+                                "status": payload_data.get("status"),
+                            },
+                        )
+                        self.log(
+                            f"""
+==================================================
+CONFIRMATION REQUIRED
+
+Tool: {payload_data.get("tool_name", "unknown")}
+
+Action:
+Create reminder: {title}{due_line}
+
+NO DATABASE MUTATION HAS OCCURRED.
+
+Speak YES to approve.
+Speak NO to cancel.
+=================================================="""
+                        )
                     # Check correlation
                     cur_turn_id = self.current_turn_data["turn_id"]
                     if (

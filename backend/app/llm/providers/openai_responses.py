@@ -15,6 +15,7 @@ from app.llm.types import (
     LLMCapabilities,
     LLMEvent,
     LLMEventType,
+    LLMNamedToolChoice,
     LLMRequest,
     LLMToolCall,
     LLMUsage,
@@ -105,7 +106,13 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
                 }
                 for tool in request.allowed_tools
             ]
-            payload["tool_choice"] = request.tool_choice
+            if isinstance(request.tool_choice, LLMNamedToolChoice):
+                payload["tool_choice"] = {
+                    "type": "function",
+                    "name": request.tool_choice.function.name,
+                }
+            else:
+                payload["tool_choice"] = request.tool_choice
         return payload
 
     async def stream(

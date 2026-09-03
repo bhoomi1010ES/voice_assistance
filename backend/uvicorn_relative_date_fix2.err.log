@@ -1,0 +1,8 @@
+INFO:     Started server process [24548]
+INFO:     Waiting for application startup.
+{"timestamp":"2026-09-03T23:46:03.301701+00:00","level":"INFO","service":"voice-assistance-backend","event":"STT_ENGINE_STARTED","message":"Remote STT engine ready","taskName":"Task-2","engine":"remote","runtime":"httpx","endpoint_host":"cleaners-satisfaction-spotlight-hence.trycloudflare.com","language":"en","partials_supported":false}
+{"timestamp":"2026-09-03T23:46:03.570473+00:00","level":"INFO","service":"voice-assistance-backend","event":"llm.provider.initialized","message":"LLM provider initialized","taskName":"Task-2","provider":"nvidia","provider_host":"https://integrate.api.nvidia.com","configured_model":"nvidia/nemotron-3-super-120b-a12b","api_family":"openai_chat_completions","live_verified":false}
+{"timestamp":"2026-09-03T23:46:03.570473+00:00","level":"INFO","service":"voice-assistance-backend","event":"service.started","message":"application started","taskName":"Task-2"}
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+{"timestamp":"2026-09-03T23:46:27.001847+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"e888d77a-3031-451d-a6f9-e96a526217eb","method":"GET","path":"/ready","status_code":200,"duration_ms":1090.889,"taskName":"Task-6"}

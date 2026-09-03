@@ -5,13 +5,13 @@ import json
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import Clock, SystemClock
 from app.core.config import Settings
 from app.llm.errors import (
     LLMContextLimitError,
@@ -31,6 +31,7 @@ from app.llm.types import (
 )
 
 ToolHandler = Callable[["ToolExecutionContext", BaseModel], Awaitable[Any]]
+ToolArgumentNormalizer = Callable[["ToolExecutionContext", BaseModel], BaseModel]
 IdempotencyKey = tuple[uuid.UUID, uuid.UUID, str, str]
 
 
@@ -46,7 +47,13 @@ class ToolExecutionContext:
     confirmed_tool_call_ids: frozenset[str] = frozenset()
     confirmation_expires_at_monotonic: float | None = None
     confirmation_check: Callable[[LLMToolCall], bool] | None = None
+    confirmation_requested: (
+        Callable[[LLMToolCall, BaseModel, RegisteredTool], Awaitable[bool]] | None
+    ) = None
     db: AsyncSession | None = None
+    clock: Clock = field(default_factory=SystemClock)
+    user_timezone: str = "UTC"
+    source_transcript: str | None = None
     cancellation_check: Callable[[], bool] | None = None
     tool_execution_started: Callable[[LLMToolCall, float], None] | None = None
     tool_execution_finished: Callable[[LLMToolCall, float], None] | None = None
@@ -58,6 +65,7 @@ class RegisteredTool:
     description: str
     arguments_model: type[BaseModel]
     handler: ToolHandler
+    argument_normalizer: ToolArgumentNormalizer | None
     required_scopes: frozenset[str]
     read_only: bool
     requires_confirmation: bool
@@ -148,6 +156,7 @@ class ToolRegistry:
         description: str,
         arguments_model: type[BaseModel],
         handler: ToolHandler,
+        argument_normalizer: ToolArgumentNormalizer | None = None,
         required_scopes: frozenset[str] = frozenset(),
         read_only: bool = True,
         requires_confirmation: bool = False,
@@ -164,6 +173,7 @@ class ToolRegistry:
             description=description,
             arguments_model=arguments_model,
             handler=handler,
+            argument_normalizer=argument_normalizer,
             required_scopes=required_scopes,
             read_only=read_only,
             requires_confirmation=requires_confirmation,
@@ -222,6 +232,13 @@ class ToolExecutor:
             validated_arguments = tool.arguments_model.model_validate(arguments)
         except ValidationError:
             return self._failure(call, LLMToolArgumentsError.code)
+        if tool.argument_normalizer is not None:
+            try:
+                validated_arguments = tool.argument_normalizer(context, validated_arguments)
+            except LLMToolError as error:
+                return self._failure(call, error.code)
+            except (TypeError, ValueError, ValidationError):
+                return self._failure(call, LLMToolArgumentsError.code)
 
         if not tool.required_scopes.issubset(context.scopes):
             return self._failure(call, LLMToolAuthorizationError.code)
@@ -229,6 +246,17 @@ class ToolExecutor:
         if context.confirmation_check is not None:
             confirmed = confirmed or context.confirmation_check(call)
         if tool.requires_confirmation and not confirmed:
+            if context.confirmation_requested is not None:
+                try:
+                    confirmation_saved = await context.confirmation_requested(
+                        call,
+                        validated_arguments,
+                        tool,
+                    )
+                except Exception:  # noqa: BLE001 - confirmation failures stay model-visible
+                    return self._failure(call, "llm_tool_confirmation_unavailable")
+                if not confirmation_saved:
+                    return self._failure(call, "llm_tool_confirmation_unavailable")
             return self._failure(call, "llm_tool_confirmation_required")
         if (
             tool.requires_confirmation
@@ -424,8 +452,10 @@ class LLMToolLoop:
                     tool_calls=tuple(completed_calls),
                 )
             )
+            execution_results: list[ToolExecutionResult] = []
             for call in completed_calls:
                 result = await self.executor.execute(call, context=context)
+                execution_results.append(result)
                 next_messages.append(
                     LLMMessage(
                         role=LLMRole.TOOL,
@@ -433,6 +463,39 @@ class LLMToolLoop:
                         tool_call_id=result.tool_call_id,
                     )
                 )
+            if any(
+                result.error_code == "llm_tool_confirmation_required"
+                for result in execution_results
+            ):
+                # A confirmation request is a terminal orchestration state. Do
+                # not send its tool-result messages back to the provider, since
+                # a model may otherwise keep proposing the same mutation until
+                # the generic loop bound is reached.
+                provider_info = self.llm_service.provider_info
+                if provider_info is None:
+                    raise LLMToolLoopLimitError(
+                        "Confirmation was requested without provider metadata."
+                    )
+                last_event = round_events[-1] if round_events else None
+                confirmation_call = next(
+                    call
+                    for call, result in zip(completed_calls, execution_results, strict=True)
+                    if result.error_code == "llm_tool_confirmation_required"
+                )
+                yield LLMEvent(
+                    event_type="confirmation_required",
+                    session_id=current_request.session_id,
+                    turn_id=current_request.turn_id,
+                    response_id=current_request.response_id,
+                    provider=provider_info.provider,
+                    configured_model=provider_info.configured_model,
+                    monotonic_seconds=time.monotonic(),
+                    sequence=(last_event.sequence + 1 if last_event is not None else 0),
+                    attempt=(last_event.attempt if last_event is not None else 1),
+                    tool_call=confirmation_call,
+                    error_code="llm_tool_confirmation_required",
+                )
+                return
             current_request = current_request.model_copy(
                 update={"messages": tuple(next_messages)}
             )
@@ -455,7 +518,7 @@ class EmptyToolArguments(BaseModel):
 
 
 async def _current_time(_context: ToolExecutionContext, _arguments: BaseModel) -> dict[str, str]:
-    return {"utc": datetime.now(UTC).isoformat()}
+    return {"utc": _context.clock.now_utc().isoformat()}
 
 
 def create_default_tool_registry() -> ToolRegistry:

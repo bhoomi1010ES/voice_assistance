@@ -30,6 +30,7 @@ from app.llm.types import (
     LLMCapabilities,
     LLMEvent,
     LLMEventType,
+    LLMNamedToolChoice,
     LLMProviderInfo,
     LLMRequest,
     LLMRole,
@@ -355,7 +356,11 @@ class OpenAIChatProvider:
                 }
                 for tool in request.allowed_tools
             ]
-            payload["tool_choice"] = request.tool_choice
+            payload["tool_choice"] = (
+                request.tool_choice.model_dump(mode="json")
+                if isinstance(request.tool_choice, LLMNamedToolChoice)
+                else request.tool_choice
+            )
         payload.update(self._provider_request_options(request))
         return payload
 

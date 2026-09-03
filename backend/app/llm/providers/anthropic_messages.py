@@ -15,6 +15,7 @@ from app.llm.types import (
     LLMCapabilities,
     LLMEvent,
     LLMEventType,
+    LLMNamedToolChoice,
     LLMRequest,
     LLMToolCall,
     LLMUsage,
@@ -111,7 +112,12 @@ class AnthropicMessagesProvider(OpenAIChatProvider):
                 }
                 for tool in request.allowed_tools
             ]
-            if request.tool_choice == "required":
+            if isinstance(request.tool_choice, LLMNamedToolChoice):
+                payload["tool_choice"] = {
+                    "type": "tool",
+                    "name": request.tool_choice.function.name,
+                }
+            elif request.tool_choice == "required":
                 payload["tool_choice"] = {"type": "any"}
             elif request.tool_choice == "none":
                 payload["tool_choice"] = {"type": "none"}

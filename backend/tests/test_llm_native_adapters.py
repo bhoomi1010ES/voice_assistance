@@ -9,7 +9,14 @@ import pytest
 from app.core.config import Settings
 from app.llm.providers.anthropic_messages import AnthropicMessagesProvider
 from app.llm.providers.openai_responses import OpenAIResponsesProvider
-from app.llm.types import LLMMessage, LLMRequest, LLMRole, LLMToolCall, LLMToolDefinition
+from app.llm.types import (
+    LLMMessage,
+    LLMNamedToolChoice,
+    LLMRequest,
+    LLMRole,
+    LLMToolCall,
+    LLMToolDefinition,
+)
 
 
 def _request(*, tools=()) -> LLMRequest:
@@ -243,3 +250,26 @@ def test_follow_up_tool_results_map_to_each_native_wire_contract() -> None:
     assert anthropic_payload["messages"][1]["content"][0]["id"] == "call-1"
     assert anthropic_payload["messages"][2]["content"][0]["type"] == "tool_result"
     assert anthropic_payload["messages"][2]["content"][0]["tool_use_id"] == "call-1"
+
+
+def test_named_tool_choice_maps_to_each_native_wire_contract() -> None:
+    tool = LLMToolDefinition(
+        name="create_task",
+        description="Create a task after confirmation.",
+        input_schema={"type": "object"},
+    )
+    request = _request(tools=(tool,)).model_copy(
+        update={
+            "tool_choice": LLMNamedToolChoice(function={"name": "create_task"}),
+        }
+    )
+
+    openai_payload = OpenAIResponsesProvider(
+        _settings("openai", "https://api.openai.com/v1")
+    )._build_payload(request)
+    anthropic_payload = AnthropicMessagesProvider(
+        _settings("anthropic", "https://api.anthropic.com")
+    )._build_payload(request)
+
+    assert openai_payload["tool_choice"] == {"type": "function", "name": "create_task"}
+    assert anthropic_payload["tool_choice"] == {"type": "tool", "name": "create_task"}

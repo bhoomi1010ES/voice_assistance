@@ -85,5 +85,9 @@ class LLMToolArgumentsError(LLMToolError):
     code = "llm_tool_invalid_arguments"
 
 
+class LLMToolTemporalResolutionError(LLMToolError):
+    code = "llm_tool_temporal_resolution_failed"
+
+
 class LLMToolLoopLimitError(LLMToolError):
     code = "llm_tool_loop_limit"
