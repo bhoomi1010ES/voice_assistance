@@ -23,4 +23,6 @@ class CancellationGuard:
         return response_id == self._active and response_id not in self._cancelled
 
     def clear(self) -> None:
+        if self._active is not None:
+            self._cancelled.discard(self._active)
         self._active = None

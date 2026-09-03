@@ -1976,7 +1976,9 @@ REFRESH_TOKEN_TTL_SECONDS=2592000
 STT_BASE_URL=http://stt:8101
 EMBEDDING_BASE_URL=http://embeddings:8102
 RERANKER_BASE_URL=http://reranker:8103
+LLM_PROVIDER=openai_compatible
 LLM_BASE_URL=http://llm:8104/v1
+LLM_API_KEY=replace-with-a-secret-or-local-development-token
 TTS_BASE_URL=http://tts:8105
 
 STT_MODEL=openai/whisper-large-v3-turbo
@@ -2519,24 +2521,554 @@ remain to be collected. Therefore the current status remains
 
 ## Phase 5 — LLM orchestration
 
-### Steps
+**Status: IN PROGRESS — BACKEND/LLM ACCEPTANCE PASS; PHYSICAL ACCEPTANCE PENDING.**
 
-- [ ] Deploy Qwen3.5-9B with vLLM.
-- [ ] Pin model revision/runtime versions.
-- [ ] Configure reasoning parser.
-- [ ] Configure tool-call parser.
-- [ ] Define system instructions.
-- [ ] Define Pydantic structured outputs.
-- [ ] Implement cancellation.
-- [ ] Stream text deltas.
-- [ ] Add prompt/context token budgets.
-- [ ] Add model timeout/retry policy.
-- [ ] Add response safety/policy layer appropriate to the product.
-- [ ] Build LLM evaluation fixtures.
+### Implementation checkpoint — 2026-09-03
 
-### Gate
+The provider-neutral Phase 5 implementation is complete without changing the
+Phase 4 remote STT engine. It includes strict four-setting configuration,
+redacted readiness, canonical request/event/error types, an explicit provider
+factory, native OpenAI Responses and Anthropic Messages adapters, a shared
+OpenAI-compatible Chat Completions SSE transport, a thin NVIDIA profile, bounded
+retries/concurrency/response sizes, lifecycle-managed HTTP, cancellation,
+stale-delta suppression, and post-STT voice-gateway text streaming with durable
+response metadata. The server-owned Tool Registry and sequential bounded tool
+loop are wired into the voice gateway. `create_task` now uses the existing
+PostgreSQL `tasks` table, authenticated ownership, strict Pydantic arguments,
+confirmation, scoped authorization, and a PostgreSQL-backed idempotency/audit
+record. The migration is `0005_phase5_tool_execution_records`.
 
-Qwen passes the defined tool-routing and structured-output tests without malformed or unauthorized actions.
+The selected deployment values are documented as:
+
+```dotenv
+LLM_PROVIDER=nvidia
+LLM_BASE_URL=https://integrate.api.nvidia.com/v1
+LLM_MODEL=nvidia/nemotron-3-super-120b-a12b
+LLM_API_KEY=<rotated-secret-in-ignored-.env>
+```
+
+The local ignored `.env` contains the complete selected NVIDIA configuration;
+the credential was checked only for configured presence and was never printed,
+logged, or written to evidence. Live NVIDIA text streaming, read-only tool
+continuation, cancellation at all three required points, provider failure
+mapping, deterministic semantic/policy evaluation, and a scoped external
+PostgreSQL `create_task` mutation with durable idempotency all pass. Two-sample
+direct/read-only/mutating latency measurements are recorded with monotonic
+timestamps. Phase 5 is not accepted yet because the physical RMX5070 was not
+available to ADB during preflight; physical STT→LLM, physical tool round-trip,
+physical reconnect/session cleanup, and FastAPI CPU/RSS sampling remain open.
+
+### Authoritative Phase 5 decision
+
+Phase 5 must not be coupled to one model vendor, one SDK, Qwen, or vLLM. The
+selected model is accessed through exactly four primary runtime settings:
+
+```dotenv
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_API_KEY=replace-with-a-secret
+LLM_MODEL=replace-with-an-exact-model-id
+```
+
+Supported `LLM_PROVIDER` values are:
+
+```text
+nvidia
+openai
+openai_compatible
+anthropic
+```
+
+The configured provider controls authentication, endpoint paths, request
+translation, streaming-event parsing, tool-call translation, usage parsing,
+and error mapping. The Voice Session Orchestrator, Tool Registry, memory layer,
+TTS pipeline, and mobile protocol must depend only on the internal LLM contract.
+
+This decision supersedes the earlier requirement to deploy Qwen3.5-9B with
+vLLM as the only Phase 5 path. Qwen through vLLM remains a valid latency-first
+candidate using `LLM_PROVIDER=openai_compatible`; it is no longer the
+architecture itself.
+
+Do not silently fall back to another provider or model. A bad key, unavailable
+model, incompatible API, or provider outage must produce a typed LLM error for
+the selected configuration.
+
+### Provider wire contracts
+
+| Provider | API family used by Phase 5 | Example base URL | Authentication | Inference endpoint |
+|---|---|---|---|---|
+| `nvidia` | OpenAI-compatible Chat Completions | `https://integrate.api.nvidia.com/v1` | `Authorization: Bearer <LLM_API_KEY>` | `POST /chat/completions` |
+| `openai` | OpenAI Responses API | `https://api.openai.com/v1` | `Authorization: Bearer <LLM_API_KEY>` | `POST /responses` |
+| `openai_compatible` | OpenAI-compatible Chat Completions | Operator supplied, normally ending in `/v1` | Bearer token for remote services; explicitly configured local development exception | `POST /chat/completions` |
+| `anthropic` | Anthropic Messages API | `https://api.anthropic.com` | `x-api-key: <LLM_API_KEY>` plus pinned `anthropic-version` | `POST /v1/messages` |
+
+Rules:
+
+- `LLM_BASE_URL` is a base URL, not a complete inference URL. The provider
+  adapter appends its owned path exactly once.
+- Production configuration must explicitly provide all four primary settings.
+- `LLM_MODEL` is passed exactly as configured. Do not rewrite aliases or replace
+  a requested model with a different model.
+- `LLM_API_KEY` is a `SecretStr`, never returned by settings diagnostics, never
+  logged, and never stored in evidence. A missing key is permitted only for an
+  explicitly allowed loopback/private development endpoint that does not use
+  authentication.
+- `openai_compatible` means the minimum Chat Completions contract implemented
+  and tested by this project. It does not imply that every OpenAI extension,
+  Responses event, structured-output feature, or tool behavior is supported.
+- NVIDIA API Catalog and self-hosted NVIDIA NIM can expose the same broad API
+  family, but model capabilities and server flags still differ. Tool support
+  must be proved for the configured model and deployment.
+- Anthropic remains a native Messages integration. Do not send Anthropic through
+  an OpenAI-compatibility shim in the production path.
+
+### Configuration contract
+
+The four primary settings identify and authorize the model. Operational
+settings remain provider-neutral:
+
+```dotenv
+LLM_PROVIDER=openai_compatible
+LLM_BASE_URL=http://llm:8104/v1
+LLM_API_KEY=replace-with-a-secret-or-local-development-token
+LLM_MODEL=Qwen/Qwen3.5-9B
+
+LLM_CONNECT_TIMEOUT_SECONDS=10
+LLM_REQUEST_TIMEOUT_SECONDS=60
+LLM_MAX_OUTPUT_TOKENS=1024
+LLM_MAX_CONTEXT_TOKENS=32768
+LLM_MAX_CONCURRENT_REQUESTS=8
+LLM_MAX_TOOL_ROUNDS=4
+LLM_MAX_RETRY_ATTEMPTS=2
+```
+
+Provider-specific optional settings must be rare and isolated. The initial
+allowed exception is a pinned `LLM_ANTHROPIC_VERSION`, defaulting to the tested
+API version. Do not add provider-specific sampling parameters to the shared
+request merely because one API supports them.
+
+`LLM_BASE_URL` validation must:
+
+- require an absolute HTTP(S) URL;
+- reject credentials in user-info, query parameters, and fragments;
+- require HTTPS in staging and production;
+- allow HTTP only for an explicitly configured local/private development host;
+- avoid redirects to a different origin;
+- never accept a URL supplied by a mobile user or prompt content;
+- normalize one trailing slash without changing the path prefix.
+
+The provider and model are process configuration. Switching either requires a
+controlled backend restart; do not change providers midway through a voice
+session.
+
+### Internal provider-neutral contract
+
+Create an `LLMProvider` protocol that exposes provider metadata, optional
+capability discovery, streaming generation, and cancellation. The core
+orchestrator must use canonical requests and events such as:
+
+```python
+class LLMProvider(Protocol):
+    async def initialize(self) -> LLMProviderInfo: ...
+    async def stream(self, request: LLMRequest) -> AsyncIterator[LLMEvent]: ...
+    async def close(self) -> None: ...
+```
+
+`LLMRequest` must contain at minimum:
+
+```text
+session_id
+turn_id
+response_id
+system_instructions
+messages
+allowed_tools
+max_output_tokens
+```
+
+Canonical streamed events must include:
+
+```text
+request_started
+text_delta
+tool_call_started
+tool_call_arguments_delta
+tool_call_completed
+usage
+response_completed
+response_failed
+```
+
+Every event carries `session_id`, `turn_id`, `response_id`, provider, configured
+model, and a monotonic timestamp. Completion metadata records the provider
+request ID when available, provider-returned model ID, finish/stop reason,
+input/output token usage when reported, and whether the response was cancelled.
+
+Provider reasoning traces are not part of the public contract. Do not expose or
+persist private chain-of-thought. A provider-supported reasoning summary may be
+handled later as an explicit, separately reviewed feature.
+
+### Capability model
+
+Provider name alone is not enough to prove model behavior. Record an immutable
+capability snapshot at startup/live preflight:
+
+```text
+streaming
+text_generation
+tool_calling
+parallel_tool_calling
+strict_tool_schema
+structured_text_output
+usage_reporting
+model_listing
+cancellation
+```
+
+Capabilities come from adapter guarantees plus a live contract probe of the
+configured deployment. Never assume every NVIDIA or OpenAI-compatible model can
+call tools. The production Phase 5 selection requires streaming and tool
+calling. Unsupported optional capabilities remain false and must not be
+fabricated.
+
+### Stage 0 — freeze provider contracts and fixtures
+
+- [ ] Capture sanitized request/response/SSE fixtures from current official
+      documentation for all four provider modes.
+- [ ] Define the exact endpoint join rule and auth headers for each provider.
+- [ ] Define the minimum accepted Chat Completions subset for NVIDIA and
+      `openai_compatible`.
+- [ ] Define supported OpenAI Responses event types and Anthropic Messages SSE
+      event types; unknown future events must be ignored safely or surfaced as
+      typed protocol errors when required for correctness.
+- [ ] Define a capability manifest for each selected provider/model pair.
+- [ ] Define the semantic LLM evaluation corpus and its thresholds before
+      running provider comparisons.
+
+### Stage 1 — settings, validation, and factory
+
+- [x] Add `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL` to
+      `Settings` with the validation rules above.
+- [x] Add bounded timeout, context, output-token, concurrency, retry, and
+      tool-round settings.
+- [x] Add placeholders to `.env.example`; never add a usable key.
+- [x] Build one explicit provider factory. Unknown providers and incomplete
+      configuration fail startup/readiness without fallback.
+- [x] Return only redacted provider host, provider type, and model in readiness
+      diagnostics.
+- [x] Add a tracked-file secret scan covering every supported provider key
+      format and generic authorization values.
+
+### Stage 2 — canonical messages, tools, and events
+
+- [x] Create Pydantic models for canonical messages, content, tool definitions,
+      tool calls, tool results, usage, finish reasons, and streamed events.
+- [x] Keep system instructions separate from user content so adapters can map
+      them correctly to OpenAI instructions/messages and Anthropic's top-level
+      `system` field.
+- [x] Preserve provider tool-call IDs exactly and associate them with the
+      internal `response_id`.
+- [x] Accumulate partial JSON tool arguments without executing them until the
+      provider marks the tool call complete and Pydantic validation passes.
+- [x] Define stable internal errors: configuration, authentication, permission,
+      model-not-found, rate-limit, timeout, overloaded, provider, protocol,
+      cancelled, and context-limit errors.
+
+### Stage 3 — provider adapters
+
+#### OpenAI Responses adapter
+
+- [x] Use `POST {LLM_BASE_URL}/responses` with bearer authentication.
+- [x] Set `store=false` initially so application state remains the source of
+      truth and provider switching does not depend on hosted conversation state.
+- [x] Map canonical instructions/messages/tools to Responses input items.
+- [ ] Parse text deltas, function-call argument deltas/completion, usage,
+      refusal/incomplete states, and terminal response events.
+- [x] Return tool results using correlated `function_call_output` items.
+- [x] Do not enable provider-hosted built-in tools in Phase 5 v1.
+
+#### NVIDIA adapter
+
+- [x] Implement NVIDIA as a policy profile over the shared OpenAI-compatible
+      Chat Completions transport.
+- [x] Default documentation to `https://integrate.api.nvidia.com/v1`, while
+      allowing an operator-supplied self-hosted NIM base URL.
+- [x] Send the exact configured model and parse Chat Completions SSE deltas.
+- [x] Require a live tool-call probe because NIM tool calling depends on model,
+      chat template, `--enable-auto-tool-choice`, and the matching parser.
+- [x] Record NVIDIA request/usage metadata when returned without assuming
+      provider GPU metrics are available for hosted inference.
+
+#### Generic OpenAI-compatible adapter
+
+- [x] Use the conservative `POST {LLM_BASE_URL}/chat/completions` contract.
+- [x] Send only the common request fields needed for text streaming and function
+      tools; provider extensions are opt-in capability flags, never defaults.
+- [x] Parse `choices[].delta.content`, indexed tool-call deltas, finish reason,
+      `[DONE]`, optional usage, and error bodies defensively.
+- [ ] Support vLLM, LM Studio, and similar services only after the configured
+      deployment passes the same contract tests.
+- [x] Treat missing optional usage as unavailable rather than estimating or
+      fabricating provider-reported usage.
+
+#### Anthropic Messages adapter
+
+- [x] Use `POST {LLM_BASE_URL}/v1/messages` with `x-api-key`,
+      `anthropic-version`, and JSON content headers.
+- [x] Map initial instructions to top-level `system` and send bounded full
+      message history because the Messages API is stateless.
+- [x] Supply the required `max_tokens` value.
+- [x] Translate canonical tools to `name`, `description`, and `input_schema`.
+- [x] Parse `message_start`, content block start/delta/stop, text deltas,
+      partial input-JSON deltas, message deltas, ping/error events, and
+      `message_stop`.
+- [x] Return tool results as correctly ordered `tool_result` content blocks
+      correlated with `tool_use_id`.
+- [x] Omit shared sampling parameters by default; current Anthropic model
+      families do not all accept the same sampling controls.
+
+### Stage 4 — lifecycle, streaming, cancellation, and retries
+
+- [x] Use lifecycle-managed asynchronous HTTP clients with TLS verification,
+      connection pooling, bounded response/event sizes, and a concurrency
+      semaphore.
+- [x] Start one provider request per committed LLM turn and stream normalized
+      events to the orchestrator.
+- [x] Bind every provider task to `(session_id, turn_id, response_id)`.
+- [x] On interruption or supersession, cancel the HTTP/SSE task, stop forwarding
+      deltas, and discard every late event by generation check.
+- [x] Retry only transient connection, timeout, 429, overloaded, and selected
+      5xx failures with bounded exponential backoff and `Retry-After` support.
+- [x] Retry only before the first output/tool delta. Never automatically replay
+      a partially streamed response or a completed tool request.
+- [x] Do not retry authentication, permission, invalid request, unsupported
+      model, schema, or context-limit failures.
+- [x] Close provider clients during FastAPI lifespan shutdown.
+
+### Stage 5 — provider-neutral tool loop
+
+- [x] Generate provider tool definitions only from the server-owned Tool
+      Registry; never accept tool schemas from the mobile client or model text.
+- [x] Validate every completed argument object with the registered Pydantic
+      schema before dispatch.
+- [x] Enforce user authorization, scope, confirmation policy, rate limits, and
+      idempotency independently of the model provider.
+- [x] Use `(user_id, turn_id, tool_name, tool_call_id)` or the existing stronger
+      key as the idempotency boundary for side effects.
+- [x] Disable parallel side-effecting tool calls in v1. Read-only parallelism may
+      be enabled later only with deterministic ordering and tests.
+- [x] Bound the tool loop by configured rounds, tool calls, wall time, and token
+      budget to prevent infinite agent loops.
+- [x] Return structured success/error results to the same provider adapter and
+      require a final assistant response after tool execution.
+- [x] Never speak or display a successful action confirmation until the Tool
+      Engine has durably committed the action.
+
+The reusable executor enforces the policy boundary and accepts a durable
+idempotency-store implementation. The runtime registers the read-only
+`get_current_time` diagnostic tool and confirmed `create_task`; the latter is
+backed by PostgreSQL and was exercised against a temporary authenticated test
+user. The evidence run remains pending only on physical and process-resource
+gates.
+
+### Stage 6 — prompts and context management
+
+- [x] Create one versioned provider-neutral system-instruction template.
+- [ ] Keep the application database as conversation truth; do not rely on a
+      provider's hosted thread/conversation object for v1.
+- [ ] Build a deterministic context assembler for recent turns, memory/RAG
+      results, tool state, user timezone, and current time.
+- [ ] Apply a provider/model context budget before sending the request. Reserve
+      output and tool-result capacity and fail safely instead of relying on
+      undocumented truncation.
+- [x] Treat retrieved/user content as untrusted data and keep it separated from
+      system/tool policy instructions.
+- [x] Store prompt-template version, provider, configured/returned model, token
+      counts, and outcome without storing secrets or hidden reasoning.
+
+### Stage 7 — voice and TTS integration
+
+- [x] Add the LLM service after committed STT final text; never call the LLM with
+      an empty or failed transcript.
+- [x] Stream safe text deltas through the existing WebSocket using current
+      session/turn/response correlation.
+- [x] Buffer text around an incomplete tool call and do not send premature
+      success language to TTS.
+- [ ] Segment only confirmed text into TTS chunks and cancel both LLM and TTS on
+      barge-in/supersession.
+- [x] Preserve the final transcript and typed LLM failure when a provider is
+      unavailable so the user can retry without losing the spoken request.
+
+### Stage 8 — security and observability
+
+- [x] Keep `LLM_API_KEY` only in ignored local environment configuration or a
+      production secret manager. Never ship it to Android.
+- [x] Redact authorization headers, key-shaped values, URL credentials, prompt
+      bodies, tool arguments containing personal data, and raw provider errors.
+- [x] Record safe structured fields: provider, host, configured/returned model,
+      request ID, status, attempt count, input/output tokens, stop reason, error
+      class, and cancellation state.
+- [x] Measure monotonic request-to-first-event, request-to-first-text, tool-call
+      assembly, provider completion, and total orchestration latency.
+- [ ] Add counters for requests, active streams, retries, timeouts, rate limits,
+      protocol failures, malformed tool calls, cancelled turns, and token usage.
+- [ ] For local NIM/vLLM, measure the actual local process/GPU separately. For
+      hosted providers, do not fabricate CPU/GPU/VRAM usage.
+- [x] Ensure arbitrary `LLM_BASE_URL` values cannot become a user-controlled SSRF
+      primitive.
+
+### Stage 9 — automated tests and evaluation
+
+#### Configuration and factory tests
+
+- [ ] Test every provider value, missing field, malformed URL, production HTTP
+      rejection, local-development exception, secret redaction, and no-fallback
+      behavior.
+- [ ] Test exact endpoint joining so `/v1` is neither removed nor duplicated.
+
+#### Adapter contract tests
+
+- [ ] Use in-memory HTTP/SSE transports for text, tool calls, fragmented JSON,
+      multiple content blocks, usage, finish reasons, refusals, malformed data,
+      unknown events, and mid-stream errors.
+- [ ] Verify exact authentication headers without logging their values.
+- [ ] Test 400/401/403/404/408/413/429/5xx/529-style mappings as applicable,
+      `Retry-After`, bounded retries, cancellation, and late-event suppression.
+- [ ] Test that no provider-specific response object escapes the adapter.
+
+#### Orchestration and tool safety tests
+
+- [ ] Test text-only, one tool, tool error, multiple rounds, duplicate replay,
+      unauthorized tool, malformed arguments, missing required arguments,
+      provider cancellation, reconnect, and stale response cases.
+- [ ] Prove malformed and unauthorized calls never reach a tool implementation.
+- [ ] Prove provider/model switching requires restart and no silent runtime
+      fallback occurs.
+
+#### Provider/model evaluation
+
+- [ ] Run the same versioned corpus against each candidate configuration:
+      memory questions, date/time reasoning, reminder/task creation, tool
+      selection, correction, ambiguity, hallucination resistance, refusals,
+      prompt injection, latency, token use, and cost.
+- [ ] Keep Qwen/vLLM, NVIDIA-hosted models, OpenAI models, and Anthropic models as
+      comparable configurations rather than embedding vendor logic in tests.
+- [ ] Pin model identifiers/revisions when the provider offers snapshots. Record
+      provider-side model drift when only a moving alias is available.
+
+### Stage 10 — live preflight and rollout
+
+- [x] Configure one selected provider using the four primary settings.
+- [ ] Verify `/models` or the provider's model-listing API when supported, but do
+      not treat listing alone as proof of inference/tool capability.
+- [x] Run one disposable, sanitized text-stream smoke request.
+- [x] Run one disposable tool-call round trip using a read-only diagnostic tool.
+- [x] Verify cancellation before the first delta and during streaming, including
+      cancellation after a mutating tool proposal and before execution.
+- [ ] Run backend integration and physical voice-path validation from STT final
+      through LLM first text/final text without starting Phase 6 memory work.
+- [x] Run the tracked secret scan and inspect logs/evidence for credential leaks.
+- [x] Record the exact provider, base host, model, API family, and capability
+      snapshot in the Phase 5 acceptance report.
+
+### Proposed implementation layout
+
+```text
+backend/app/llm/
+├── __init__.py
+├── errors.py
+├── types.py
+├── provider.py
+├── service.py
+├── context.py
+├── tool_loop.py
+└── providers/
+    ├── openai_responses.py
+    ├── openai_chat.py
+    ├── nvidia.py
+    └── anthropic_messages.py
+
+backend/tests/
+├── test_llm_config.py
+├── test_llm_provider_factory.py
+├── test_llm_openai_responses.py
+├── test_llm_openai_compatible.py
+├── test_llm_nvidia.py
+├── test_llm_anthropic.py
+├── test_llm_service.py
+├── test_llm_tool_loop.py
+└── test_llm_voice_integration.py
+```
+
+`nvidia.py` should remain a thin NVIDIA policy/capability profile over the
+shared `openai_chat.py` transport. Do not duplicate the Chat Completions parser.
+
+### Acceptance predicate
+
+Phase 5 can pass only when all mandatory gates below pass for the configured
+production provider/model:
+
+```text
+four primary LLM settings configured
+selected provider factory path verified
+selected model reachable and exact model recorded
+streaming text PASS
+tool-call round trip PASS
+tool arguments validated before execution
+unauthorized tool executions = 0
+malformed tool executions = 0
+duplicate side effects = 0
+cancellation and stale-delta suppression PASS
+no silent provider/model fallback PASS
+context/output/tool-loop limits enforced
+provider errors mapped safely
+monotonic TTFT and completion latency measured
+token usage recorded when provider reports it
+secret scan and evidence redaction PASS
+provider-neutral automated suite PASS
+selected-provider live contract suite PASS
+versioned semantic evaluation thresholds PASS
+physical STT-final → LLM response path PASS
+```
+
+If the selected model does not support reliable tools, Phase 5 remains pending
+even if ordinary chat text works. Missing provider-reported usage must be stated
+honestly; it must never be estimated and labeled as provider evidence.
+
+### Official research basis
+
+- OpenAI Responses creation, streaming, function tools, structured output, and
+  model identifiers:
+  https://developers.openai.com/api/reference/cli/resources/responses/methods/create
+- OpenAI model listing:
+  https://developers.openai.com/api/reference/resources/models
+- OpenAI Chat Completions compatibility contract:
+  https://developers.openai.com/api/reference/cli/resources/chat/subresources/completions
+- NVIDIA hosted API Catalog base URL and model request examples:
+  https://build.nvidia.com/openai/gpt-oss-20b?nim=hosted
+- NVIDIA NIM inference endpoints and model-dependent tool calling:
+  https://docs.nvidia.com/nim/large-language-models/latest/system-example.html
+  https://docs.nvidia.com/nim/large-language-models/latest/advanced-use-cases/tool-calling-and-mcp.html
+- Anthropic authentication and Messages API behavior:
+  https://platform.claude.com/docs/en/manage-claude/authentication
+  https://platform.claude.com/docs/en/build-with-claude/working-with-messages
+- Anthropic streaming and tool content blocks:
+  https://platform.claude.com/docs/en/build-with-claude/streaming
+  https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools
+- vLLM OpenAI-compatible serving, structured output, and model-specific tool
+  parsers:
+  https://docs.vllm.ai/en/latest/serving/openai_compatible_server/
+  https://docs.vllm.ai/en/latest/features/tool_calling/
+  https://docs.vllm.ai/en/latest/features/structured_outputs/
+
+### Final Phase 5 gate
+
+The provider selected by `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, and
+`LLM_MODEL` must pass the same provider-neutral streaming, tool-routing,
+structured-validation, cancellation, security, and voice-path tests without
+malformed or unauthorized actions. Passing with one provider proves that exact
+configuration only; another provider/model must run its own live contract and
+evaluation evidence before production use.
 
 ---
 

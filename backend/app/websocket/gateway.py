@@ -14,6 +14,17 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
+from app.llm.context import VOICE_SYSTEM_PROMPT_VERSION, build_voice_llm_request
+from app.llm.errors import LLMError
+from app.llm.service import LLMService
+from app.llm.tool_loop import (
+    LLMToolLoop,
+    ToolExecutionContext,
+    ToolIdempotencyStore,
+    ToolRegistry,
+    create_default_tool_registry,
+)
+from app.llm.types import LLMEvent, LLMUsage
 from app.models import ConversationTurn, VoiceSession
 from app.services.audit import record_audit
 from app.services.auth import (
@@ -22,6 +33,7 @@ from app.services.auth import (
     AuthPrincipal,
     AuthService,
 )
+from app.services.tool_idempotency import PostgresToolIdempotencyStore
 from app.services.voice_persistence import VoicePersistence
 from app.services.voice_registry import (
     VoiceRegistry,
@@ -90,6 +102,9 @@ class VoiceGateway:
         principal: AuthPrincipal,
         access_token: str,
         stt_service: STTService,
+        llm_service: LLMService,
+        tool_registry: ToolRegistry | None = None,
+        tool_idempotency_store: ToolIdempotencyStore | None = None,
     ) -> None:
         self.websocket = websocket
         self.db = db
@@ -99,10 +114,23 @@ class VoiceGateway:
         self.access_token = access_token
         self.auth_service = AuthService(settings)
         self.stt_service = stt_service
+        self.llm_service = llm_service
+        self.tool_registry = tool_registry or create_default_tool_registry()
+        self.tool_loop = LLMToolLoop(
+            settings,
+            llm_service,
+            self.tool_registry,
+            idempotency_store=tool_idempotency_store
+            or PostgresToolIdempotencyStore(db),
+        )
         self.persistence = VoicePersistence()
         self.registry = VoiceRegistry(
             websocket.app.state.infrastructure.redis,
             ttl_seconds=settings.voice_max_session_seconds + settings.voice_reconnect_grace_seconds,
+            lease_ttl_seconds=(
+                settings.voice_heartbeat_timeout_seconds
+                + settings.voice_reconnect_grace_seconds
+            ),
         )
         self.owner = VoiceRegistryOwner(
             user_id=principal.user_id,
@@ -126,6 +154,7 @@ class VoiceGateway:
         self._stt_enabled = False
         self._stt_language: str | None = None
         self._last_response_id: uuid.UUID | None = None
+        self._response_turn_id: uuid.UUID | None = None
         self._connection_started = time.monotonic()
         self._session_started = self._connection_started
         self._turn_started: float | None = None
@@ -319,6 +348,9 @@ class VoiceGateway:
             await self._protocol_failure("audio_contract_mismatch", close_code=1002)
             return
 
+        if message.resume_session_id is None:
+            await self._reap_stale_sessions()
+
         if message.resume_session_id is not None:
             voice_session = await self.persistence.resume_session(
                 self.db,
@@ -326,6 +358,7 @@ class VoiceGateway:
                 message.resume_session_id,
                 reconnect_grace_seconds=self.settings.voice_reconnect_grace_seconds,
             )
+
             if voice_session is None:
                 await self._protocol_failure("session_not_available", close_code=1008)
                 return
@@ -389,11 +422,49 @@ class VoiceGateway:
                     "enabled": self._stt_enabled,
                     "language": self._stt_language or self.settings.stt_language,
                 },
+                llm=self._safe_llm_session_info(),
             )
         )
 
+    async def _reap_stale_sessions(self) -> None:
+        stale_after_seconds = (
+            self.settings.voice_heartbeat_timeout_seconds
+            + self.settings.voice_reconnect_grace_seconds
+        )
+        stale_session_ids = await self.persistence.reap_stale_active_sessions(
+            self.db,
+            self.principal,
+            stale_after_seconds=stale_after_seconds,
+        )
+        if not stale_session_ids:
+            return
+
+        for session_id in stale_session_ids:
+            redis_released = await self.registry.release_stale_device_session(
+                user_id=self.principal.user_id,
+                device_id=self.principal.device_id,
+                session_id=session_id,
+            )
+            LOGGER.info(
+                "Stale voice session reaped",
+                extra={
+                    "event": "voice.session.stale.reaped",
+                    "session_id": str(session_id),
+                    "user_id": str(self.principal.user_id),
+                    "device_id": str(self.principal.device_id),
+                    "redis_released": redis_released,
+                    "stale_after_seconds": stale_after_seconds,
+                    "timestamp_ms": int(time.time() * 1000),
+                    "monotonic_ms": round(time.monotonic() * 1000, 1),
+                },
+            )
+        await self.db.commit()
+
     async def _handle_turn_start(self, message: TurnStartMessage) -> None:
         self._require_session()
+        if self._stt_finalize_task is not None or self._response_turn_id is not None:
+            await self._send_error("response_in_progress")
+            return
         if self.active_turn is not None:
             raise StateTransitionError("a turn is already active")
         response_id = uuid.uuid4()
@@ -568,8 +639,8 @@ class VoiceGateway:
             self.voice_session.total_bytes += counters.byte_count
             self.voice_session.last_activity_at = self._now_datetime()
             self.active_turn = None
+            self._response_turn_id = counters.turn_id
             self._turn_started = None
-            self.cancel_guard.clear()
             await self.registry.clear_turn(self.owner, self.voice_session.id)
             await self.registry.refresh(self.owner, self.voice_session.id)
             await self.db.commit()
@@ -592,6 +663,7 @@ class VoiceGateway:
                 )
             await self._close_stt_turn()
             if stt_error is not None:
+                await self._complete_response_state(counters.response_id)
                 await self._send(
                     server_event(
                         "server.turn.failed",
@@ -603,6 +675,19 @@ class VoiceGateway:
                     )
                 )
                 return
+
+            llm_result: dict[str, Any] = {"status": "disabled"}
+            if self.llm_service.enabled and stt_result is not None:
+                llm_result = await self._stream_llm_response(
+                    session_id=self.voice_session.id,
+                    turn_id=counters.turn_id,
+                    response_id=counters.response_id,
+                    transcript=stt_result.event.text,
+                )
+                if llm_result["status"] == "cancelled":
+                    return
+
+            await self._complete_response_state(counters.response_id)
             await self._send(
                 server_event(
                     "server.turn.completed",
@@ -615,6 +700,8 @@ class VoiceGateway:
                     last_sequence_no=counters.last_sequence_no,
                     observed_duration_ms=observed_duration_ms,
                     stt_enabled=self._stt_enabled,
+                    llm_enabled=self.llm_service.enabled,
+                    llm_status=llm_result["status"],
                 )
             )
         except asyncio.CancelledError:
@@ -625,13 +712,302 @@ class VoiceGateway:
             await self.db.rollback()
             self.stats.error_count += 1
             await self._protocol_failure("voice_persistence_unavailable", close_code=1011)
-        except Exception:  # noqa: BLE001 - isolate background STT completion failures
+        except Exception:  # noqa: BLE001 - isolate background turn completion failures
             self.stats.error_count += 1
-            await self._protocol_failure("voice_stt_completion_failed", close_code=1011)
+            await self._protocol_failure("voice_turn_completion_failed", close_code=1011)
         finally:
             if self._stt_finalize_task is asyncio.current_task():
                 self._stt_finalize_task = None
                 self._stt_finalize_cancel_requested = False
+
+    async def _stream_llm_response(
+        self,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        transcript: str,
+    ) -> dict[str, Any]:
+        started = time.monotonic()
+        first_event_at: float | None = None
+        first_text_at: float | None = None
+        text_parts: list[str] = []
+        usage: LLMUsage | None = None
+        terminal_event: LLMEvent | None = None
+        failure_code: str | None = None
+        attempt_count = 0
+        request_started_times: list[float] = []
+        tool_call_at: float | None = None
+        tool_execution_started_at: float | None = None
+        tool_execution_finished_at: float | None = None
+
+        def on_tool_execution_started(_call, timestamp: float) -> None:
+            nonlocal tool_execution_started_at
+            tool_execution_started_at = tool_execution_started_at or timestamp
+
+        def on_tool_execution_finished(_call, timestamp: float) -> None:
+            nonlocal tool_execution_finished_at
+            tool_execution_finished_at = timestamp
+
+        try:
+            tool_registry = getattr(self, "tool_registry", None)
+            request = build_voice_llm_request(
+                self.settings,
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                transcript=transcript,
+                allowed_tools=(tool_registry.definitions() if tool_registry else ()),
+            )
+            if tool_registry is None:
+                event_stream = self.llm_service.stream(request)
+            else:
+                context = ToolExecutionContext(
+                    user_id=self.principal.user_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    scopes=frozenset({"tasks:write"}),
+                    db=self.db,
+                    tool_execution_started=on_tool_execution_started,
+                    tool_execution_finished=on_tool_execution_finished,
+                )
+                event_stream = self.tool_loop.stream(request, context=context)
+            async for event in event_stream:
+                if not self.cancel_guard.can_emit(response_id):
+                    return {"status": "cancelled"}
+                attempt_count = max(attempt_count, event.attempt)
+                if event.event_type == "request_started":
+                    request_started_times.append(event.monotonic_seconds)
+                    continue
+                first_event_at = first_event_at or event.monotonic_seconds
+                if event.event_type == "text_delta" and event.delta:
+                    first_text_at = first_text_at or event.monotonic_seconds
+                    text_parts.append(event.delta)
+                    await self._send(
+                        server_event(
+                            "assistant.text.delta",
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            response_id=response_id,
+                            sequence=event.sequence,
+                            delta=event.delta,
+                            provider=event.provider,
+                            model=event.configured_model,
+                        )
+                    )
+                    continue
+                if event.event_type.startswith("tool_call_"):
+                    # Tool-loop events stay server-side. Only confirmed final
+                    # assistant text is forwarded to the mobile client.
+                    if event.event_type == "tool_call_completed":
+                        tool_call_at = tool_call_at or event.monotonic_seconds
+                    continue
+                if event.event_type == "usage":
+                    usage = event.usage
+                    continue
+                if event.event_type == "response_failed":
+                    terminal_event = event
+                    failure_code = event.error_code or "llm_provider_error"
+                    break
+                if event.event_type == "response_completed":
+                    terminal_event = event
+                    if event.text is not None:
+                        text_parts = [event.text]
+                    break
+        except LLMError as error:
+            failure_code = error.code
+
+        completed_at = time.monotonic()
+        provider_info = self.llm_service.provider_info
+        provider = provider_info.provider if provider_info is not None else "unavailable"
+        configured_model = (
+            provider_info.configured_model if provider_info is not None else "unavailable"
+        )
+        metrics = {
+            "request_to_first_event_ms": self._duration_ms(started, first_event_at),
+            "request_to_first_text_ms": self._duration_ms(started, first_text_at),
+            "request_to_completion_ms": self._duration_ms(started, completed_at),
+            "request_to_tool_call_ms": self._duration_ms(started, tool_call_at),
+            "tool_execution_duration_ms": (
+                self._duration_ms(tool_execution_started_at, tool_execution_finished_at)
+                if tool_execution_started_at is not None
+                else None
+            ),
+            "tool_result_to_resumed_first_text_ms": (
+                self._duration_ms(request_started_times[1], first_text_at)
+                if len(request_started_times) > 1
+                else None
+            ),
+            "total_orchestration_ms": self._duration_ms(started, completed_at),
+        }
+
+        if failure_code is not None or terminal_event is None:
+            code = failure_code or "llm_incomplete_response"
+            await self.persistence.merge_turn_metadata(
+                self.db,
+                self.principal,
+                turn_id=turn_id,
+                metadata={
+                    "llm": {
+                        "status": "failed",
+                        "error": code,
+                        "provider": provider,
+                        "configured_model": configured_model,
+                        "returned_model": (
+                            terminal_event.returned_model
+                            if terminal_event is not None
+                            else None
+                        ),
+                        "provider_request_id": (
+                            terminal_event.provider_request_id
+                            if terminal_event is not None
+                            else None
+                        ),
+                        "prompt_version": VOICE_SYSTEM_PROMPT_VERSION,
+                        "attempt_count": attempt_count,
+                        "latency": metrics,
+                    }
+                },
+            )
+            await self.db.commit()
+            await self._send(
+                server_event(
+                    "assistant.response.failed",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    code=code,
+                    provider=provider,
+                    model=configured_model,
+                    retryable=terminal_event.retryable if terminal_event is not None else False,
+                )
+            )
+            LOGGER.warning(
+                "LLM response failed",
+                extra={
+                    "event": "llm.response.failed",
+                    "session_id": str(session_id),
+                    "turn_id": str(turn_id),
+                    "response_id": str(response_id),
+                    "provider": provider,
+                    "configured_model": configured_model,
+                    "error_code": code,
+                    "attempt_count": attempt_count,
+                    "latency": metrics,
+                },
+            )
+            return {"status": "failed", "error": code}
+
+        response_text = "".join(text_parts)
+        if not response_text.strip():
+            failure_event = terminal_event.model_copy(
+                update={"error_code": "llm_empty_response", "retryable": False}
+            )
+            terminal_event = failure_event
+            await self.persistence.merge_turn_metadata(
+                self.db,
+                self.principal,
+                turn_id=turn_id,
+                metadata={
+                    "llm": {
+                        "status": "failed",
+                        "error": "llm_empty_response",
+                        "provider": provider,
+                        "configured_model": configured_model,
+                        "prompt_version": VOICE_SYSTEM_PROMPT_VERSION,
+                        "attempt_count": attempt_count,
+                        "latency": metrics,
+                    }
+                },
+            )
+            await self.db.commit()
+            await self._send(
+                server_event(
+                    "assistant.response.failed",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    code="llm_empty_response",
+                    provider=provider,
+                    model=configured_model,
+                    retryable=False,
+                )
+            )
+            return {"status": "failed", "error": "llm_empty_response"}
+
+        usage_data = usage.model_dump(exclude_none=True) if usage is not None else None
+        llm_metadata = {
+            "status": "completed",
+            "provider": provider,
+            "configured_model": configured_model,
+            "returned_model": terminal_event.returned_model,
+            "provider_request_id": terminal_event.provider_request_id,
+            "finish_reason": terminal_event.finish_reason,
+            "response_text": response_text,
+            "usage": usage_data,
+            "prompt_version": VOICE_SYSTEM_PROMPT_VERSION,
+            "attempt_count": attempt_count,
+            "latency": metrics,
+        }
+        await self.persistence.merge_turn_metadata(
+            self.db,
+            self.principal,
+            turn_id=turn_id,
+            metadata={"llm": llm_metadata},
+        )
+        await self.db.commit()
+        await self._send(
+            server_event(
+                "assistant.text.final",
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=response_text,
+                provider=provider,
+                model=configured_model,
+                returned_model=terminal_event.returned_model,
+                provider_request_id=terminal_event.provider_request_id,
+                finish_reason=terminal_event.finish_reason,
+                usage=usage_data,
+                metrics=metrics,
+            )
+        )
+        LOGGER.info(
+            "LLM response completed",
+            extra={
+                "event": "llm.response.completed",
+                "session_id": str(session_id),
+                "turn_id": str(turn_id),
+                "response_id": str(response_id),
+                "provider": provider,
+                "configured_model": configured_model,
+                "returned_model": terminal_event.returned_model,
+                "provider_request_id": terminal_event.provider_request_id,
+                "finish_reason": terminal_event.finish_reason,
+                "usage": usage_data,
+                "attempt_count": attempt_count,
+                "latency": metrics,
+            },
+        )
+        return {"status": "completed", "metrics": metrics}
+
+    async def _complete_response_state(self, response_id: uuid.UUID) -> None:
+        if self.voice_session is not None:
+            await self.registry.clear_response(
+                self.owner,
+                self.voice_session.id,
+                response_id,
+            )
+            await self.registry.refresh(self.owner, self.voice_session.id)
+        self.cancel_guard.clear()
+        self._response_turn_id = None
+
+    @staticmethod
+    def _duration_ms(started: float, ended: float | None) -> float | None:
+        if ended is None:
+            return None
+        return round(max(0.0, (ended - started) * 1000), 1)
 
     async def _forward_stt_events(self, turn: STTTurn) -> None:
         try:
@@ -731,6 +1107,11 @@ class VoiceGateway:
         self.cancel_guard.clear()
         await self._close_stt_turn(cancel=True)
         await self.registry.clear_turn(self.owner, self.voice_session.id)
+        await self.registry.clear_response(
+            self.owner,
+            self.voice_session.id,
+            response_id,
+        )
         await self.db.commit()
         await self._send(
             server_event(
@@ -767,10 +1148,13 @@ class VoiceGateway:
             self.voice_session.id,
             message.response_id,
         )
+        await self.llm_service.cancel(message.response_id)
         await self._cancel_stt_finalize_task()
         if self.stt_turn is not None:
             await self._close_stt_turn(cancel=True)
-        cancelled_turn_id = self.active_turn.id if self.active_turn is not None else None
+        cancelled_turn_id = (
+            self.active_turn.id if self.active_turn is not None else self._response_turn_id
+        )
         if self.active_turn is not None:
             counters = self.state.abort_turn()
             await self.persistence.finalize_turn(
@@ -790,6 +1174,28 @@ class VoiceGateway:
             self.active_turn = None
             self._turn_started = None
             await self.registry.clear_turn(self.owner, self.voice_session.id)
+        elif cancelled_turn_id is not None:
+            provider_info = self.llm_service.provider_info
+            await self.persistence.merge_turn_metadata(
+                self.db,
+                self.principal,
+                turn_id=cancelled_turn_id,
+                metadata={
+                    "llm": {
+                        "status": "cancelled",
+                        "provider": (
+                            provider_info.provider if provider_info is not None else None
+                        ),
+                        "configured_model": (
+                            provider_info.configured_model if provider_info is not None else None
+                        ),
+                        "prompt_version": VOICE_SYSTEM_PROMPT_VERSION,
+                        "cancel_reason": message.reason,
+                    }
+                },
+            )
+        self._response_turn_id = None
+        self.cancel_guard.clear()
         await self.db.commit()
         await self._send(
             server_event(
@@ -978,6 +1384,18 @@ class VoiceGateway:
                 await self.registry.release(self.owner, self.voice_session.id)
             except VoiceRegistryError:
                 pass
+            else:
+                LOGGER.info(
+                    "Voice session registry released",
+                    extra={
+                        "event": "voice.session.registry.released",
+                        "session_id": str(self.voice_session.id),
+                        "user_id": str(self.principal.user_id),
+                        "device_id": str(self.principal.device_id),
+                        "timestamp_ms": int(time.time() * 1000),
+                        "monotonic_ms": round(time.monotonic() * 1000, 1),
+                    },
+                )
             await self._send(
                 server_event(
                     "server.session.ended",
@@ -1023,6 +1441,19 @@ class VoiceGateway:
             return None
         return max(0, int((time.monotonic() - self._turn_started) * 1000))
 
+    def _safe_llm_session_info(self) -> dict[str, Any]:
+        info = self.llm_service.provider_info
+        if not self.llm_service.enabled or info is None:
+            return {"enabled": False}
+        return {
+            "enabled": True,
+            "provider": info.provider,
+            "model": info.configured_model,
+            "api_family": info.api_family,
+            "live_verified": info.live_verified,
+            "capabilities": info.capabilities.model_dump(),
+        }
+
     @staticmethod
     def _now_datetime():
         from datetime import UTC, datetime
@@ -1036,6 +1467,6 @@ def _safe_client_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     for key, value in metadata.items():
         if key not in allowed:
             continue
-        if isinstance(value, (str, int, float, bool)) or value is None:
+        if isinstance(value, str | int | float | bool) or value is None:
             result[key] = str(value)[:128] if isinstance(value, str) else value
     return result

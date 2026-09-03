@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKeyConstraint, Index, String, Text
+from sqlalchemy import DateTime, ForeignKeyConstraint, Index, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -58,4 +58,36 @@ class Task(Base):
         Index("ix_tasks_user_created", "user_id", "created_at"),
         Index("ix_tasks_user_status", "user_id", "status"),
         Index("ix_tasks_user_due", "user_id", "due_at"),
+    )
+
+
+class ToolExecutionRecord(Base):
+    """Durable idempotency and result record for a server-side tool call."""
+
+    __tablename__ = "tool_execution_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    turn_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    tool_call_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="started")
+    result_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        UniqueConstraint(
+            "user_id",
+            "turn_id",
+            "tool_name",
+            "tool_call_id",
+            name="uq_tool_execution_idempotency",
+        ),
+        Index("ix_tool_execution_user_created", "user_id", "created_at"),
     )

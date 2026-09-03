@@ -4,6 +4,7 @@ import asyncio
 import os
 import time
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,6 +16,7 @@ from starlette.websockets import WebSocketDisconnect
 from app.core.config import Settings
 from app.main import create_app
 from app.models import ConversationTurn, User, VoiceSession
+from app.services.auth import AuthService
 from app.services.voice_registry import VoiceRegistry, VoiceRegistryOwner
 from app.websocket.binary import encode_pcm_frame
 from tests.test_support import NoopSTTService
@@ -262,6 +264,104 @@ def test_voice_gateway_resume_is_scoped_to_authenticated_user(voice_client) -> N
         with pytest.raises(WebSocketDisconnect) as disconnect:
             socket_b.receive_json()
         assert disconnect.value.code == 1008
+
+
+def test_voice_gateway_reaps_scoped_stale_session_after_backend_restart(voice_client) -> None:
+    client, settings, emails = voice_client
+    email = _email("stale-restart-recovery")
+    emails.add(email)
+    device = "phase4-stale-restart-device"
+    tokens = _create_account(client, email, device)
+
+    async def seed_stale_session() -> uuid.UUID:
+        engine = create_async_engine(settings.database_dsn)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        redis = from_url(settings.redis_dsn, decode_responses=True)
+        try:
+            async with factory() as session:
+                principal = await AuthService(settings).resolve_access_token(
+                    session,
+                    tokens["access_token"],
+                )
+                stale_session = VoiceSession(
+                    user_id=principal.user_id,
+                    device_id=principal.device_id,
+                    auth_session_id=principal.session_id,
+                    protocol_version=1,
+                    client_metadata={"platform": "android"},
+                    status="active",
+                    last_activity_at=datetime.now(UTC)
+                    - timedelta(
+                        seconds=(
+                            settings.voice_heartbeat_timeout_seconds
+                            + settings.voice_reconnect_grace_seconds
+                            + 1
+                        )
+                    ),
+                )
+                session.add(stale_session)
+                await session.flush()
+                stale_owner = VoiceRegistryOwner(
+                    principal.user_id,
+                    principal.device_id,
+                    principal.session_id,
+                    uuid.uuid4(),
+                )
+                registry = VoiceRegistry(
+                    redis,
+                    ttl_seconds=(
+                        settings.voice_max_session_seconds
+                        + settings.voice_reconnect_grace_seconds
+                    ),
+                    lease_ttl_seconds=(
+                        settings.voice_heartbeat_timeout_seconds
+                        + settings.voice_reconnect_grace_seconds
+                    ),
+                )
+                assert await registry.acquire(stale_owner, stale_session.id)
+                await session.commit()
+                return stale_session.id
+        finally:
+            await redis.aclose()
+            await engine.dispose()
+
+    stale_session_id = asyncio.run(seed_stale_session())
+
+    with client.websocket_connect("/v1/voice", headers=_auth(tokens["access_token"])) as socket:
+        socket.send_json(_session_start_message())
+        ready = socket.receive_json()
+        assert ready["type"] == "server.session.ready", ready
+        assert ready["session_id"] != str(stale_session_id)
+        socket.send_json({"type": "client.session.end", "reason": "stale_recovery_test"})
+        assert socket.receive_json()["type"] == "server.session.ending"
+        assert socket.receive_json()["type"] == "server.session.ended"
+
+    async def read_recovery_state() -> tuple[str, str | None, bool, bool]:
+        engine = create_async_engine(settings.database_dsn)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        redis = from_url(settings.redis_dsn, decode_responses=True)
+        try:
+            async with factory() as session:
+                stale = await session.get(VoiceSession, stale_session_id)
+                current = await session.get(VoiceSession, uuid.UUID(ready["session_id"]))
+                registry = VoiceRegistry(redis, ttl_seconds=30)
+                return (
+                    stale.status,
+                    stale.close_reason,
+                    bool(await redis.exists(registry._session_key(stale_session_id))),
+                    current.status == "completed",
+                )
+        finally:
+            await redis.aclose()
+            await engine.dispose()
+
+    stale_status, stale_reason, stale_registry_exists, new_session_completed = asyncio.run(
+        read_recovery_state()
+    )
+    assert stale_status == "disconnected"
+    assert stale_reason == "stale_connection_reaped"
+    assert stale_registry_exists is False
+    assert new_session_completed is True
 
 
 def test_voice_gateway_rejects_missing_or_invalid_credentials(voice_client) -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -71,6 +71,45 @@ class VoicePersistence:
         session.close_reason = None
         session.last_activity_at = utc_now()
         return session
+
+    async def reap_stale_active_sessions(
+        self,
+        db: AsyncSession,
+        principal: AuthPrincipal,
+        *,
+        stale_after_seconds: int,
+    ) -> list[uuid.UUID]:
+        """Close stale sessions for this authenticated user/device only.
+
+        A process restart can bypass the WebSocket ``finally`` block and leave
+        an active durable row behind. Reaping is deliberately scoped to the
+        connecting principal's device and requires activity older than the
+        heartbeat lease before it changes any state.
+        """
+
+        cutoff = utc_now() - timedelta(seconds=stale_after_seconds)
+        result = await db.scalars(
+            select(VoiceSession)
+            .where(
+                VoiceSession.user_id == principal.user_id,
+                VoiceSession.device_id == principal.device_id,
+                VoiceSession.status == "active",
+                VoiceSession.last_activity_at <= cutoff,
+            )
+            .with_for_update()
+        )
+        sessions = list(result.all())
+        if not sessions:
+            return []
+
+        ended_at = utc_now()
+        for session in sessions:
+            session.status = "disconnected"
+            session.ended_at = ended_at
+            session.last_activity_at = ended_at
+            session.close_code = 1001
+            session.close_reason = "stale_connection_reaped"
+        return [session.id for session in sessions]
 
     async def create_turn(
         self,
@@ -193,3 +232,32 @@ class VoicePersistence:
         voice_session.total_bytes = total_bytes
         voice_session.error_count = error_count
         return voice_session
+
+    async def merge_turn_metadata(
+        self,
+        db: AsyncSession,
+        principal: AuthPrincipal,
+        *,
+        turn_id: uuid.UUID,
+        metadata: dict[str, Any],
+    ) -> ConversationTurn | None:
+        """Merge post-STT response metadata into an owned durable turn."""
+
+        turn = await db.scalar(
+            select(ConversationTurn)
+            .join(
+                VoiceSession,
+                (VoiceSession.id == ConversationTurn.session_id)
+                & (VoiceSession.user_id == ConversationTurn.user_id),
+            )
+            .where(
+                ConversationTurn.id == turn_id,
+                ConversationTurn.user_id == principal.user_id,
+                VoiceSession.device_id == principal.device_id,
+                VoiceSession.auth_session_id == principal.session_id,
+            )
+        )
+        if turn is None:
+            return None
+        turn.metadata_json = {**(turn.metadata_json or {}), **metadata}
+        return turn

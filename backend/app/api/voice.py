@@ -75,5 +75,6 @@ async def voice_gateway(websocket: WebSocket) -> None:
             principal=principal,
             access_token=access_token,
             stt_service=websocket.app.state.stt_service,
+            llm_service=websocket.app.state.llm_service,
         )
         await gateway.run()

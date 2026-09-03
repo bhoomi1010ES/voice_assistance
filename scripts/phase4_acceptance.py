@@ -30,14 +30,33 @@ PHASE4_REFERENCE_SENTENCES = (
 MANDATORY_TURN_FIELDS = (
     "turn_number",
     "reference_text",
+    "session_id",
+    "turn_id",
+    "response_id",
     "turn_start_monotonic_ms",
     "first_pcm_timestamp",
+    "first_pcm_monotonic_ms",
     "vad_end_timestamp",
+    "vad_end_monotonic_ms",
+    "speech_end_monotonic_ms",
     "final_transcript_timestamp",
+    "final_transcript_monotonic_ms",
     "turn_end_timestamp",
+    "turn_end_monotonic_ms",
     "final_transcript",
+    "final_delivered_monotonic_ms",
     "partial_transcripts",
+    "partial_supported",
+    "partial_count",
+    "no_partial_reason",
+    "audio_duration_ms",
     "speech_end_to_final_ms",
+    "speech_end_to_client_delivery_ms",
+    "speech_end_to_request_ms",
+    "remote_request_start_monotonic_ms",
+    "remote_response_monotonic_ms",
+    "remote_request_latency_ms",
+    "remote_http_status",
     "audio_bytes",
     "pcm_frames",
     "websocket_session_id",
@@ -174,11 +193,32 @@ def validate_turn_evidence(
     ):
         errors.append("monotonic timestamps are not ordered")
 
-    for field in ("speech_end_to_final_ms", "audio_bytes", "pcm_frames", "wer"):
+    for field in (
+        "audio_duration_ms",
+        "speech_end_to_final_ms",
+        "speech_end_to_client_delivery_ms",
+        "speech_end_to_request_ms",
+        "remote_request_start_monotonic_ms",
+        "remote_response_monotonic_ms",
+        "remote_request_latency_ms",
+        "audio_bytes",
+        "pcm_frames",
+        "wer",
+    ):
         if not is_number(turn.get(field)):
             errors.append(f"missing numeric evidence: {field}")
-    if is_number(turn.get("speech_end_to_final_ms")) and turn["speech_end_to_final_ms"] < 0:
-        errors.append("speech_end_to_final_ms is negative")
+    for field in (
+        "speech_end_to_final_ms",
+        "speech_end_to_client_delivery_ms",
+        "speech_end_to_request_ms",
+        "remote_request_latency_ms",
+    ):
+        if is_number(turn.get(field)) and turn[field] < 0:
+            errors.append(f"{field} is negative")
+    if turn.get("remote_http_status") != 200:
+        errors.append(f"remote_http_status is not 200: {turn.get('remote_http_status')!r}")
+    if turn.get("partial_supported") is not False:
+        errors.append("partial_supported must be false for the remote final-only contract")
     if not isinstance(turn.get("error"), (str, type(None))):
         errors.append("error must be null or a string")
 
@@ -204,10 +244,10 @@ def validate_turn_evidence(
 
 
 def corpus_wer(turns: list[dict[str, Any]]) -> dict[str, Any]:
-    substitutions = sum(int(turn.get("wer_substitutions", 0)) for turn in turns)
-    deletions = sum(int(turn.get("wer_deletions", 0)) for turn in turns)
-    insertions = sum(int(turn.get("wer_insertions", 0)) for turn in turns)
-    reference_words = sum(int(turn.get("wer_reference_words", 0)) for turn in turns)
+    substitutions = sum(int(turn.get("wer_substitutions") or 0) for turn in turns)
+    deletions = sum(int(turn.get("wer_deletions") or 0) for turn in turns)
+    insertions = sum(int(turn.get("wer_insertions") or 0) for turn in turns)
+    reference_words = sum(int(turn.get("wer_reference_words") or 0) for turn in turns)
     errors = substitutions + deletions + insertions
     return {
         "substitutions": substitutions,
@@ -262,6 +302,16 @@ def evaluate_acceptance_gates(
         for turn in turns
         if is_number(turn.get("speech_end_to_final_ms"))
     ]
+    remote_latency_values = [
+        float(turn["remote_request_latency_ms"])
+        for turn in turns
+        if is_number(turn.get("remote_request_latency_ms"))
+    ]
+    client_latency_values = [
+        float(turn["speech_end_to_client_delivery_ms"])
+        for turn in turns
+        if is_number(turn.get("speech_end_to_client_delivery_ms"))
+    ]
     partial_count = sum(int(turn.get("partial_count", 0)) for turn in turns)
     turns_with_partials = sum(1 for turn in turns if int(turn.get("partial_count", 0)) > 0)
     resources_ok = bool(evidence.get("backend_resource_samples"))
@@ -275,8 +325,20 @@ def evaluate_acceptance_gates(
         and reconnect.get("reconnect_observed")
         and reconnect.get("audio_accepted_after_reconnect")
         and reconnect.get("stt_continued_after_reconnect")
+        and reconnect.get("backend_cleanup_observed")
+        and reconnect.get("redis_cleanup_observed")
+        and reconnect.get("new_session_id")
+        and reconnect.get("initial_session_id") != reconnect.get("new_session_id")
+        and reconnect.get("post_reconnect_remote_http_status") == 200
+        and reconnect.get("post_reconnect_final_delivered")
     )
     gates = {
+        "preflight_complete": bool(evidence.get("preflight_pass")),
+        "rotated_remote_credential_configured": bool(
+            evidence.get("rotated_remote_credential_configured")
+        ),
+        "tracked_secret_scan": bool(evidence.get("tracked_secret_scan_pass")),
+        "mandatory_evidence_files": bool(evidence.get("mandatory_evidence_files")),
         "completed_turns": len(turns) == required_turns and actual_numbers == required_numbers,
         "references_stored_before_recognition": bool(
             evidence.get("references_stored_before_recognition")
@@ -290,9 +352,16 @@ def evaluate_acceptance_gates(
         "wer_measured": len(turns) == required_turns
         and all(is_number(turn.get("wer")) for turn in turns)
         and corpus_wer(turns)["wer"] is not None,
-        "physical_latency_measured": len(latency_values) == required_turns,
-        "partials_measured": len(turns) == required_turns
-        and all(isinstance(turn.get("partial_transcripts"), list) for turn in turns),
+        "physical_latency_measured": len(latency_values) == required_turns
+        and len(remote_latency_values) == required_turns
+        and len(client_latency_values) == required_turns,
+        "remote_final_only_contract": len(turns) == required_turns
+        and all(
+            turn.get("partial_supported") is False
+            and turn.get("partial_count") == 0
+            and is_present(turn.get("no_partial_reason"))
+            for turn in turns
+        ),
         "resource_measurements": resources_ok,
         "physical_reconnect": reconnect_ok,
         "physical_device_visible": bool(evidence.get("android_device")),
@@ -301,6 +370,7 @@ def evaluate_acceptance_gates(
         "remote_stt_deployment": expected_engine == "remote"
         and bool(evidence.get("remote_stt_deployment")),
         "automated_validation": bool(evidence.get("automated_validation_passed")),
+        "redis_session_cleanup": bool(evidence.get("redis_session_cleanup_pass")),
         "remote_stt_only": expected_engine == "remote"
         and all(
             turn.get("stt_engine") == "remote"
@@ -325,5 +395,7 @@ def evaluate_acceptance_gates(
         if required_turns
         else 0.0,
         "latency": latency_statistics(latency_values),
+        "remote_request_latency": latency_statistics(remote_latency_values),
+        "speech_end_to_client_delivery": latency_statistics(client_latency_values),
         "corpus_wer": corpus_wer(turns),
     }

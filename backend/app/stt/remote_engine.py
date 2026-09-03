@@ -255,6 +255,27 @@ class RemoteTranscriptionEngine(STTEngine):
         language = state.handle.language or self.settings.stt_api_language
         if language:
             data["language"] = language
+        request_start_wall_ms = int(time.time() * 1000)
+        request_start_monotonic_ms = round(time.monotonic() * 1000, 1)
+        audio_duration_ms = round(
+            state.audio_samples / self.settings.voice_sample_rate_hz * 1000,
+            1,
+        )
+        LOGGER.info(
+            "Remote STT request started",
+            extra={
+                "event": "STT_REMOTE_REQUEST_STARTED",
+                "session_id": str(state.handle.session_id),
+                "turn_id": str(state.handle.turn_id),
+                "response_id": str(state.handle.response_id),
+                "generation": generation,
+                "endpoint_host": urlsplit(self.settings.stt_api_url_resolved).netloc,
+                "audio_bytes": len(state.audio),
+                "audio_duration_ms": audio_duration_ms,
+                "request_start_timestamp_ms": request_start_wall_ms,
+                "request_start_monotonic_ms": request_start_monotonic_ms,
+            },
+        )
         started = time.perf_counter()
         try:
             response = await client.post(
@@ -279,6 +300,8 @@ class RemoteTranscriptionEngine(STTEngine):
         self._raise_for_status(response)
         text = self._extract_text(response)
         completed = time.monotonic()
+        response_wall_ms = int(time.time() * 1000)
+        response_monotonic_ms = round(completed * 1000, 1)
         LOGGER.info(
             "Remote STT transcription completed",
             extra={
@@ -291,7 +314,13 @@ class RemoteTranscriptionEngine(STTEngine):
                 "request_id": response.headers.get("x-request-id"),
                 "status_code": response.status_code,
                 "audio_bytes": len(state.audio),
+                "audio_duration_ms": audio_duration_ms,
+                "request_start_timestamp_ms": request_start_wall_ms,
+                "request_start_monotonic_ms": request_start_monotonic_ms,
+                "response_timestamp_ms": response_wall_ms,
+                "response_monotonic_ms": response_monotonic_ms,
                 "request_duration_ms": duration_ms,
+                "remote_request_latency_ms": duration_ms,
             },
         )
         return STTEngineFinal(

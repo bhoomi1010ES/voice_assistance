@@ -276,7 +276,9 @@ class STTService:
         if self.settings.stt_engine == "remote":
             return RemoteTranscriptionEngine(self.settings)
         if self.settings.stt_engine == "whisper":
-            return WhisperEngine(self.settings)
+            raise STTConfigurationError(
+                "STT_ENGINE=whisper is retired for Phase 4; configure STT_ENGINE=remote"
+            )
         raise STTConfigurationError(f"unsupported STT_ENGINE: {self.settings.stt_engine}")
 
     @staticmethod

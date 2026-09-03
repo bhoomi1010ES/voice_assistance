@@ -1,7 +1,7 @@
 """SQLAlchemy models."""
 
 from app.models.auth import AuditLog, AuthSession, Device, User
-from app.models.resources import MemoryItem, Task
+from app.models.resources import MemoryItem, Task, ToolExecutionRecord
 from app.models.voice import ConversationTurn, VoiceSession
 
 __all__ = [
@@ -11,6 +11,7 @@ __all__ = [
     "Device",
     "MemoryItem",
     "Task",
+    "ToolExecutionRecord",
     "User",
     "VoiceSession",
 ]

@@ -1,5 +1,6 @@
 package com.voiceaipoc.rn
 
+import android.os.SystemClock
 import android.util.Log
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -80,7 +81,8 @@ class VoiceModule(
                 Log.i(
                     TAG,
                     "VAD speech started timestampMs=${event.timestampMs} " +
-                        "frameIndex=${event.frameIndex} wallMs=${System.currentTimeMillis()}",
+                        "frameIndex=${event.frameIndex} wallMs=${System.currentTimeMillis()} " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
                 emitVadEvent(EVENT_VAD_SPEECH_STARTED, event)
             }
@@ -90,7 +92,8 @@ class VoiceModule(
                     TAG,
                     "VAD speech stopped timestampMs=${event.timestampMs} " +
                         "frameIndex=${event.frameIndex} reason=${event.reason} " +
-                        "wallMs=${System.currentTimeMillis()}",
+                        "wallMs=${System.currentTimeMillis()} " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
                 emitVadEvent(EVENT_VAD_SPEECH_STOPPED, event)
             }
@@ -104,7 +107,8 @@ class VoiceModule(
                 Log.i(
                     TAG,
                     "SILERO VAD speech started timestampMs=${event.timestampMs} " +
-                        "inferenceIndex=${event.inferenceIndex} wallMs=${System.currentTimeMillis()}",
+                        "inferenceIndex=${event.inferenceIndex} wallMs=${System.currentTimeMillis()} " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
                 emitSileroVadEvent(EVENT_SILERO_VAD_SPEECH_STARTED, event)
             }
@@ -114,7 +118,8 @@ class VoiceModule(
                     TAG,
                     "SILERO VAD speech stopped timestampMs=${event.timestampMs} " +
                         "inferenceIndex=${event.inferenceIndex} reason=${event.reason} " +
-                        "wallMs=${System.currentTimeMillis()}",
+                        "wallMs=${System.currentTimeMillis()} " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
                 emitSileroVadEvent(EVENT_SILERO_VAD_SPEECH_STOPPED, event)
             }

@@ -14,6 +14,7 @@ from app.models import (  # noqa: F401
     AuthSession,
     ConversationTurn,
     Device,
+    ToolExecutionRecord,
     User,
     VoiceSession,
 )

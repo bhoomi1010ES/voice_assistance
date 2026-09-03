@@ -192,6 +192,7 @@ def test_harness_timestamp_integrity_validation() -> None:
     turn_valid = runner._new_turn_dict(1)
     turn_valid["turn_id"] = str(uuid.uuid4())
     turn_valid["response_id"] = str(uuid.uuid4())
+    turn_valid["session_id"] = "session"
     turn_valid["server_audio_start_monotonic_ms"] = 1000.0
     turn_valid["first_pcm_timestamp"] = 1000
     turn_valid["first_pcm_monotonic_ms"] = 1000.0
@@ -201,6 +202,8 @@ def test_harness_timestamp_integrity_validation() -> None:
     turn_valid["backend_commit_received_monotonic_ms"] = 3100.0
     turn_valid["final_transcript_monotonic_ms"] = 4500.0
     turn_valid["final_transcript_timestamp"] = 4500
+    turn_valid["final_delivered_monotonic_ms"] = 4600.0
+    turn_valid["android_speech_end_monotonic_ms"] = 3000.0
     turn_valid["turn_end_timestamp"] = 4600
     turn_valid["turn_end_monotonic_ms"] = 4600.0
     turn_valid["turn_start_monotonic_ms"] = 1000.0
@@ -210,6 +213,13 @@ def test_harness_timestamp_integrity_validation() -> None:
     turn_valid["no_partial_reason"] = "No partial event was observed before final"
     turn_valid["audio_bytes"] = 640
     turn_valid["pcm_frames"] = 1
+    turn_valid["audio_duration_ms"] = 2000.0
+    turn_valid["speech_end_to_request_ms"] = 10.0
+    turn_valid["remote_request_start_monotonic_ms"] = 3010.0
+    turn_valid["remote_response_monotonic_ms"] = 4500.0
+    turn_valid["remote_request_latency_ms"] = 1490.0
+    turn_valid["remote_http_status"] = 200
+    turn_valid["speech_end_to_client_delivery_ms"] = 1600.0
     turn_valid["websocket_session_id"] = "session"
     turn_valid["stt_engine"] = "remote"
     turn_valid["stt_provider"] = "stt.example.test"

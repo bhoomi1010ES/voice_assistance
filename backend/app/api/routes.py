@@ -23,8 +23,17 @@ async def health() -> dict[str, str]:
 
 @router.get("/ready")
 async def ready(request: Request) -> JSONResponse:
-    """Return readiness based on PostgreSQL and Redis connectivity."""
+    """Return dependency and configured-provider readiness."""
 
     dependency_status = await request.app.state.infrastructure.check_readiness()
-    status_code = 200 if dependency_status["status"] == "ready" else 503
-    return JSONResponse(status_code=status_code, content=dependency_status)
+    result = {
+        **dependency_status,
+        "dependencies": dict(dependency_status.get("dependencies", {})),
+    }
+    llm_status = request.app.state.llm_service.readiness()
+    if llm_status["enabled"]:
+        result["dependencies"]["llm"] = llm_status
+        if llm_status["status"] != "ready":
+            result["status"] = "not_ready"
+    status_code = 200 if result["status"] == "ready" else 503
+    return JSONResponse(status_code=status_code, content=result)

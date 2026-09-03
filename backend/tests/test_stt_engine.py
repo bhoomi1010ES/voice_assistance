@@ -110,6 +110,11 @@ def test_windows_engine_is_rejected_by_production_selector() -> None:
         STTService(Settings(_env_file=None, stt_engine="windows"))
 
 
+def test_whisper_engine_is_rejected_by_production_selector() -> None:
+    with pytest.raises(STTConfigurationError, match="STT_ENGINE=whisper is retired"):
+        STTService(Settings(_env_file=None, stt_engine="whisper"))
+
+
 def test_language_normalization_can_preserve_windows_culture() -> None:
     assert STTService.normalize_language("en-US", preserve_culture=True) == "en-US"
     assert STTService.normalize_language("en_US", preserve_culture=True) == "en-US"
