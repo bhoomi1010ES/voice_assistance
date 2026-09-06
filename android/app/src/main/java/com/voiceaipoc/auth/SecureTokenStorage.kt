@@ -30,7 +30,9 @@ interface AuthTokenStorage {
 
 /**
  * Stores tokens encrypted with an AES-GCM key held by Android Keystore.
- * SharedPreferences contains ciphertext only; tokens are never logged or bridged.
+ * SharedPreferences contains ciphertext only; tokens are never logged. The
+ * authenticated app shell may read them once through the native bridge during
+ * session restoration, while the storage layer itself remains native-owned.
  */
 class SecureTokenStorage internal constructor(
     private val backend: TokenStorageBackend,

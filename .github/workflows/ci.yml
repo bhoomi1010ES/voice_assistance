@@ -73,3 +73,5 @@ jobs:
         run: npm run format:check
       - name: Jest
         run: npm test -- --runInBand
+      - name: UI secret scan
+        run: npm run security:ui

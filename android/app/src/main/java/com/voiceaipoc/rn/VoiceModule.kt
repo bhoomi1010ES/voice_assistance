@@ -197,6 +197,27 @@ class VoiceModule(
     }
 
     @ReactMethod
+    fun readAuthTokens(promise: Promise) {
+        try {
+            val tokens = authTokenStorage.read()
+            if (tokens == null) {
+                promise.resolve(null)
+            } else {
+                promise.resolve(
+                    Arguments.createMap().apply {
+                        putString("accessToken", tokens.accessToken)
+                        putString("refreshToken", tokens.refreshToken)
+                    },
+                )
+            }
+        } catch (exception: GeneralSecurityException) {
+            promise.reject("E_AUTH_TOKEN_READ", "Unable to read authentication state.", exception)
+        } catch (exception: RuntimeException) {
+            promise.reject("E_AUTH_TOKEN_READ", "Unable to read authentication state.", exception)
+        }
+    }
+
+    @ReactMethod
     fun clearAuthTokens(promise: Promise) {
         authTokenStorage.clear()
         promise.resolve(true)

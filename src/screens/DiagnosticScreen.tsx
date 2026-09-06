@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Button,
   DeviceEventEmitter,
@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import {SafeAreaView} from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   AudioProcessingCalibrationMode,
   AudioPipelineStatus,
@@ -320,24 +320,22 @@ const INITIAL_WAKE_WORD_STATUS: WakeWordStatus = {
     negativeScoreMaximum: null,
     medianDetectionLatencyMs: null,
     maximumDetectionLatencyMs: null,
-    thresholdAnalysis: [0.1, 0.2, 0.3, 0.35, 0.4, 0.45, 0.5].map(
-      threshold => ({
-        threshold,
-        positiveTrials: 0,
-        negativeTrials: 0,
-        trueAccepts: 0,
-        falseRejects: 0,
-        falseAccepts: 0,
-        trueNegatives: 0,
-        duplicateDetections: 0,
-        trueAcceptRate: 0,
-        falseRejectRate: 0,
-        falseAcceptRate: 0,
-        duplicateRate: 0,
-        medianDetectionLatencyMs: null,
-        maximumDetectionLatencyMs: null,
-      }),
-    ),
+    thresholdAnalysis: [0.1, 0.2, 0.3, 0.35, 0.4, 0.45, 0.5].map(threshold => ({
+      threshold,
+      positiveTrials: 0,
+      negativeTrials: 0,
+      trueAccepts: 0,
+      falseRejects: 0,
+      falseAccepts: 0,
+      trueNegatives: 0,
+      duplicateDetections: 0,
+      trueAcceptRate: 0,
+      falseRejectRate: 0,
+      falseAcceptRate: 0,
+      duplicateRate: 0,
+      medianDetectionLatencyMs: null,
+      maximumDetectionLatencyMs: null,
+    })),
     calibrationTrials: [],
   },
   lastErrorCode: null,
@@ -445,7 +443,9 @@ export function DiagnosticScreen() {
     INITIAL_MANUAL_WAKE_WORD_TRIAL_STATUS,
   );
   const [wakeCapture, setWakeCapture] = useState(INITIAL_WAKE_CAPTURE_STATUS);
-  const [voiceGateway, setVoiceGateway] = useState(INITIAL_VOICE_GATEWAY_STATUS);
+  const [voiceGateway, setVoiceGateway] = useState(
+    INITIAL_VOICE_GATEWAY_STATUS,
+  );
   const [wakeReplay, setWakeReplay] =
     useState<WakeWordReplayBatchResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -464,8 +464,7 @@ export function DiagnosticScreen() {
     useState<WakeWordDetectionEvent | null>(null);
   const wakeEventKeys = useRef(new Set<string>());
   const [bridgeWakeEventCount, setBridgeWakeEventCount] = useState(0);
-  const [bridgeDuplicateEventCount, setBridgeDuplicateEventCount] =
-    useState(0);
+  const [bridgeDuplicateEventCount, setBridgeDuplicateEventCount] = useState(0);
   const [lastWakeEngineEvent, setLastWakeEngineEvent] = useState('NONE');
   const [wakeCalibrationConditionIndex, setWakeCalibrationConditionIndex] =
     useState(0);
@@ -521,10 +520,7 @@ export function DiagnosticScreen() {
         'AUDIO_ENGINE_STOPPED',
         refreshDiagnostics,
       ),
-      DeviceEventEmitter.addListener(
-        'AUDIO_ENGINE_ERROR',
-        refreshDiagnostics,
-      ),
+      DeviceEventEmitter.addListener('AUDIO_ENGINE_ERROR', refreshDiagnostics),
       DeviceEventEmitter.addListener(
         'VAD_SPEECH_STARTED',
         (event: VadEvent) => {
@@ -686,7 +682,7 @@ export function DiagnosticScreen() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, password }),
         });
-      } catch (_e) {
+      } catch {
         // user already exists
       }
 
@@ -719,7 +715,7 @@ export function DiagnosticScreen() {
     try {
       await ensureDeviceAuthenticated();
       setVoiceGateway(await connectVoiceGateway(DEFAULT_VOICE_GATEWAY_URL));
-    } catch (error) {
+    } catch {
       try {
         await ensureDeviceAuthenticated();
         setVoiceGateway(await connectVoiceGateway(DEFAULT_VOICE_GATEWAY_URL));
@@ -752,7 +748,7 @@ export function DiagnosticScreen() {
         try {
           await requestMicrophonePermission();
           setStatus(await startMicrophone());
-        } catch (_e) {}
+        } catch {}
       }
       setVoiceGateway(await startVoiceSession());
     } catch (error) {
@@ -770,7 +766,7 @@ export function DiagnosticScreen() {
         try {
           await requestMicrophonePermission();
           setStatus(await startMicrophone());
-        } catch (_e) {}
+        } catch {}
       }
       setVoiceGateway(await startVoiceTurn());
     } catch (error) {
@@ -844,7 +840,9 @@ export function DiagnosticScreen() {
       gw = await startVoiceTurn();
       setVoiceGateway(gw);
       setTurnStepState('RECORDING');
-      setLastTurnInfo(`Turn ${activeTurnNumber} is active! Speak your sentence now.`);
+      setLastTurnInfo(
+        `Turn ${activeTurnNumber} is active! Speak your sentence now.`,
+      );
     } catch (error) {
       setUiError(errorMessage(error));
       setTurnStepState('IDLE');
@@ -887,9 +885,7 @@ export function DiagnosticScreen() {
     setUiError(null);
     try {
       setWakeWord(
-        await setWakeWordCalibrationMode(
-          !wakeWord.acousticDiagnostics.enabled,
-        ),
+        await setWakeWordCalibrationMode(!wakeWord.acousticDiagnostics.enabled),
       );
     } catch (error) {
       setUiError(errorMessage(error));
@@ -918,9 +914,7 @@ export function DiagnosticScreen() {
     }
   };
 
-  const handleStartDiagnosticCapture = async (
-    expectedPositive: boolean,
-  ) => {
+  const handleStartDiagnosticCapture = async (expectedPositive: boolean) => {
     setBusy(true);
     setUiError(null);
     try {
@@ -1009,19 +1003,22 @@ export function DiagnosticScreen() {
               padding: 16,
               marginBottom: 16,
             },
-          ]}>
+          ]}
+        >
           <Text
             style={[
               styles.title,
-              {color: '#38bdf8', textAlign: 'center', fontSize: 20},
-            ]}>
+              { color: '#38bdf8', textAlign: 'center', fontSize: 20 },
+            ]}
+          >
             🎙️ PHASE 4 ONE-TOUCH STT
           </Text>
           <Text
             style={[
               styles.subtitle,
-              {color: '#94a3b8', textAlign: 'center', marginBottom: 12},
-            ]}>
+              { color: '#94a3b8', textAlign: 'center', marginBottom: 12 },
+            ]}
+          >
             Physical Validation — Turn {activeTurnNumber} of 10
           </Text>
 
@@ -1039,17 +1036,19 @@ export function DiagnosticScreen() {
                 elevation: 6,
               }}
               onPress={handleOneTouchFinishTurn}
-              disabled={busy}>
+              disabled={busy}
+            >
               <Text
                 style={{
                   color: '#ffffff',
                   fontWeight: 'bold',
                   fontSize: 18,
                   textAlign: 'center',
-                }}>
+                }}
+              >
                 ⏹️ FINISH & COMMIT TURN {activeTurnNumber}
               </Text>
-              <Text style={{color: '#fecaca', fontSize: 13, marginTop: 4}}>
+              <Text style={{ color: '#fecaca', fontSize: 13, marginTop: 4 }}>
                 (Tap as soon as you finish speaking)
               </Text>
             </TouchableOpacity>
@@ -1067,19 +1066,21 @@ export function DiagnosticScreen() {
                 elevation: 6,
               }}
               onPress={handleOneTouchStartTurn}
-              disabled={busy}>
+              disabled={busy}
+            >
               <Text
                 style={{
                   color: '#ffffff',
                   fontWeight: 'bold',
                   fontSize: 18,
                   textAlign: 'center',
-                }}>
+                }}
+              >
                 {turnStepState === 'STARTING'
                   ? '⏳ PREPARING AUDIO...'
                   : `🎙️ SPEAK TURN ${activeTurnNumber}`}
               </Text>
-              <Text style={{color: '#a7f3d0', fontSize: 13, marginTop: 4}}>
+              <Text style={{ color: '#a7f3d0', fontSize: 13, marginTop: 4 }}>
                 (Tap and speak your sentence)
               </Text>
             </TouchableOpacity>
@@ -1093,7 +1094,8 @@ export function DiagnosticScreen() {
                 marginTop: 10,
                 fontWeight: '600',
                 fontSize: 14,
-              }}>
+              }}
+            >
               {lastTurnInfo}
             </Text>
           ) : null}
@@ -1137,12 +1139,16 @@ export function DiagnosticScreen() {
             <Button
               title="Start Voice Session"
               onPress={handleStartVoiceSession}
-              disabled={busy || !voiceGateway.connected || voiceGateway.sessionStarted}
+              disabled={
+                busy || !voiceGateway.connected || voiceGateway.sessionStarted
+              }
             />
             <Button
               title="Start Voice Turn"
               onPress={handleStartVoiceTurn}
-              disabled={busy || !voiceGateway.sessionStarted || voiceGateway.turnActive}
+              disabled={
+                busy || !voiceGateway.sessionStarted || voiceGateway.turnActive
+              }
             />
             <Button
               title="Commit Voice Audio"
@@ -1167,7 +1173,10 @@ export function DiagnosticScreen() {
           </View>
           <StatusRow label="Gateway state" value={voiceGateway.state} />
           <StatusRow label="Gateway URL" value={DEFAULT_VOICE_GATEWAY_URL} />
-          <StatusRow label="Session ID" value={voiceGateway.sessionId ?? 'NONE'} />
+          <StatusRow
+            label="Session ID"
+            value={voiceGateway.sessionId ?? 'NONE'}
+          />
           <StatusRow label="Turn ID" value={voiceGateway.turnId ?? 'NONE'} />
           <StatusRow
             label="Queue / high-water / drops"
@@ -1175,7 +1184,9 @@ export function DiagnosticScreen() {
           />
           <StatusRow
             label="Frames / bytes sent"
-            value={`${Math.floor(voiceGateway.framesSent)} / ${Math.floor(voiceGateway.bytesSent)}`}
+            value={`${Math.floor(voiceGateway.framesSent)} / ${Math.floor(
+              voiceGateway.bytesSent,
+            )}`}
           />
           <StatusRow
             label="Last server event"
@@ -1305,11 +1316,9 @@ export function DiagnosticScreen() {
               label={`Detection #${Math.floor(
                 detection.detectionSequenceNumber,
               )} / window #${Math.floor(detection.inferenceWindowSequence)}`}
-              value={`score=${detection.classifierScore.toFixed(
-                4,
-              )}, ${detection.wakeStateBefore}->${
-                detection.wakeStateAfter
-              }, cooldown=${Math.floor(
+              value={`score=${detection.classifierScore.toFixed(4)}, ${
+                detection.wakeStateBefore
+              }->${detection.wakeStateAfter}, cooldown=${Math.floor(
                 detection.cooldownRemainingMs,
               )} ms, Δ=${formatMilliseconds(
                 detection.millisecondsSincePreviousDetection,
@@ -1358,8 +1367,7 @@ export function DiagnosticScreen() {
               title={`Condition: ${wakeCalibrationCondition}`}
               onPress={handleNextWakeCalibrationCondition}
               disabled={
-                busy ||
-                wakeWord.acousticDiagnostics.activeTrialLabel !== null
+                busy || wakeWord.acousticDiagnostics.activeTrialLabel !== null
               }
             />
             <Button
@@ -1389,7 +1397,9 @@ export function DiagnosticScreen() {
             />
           </View>
 
-          <Text style={styles.sectionTitle}>TEMPORARY PCM REPLAY DIAGNOSTICS</Text>
+          <Text style={styles.sectionTitle}>
+            TEMPORARY PCM REPLAY DIAGNOSTICS
+          </Text>
           <Text style={styles.subtitle}>
             Explicit 5.12-second app-private captures only. PCM never crosses
             React Native and must be deleted after validation.
@@ -1414,7 +1424,9 @@ export function DiagnosticScreen() {
               title="Replay Captures Twice"
               onPress={handleReplayDiagnosticCaptures}
               disabled={
-                busy || status.isRecording || wakeCapture.completedCaptureCount === 0
+                busy ||
+                status.isRecording ||
+                wakeCapture.completedCaptureCount === 0
               }
             />
             <Button
@@ -1425,7 +1437,9 @@ export function DiagnosticScreen() {
           </View>
           <StatusRow
             label="Capture active / label"
-            value={`${yesNo(wakeCapture.active)} / ${wakeCapture.label ?? 'NONE'}`}
+            value={`${yesNo(wakeCapture.active)} / ${
+              wakeCapture.label ?? 'NONE'
+            }`}
           />
           <StatusRow
             label="Capture windows"
@@ -1433,13 +1447,15 @@ export function DiagnosticScreen() {
           />
           <StatusRow
             label="Capture queue / drops"
-            value={`${wakeCapture.queueDepthWindows}/${wakeCapture.queueCapacityWindows} / ${Math.floor(
-              wakeCapture.droppedWindows,
-            )}`}
+            value={`${wakeCapture.queueDepthWindows}/${
+              wakeCapture.queueCapacityWindows
+            } / ${Math.floor(wakeCapture.droppedWindows)}`}
           />
           <StatusRow
             label="Valid captures"
-            value={`${wakeCapture.records.filter(record => record.valid).length}`}
+            value={`${
+              wakeCapture.records.filter(record => record.valid).length
+            }`}
           />
           <StatusRow
             label="Native replay"
@@ -1460,7 +1476,10 @@ export function DiagnosticScreen() {
           ))}
 
           <Text style={styles.sectionTitle}>DEVICE</Text>
-          <StatusRow label="Manufacturer" value={audioProcessing.manufacturer} />
+          <StatusRow
+            label="Manufacturer"
+            value={audioProcessing.manufacturer}
+          />
           <StatusRow label="Model" value={audioProcessing.model} />
           <StatusRow
             label="Android SDK"
@@ -1553,10 +1572,7 @@ export function DiagnosticScreen() {
 
           <Text style={styles.sectionTitle}>NATIVE PCM PIPELINE</Text>
           <StatusRow label="Pipeline state" value={audioPipeline.state} />
-          <StatusRow
-            label="PCM format"
-            value={audioPipeline.pcmFormat}
-          />
+          <StatusRow label="PCM format" value={audioPipeline.pcmFormat} />
           <StatusRow
             label="Sample rate"
             value={`${audioPipeline.sampleRateHz} Hz`}
@@ -1591,9 +1607,7 @@ export function DiagnosticScreen() {
           />
           <StatusRow
             label="Frames written"
-            value={String(
-              Math.floor(audioPipeline.framesWrittenToRingBuffer),
-            )}
+            value={String(Math.floor(audioPipeline.framesWrittenToRingBuffer))}
           />
           <StatusRow
             label="Frames consumed"
@@ -1685,9 +1699,7 @@ export function DiagnosticScreen() {
           <Text style={styles.sectionTitle}>SILERO VAD</Text>
           <StatusRow
             label="Model"
-            value={
-              audioPipeline.sileroVad.modelPresent ? 'PRESENT' : 'MISSING'
-            }
+            value={audioPipeline.sileroVad.modelPresent ? 'PRESENT' : 'MISSING'}
           />
           <StatusRow
             label="Model asset"
@@ -1804,9 +1816,7 @@ export function DiagnosticScreen() {
           />
           <StatusRow
             label="Dropped frames"
-            value={String(
-              Math.floor(audioPipeline.sileroVad.droppedFrames),
-            )}
+            value={String(Math.floor(audioPipeline.sileroVad.droppedFrames))}
           />
           <StatusRow
             label="Speech transitions"
@@ -1843,7 +1853,10 @@ export function DiagnosticScreen() {
 
           <Text style={styles.sectionTitle}>OPENWAKEWORD</Text>
           <StatusRow label="Enabled" value={yesNo(wakeWord.enabled)} />
-          <StatusRow label="Engine available" value={yesNo(wakeWord.available)} />
+          <StatusRow
+            label="Engine available"
+            value={yesNo(wakeWord.available)}
+          />
           <StatusRow
             label="Model present"
             value={yesNo(wakeWord.modelPresent)}
@@ -1859,9 +1872,7 @@ export function DiagnosticScreen() {
           <StatusRow
             label="Model integrity"
             value={
-              wakeWord.modelHashVerified
-                ? 'SHA-256 VERIFIED'
-                : 'NOT VERIFIED'
+              wakeWord.modelHashVerified ? 'SHA-256 VERIFIED' : 'NOT VERIFIED'
             }
           />
           <StatusRow
@@ -2011,9 +2022,9 @@ export function DiagnosticScreen() {
           />
           <StatusRow
             label="Last PCM RMS / peak"
-            value={`${wakeWord.acousticDiagnostics.lastPcmRms.toFixed(
-              2,
-            )} / ${wakeWord.acousticDiagnostics.lastPcmPeak}`}
+            value={`${wakeWord.acousticDiagnostics.lastPcmRms.toFixed(2)} / ${
+              wakeWord.acousticDiagnostics.lastPcmPeak
+            }`}
           />
           <StatusRow
             label="Last / maximum PCM dBFS"
@@ -2062,7 +2073,9 @@ export function DiagnosticScreen() {
               wakeWord.acousticDiagnostics.lastInferenceIndex,
             )}, score=${formatConfidence(
               wakeWord.acousticDiagnostics.lastClassifierScore,
-            )}, queue=${wakeWord.acousticDiagnostics.lastQueueDepthFrames}, ${wakeWord.acousticDiagnostics.lastInferenceLatencyMs.toFixed(
+            )}, queue=${
+              wakeWord.acousticDiagnostics.lastQueueDepthFrames
+            }, ${wakeWord.acousticDiagnostics.lastInferenceLatencyMs.toFixed(
               3,
             )} ms`}
           />
@@ -2070,11 +2083,7 @@ export function DiagnosticScreen() {
             label="Active calibration trial"
             value={
               wakeWord.acousticDiagnostics.activeTrialLabel
-                ? `${wakeWord.acousticDiagnostics.activeTrialLabel} / ${
-                    wakeWord.acousticDiagnostics.activeTrialCondition
-                  } / #${
-                    wakeWord.acousticDiagnostics.activeTrialAttemptNumber
-                  }`
+                ? `${wakeWord.acousticDiagnostics.activeTrialLabel} / ${wakeWord.acousticDiagnostics.activeTrialCondition} / #${wakeWord.acousticDiagnostics.activeTrialAttemptNumber}`
                 : 'NONE'
             }
           />
@@ -2123,11 +2132,11 @@ export function DiagnosticScreen() {
               <StatusRow
                 key={trial.label}
                 label={trial.label}
-                value={`max=${formatConfidence(
-                  trial.maximumScore,
-                )}, peak=${trial.peakPcmAmplitude}/${trial.peakPcmDbFs.toFixed(
-                  1,
-                )} dBFS, ${trial.audioProcessingMode}, detected=${
+                value={`max=${formatConfidence(trial.maximumScore)}, peak=${
+                  trial.peakPcmAmplitude
+                }/${trial.peakPcmDbFs.toFixed(1)} dBFS, ${
+                  trial.audioProcessingMode
+                }, detected=${
                   trial.detectionCount > 0 ? 'YES' : 'NO'
                 }, latency=${formatMilliseconds(
                   trial.firstDetectionLatencyMs,
@@ -2146,7 +2155,9 @@ export function DiagnosticScreen() {
           ) : null}
 
           {status.lastError ? (
-            <Text style={styles.errorText}>Native error: {status.lastError}</Text>
+            <Text style={styles.errorText}>
+              Native error: {status.lastError}
+            </Text>
           ) : null}
           {audioProcessing.aec.lastError ? (
             <Text style={styles.errorText}>
@@ -2159,7 +2170,6 @@ export function DiagnosticScreen() {
             </Text>
           ) : null}
           {uiError ? <Text style={styles.errorText}>{uiError}</Text> : null}
-
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -2214,7 +2224,7 @@ function formatSileroEvent(event: SileroVadEvent | null): string {
   return `${event.event} (${event.probability.toFixed(4)})`;
 }
 
-function StatusRow({label, value}: {label: string; value: string}) {
+function StatusRow({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.statusRow}>
       <Text style={styles.statusLabel}>{label}</Text>

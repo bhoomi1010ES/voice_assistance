@@ -1,8 +1,4 @@
-import {
-  NativeModules,
-  PermissionsAndroid,
-  Platform,
-} from 'react-native';
+import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
 
 export type VoiceDiagnostics = {
   nativeVoiceEngine: string;
@@ -114,11 +110,7 @@ export type SileroVadStatus = {
   running: boolean;
   workerThreadAlive: boolean;
   lifecycleState: string;
-  state:
-    | 'SILENCE'
-    | 'SPEECH_START_PENDING'
-    | 'SPEECH'
-    | 'SPEECH_STOP_PENDING';
+  state: 'SILENCE' | 'SPEECH_START_PENDING' | 'SPEECH' | 'SPEECH_STOP_PENDING';
   speechProbabilityThreshold: number;
   speechStartConfirmationMs: number;
   speechStartConfirmationChunks: number;
@@ -503,10 +495,7 @@ export type ManualWakeWordTrialSummary = {
 };
 
 export type WakeWordStatusEvent = WakeWordStatus & {
-  event:
-    | 'WAKE_ENGINE_STARTED'
-    | 'WAKE_ENGINE_STOPPED'
-    | 'WAKE_ENGINE_ERROR';
+  event: 'WAKE_ENGINE_STARTED' | 'WAKE_ENGINE_STOPPED' | 'WAKE_ENGINE_ERROR';
 };
 
 /** Metadata and counters only. No field contains PCM sample data. */
@@ -569,6 +558,11 @@ export type VoiceGatewayEvent = {
   responseId: string | null;
 };
 
+export type StoredAuthTokens = {
+  accessToken: string;
+  refreshToken: string;
+};
+
 type NativeVoiceModule = {
   getDiagnostics: () => Promise<VoiceDiagnostics>;
   startMicrophone: () => Promise<MicrophoneStatus>;
@@ -600,11 +594,17 @@ type NativeVoiceModule = {
   setAudioProcessingCalibrationMode: (
     mode: AudioProcessingCalibrationMode,
   ) => Promise<AudioProcessingStatus>;
-  storeAuthTokens: (accessToken: string, refreshToken: string) => Promise<boolean>;
+  storeAuthTokens: (
+    accessToken: string,
+    refreshToken: string,
+  ) => Promise<boolean>;
+  readAuthTokens: () => Promise<StoredAuthTokens | null>;
   clearAuthTokens: () => Promise<boolean>;
   connectVoiceGateway: (url: string) => Promise<VoiceGatewayStatus>;
   disconnectVoiceGateway: () => Promise<VoiceGatewayStatus>;
-  startVoiceSession: (resumeSessionId?: string | null) => Promise<VoiceGatewayStatus>;
+  startVoiceSession: (
+    resumeSessionId?: string | null,
+  ) => Promise<VoiceGatewayStatus>;
   startVoiceTurn: (clientTurnId?: string | null) => Promise<VoiceGatewayStatus>;
   commitVoiceAudio: (durationMs: number) => Promise<VoiceGatewayStatus>;
   cancelVoiceResponse: (reason?: string | null) => Promise<VoiceGatewayStatus>;
@@ -709,7 +709,8 @@ export async function replayWakeWordDiagnosticPcm(
 }
 
 export async function deleteWakeWordDiagnosticData(): Promise<number> {
-  const result = await requireNativeVoiceModule().deleteWakeWordDiagnosticData();
+  const result =
+    await requireNativeVoiceModule().deleteWakeWordDiagnosticData();
   return result.deletedFileCount;
 }
 
@@ -737,11 +738,17 @@ export async function storeAuthTokens(
   return requireNativeVoiceModule().storeAuthTokens(accessToken, refreshToken);
 }
 
+export async function readAuthTokens(): Promise<StoredAuthTokens | null> {
+  return requireNativeVoiceModule().readAuthTokens();
+}
+
 export async function clearAuthTokens(): Promise<boolean> {
   return requireNativeVoiceModule().clearAuthTokens();
 }
 
-export async function connectVoiceGateway(url: string): Promise<VoiceGatewayStatus> {
+export async function connectVoiceGateway(
+  url: string,
+): Promise<VoiceGatewayStatus> {
   return requireNativeVoiceModule().connectVoiceGateway(url);
 }
 
@@ -761,7 +768,9 @@ export async function startVoiceTurn(
   return requireNativeVoiceModule().startVoiceTurn(clientTurnId);
 }
 
-export async function commitVoiceAudio(durationMs: number): Promise<VoiceGatewayStatus> {
+export async function commitVoiceAudio(
+  durationMs: number,
+): Promise<VoiceGatewayStatus> {
   return requireNativeVoiceModule().commitVoiceAudio(durationMs);
 }
 
