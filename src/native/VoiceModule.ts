@@ -1,4 +1,9 @@
-import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
+import {
+  DeviceEventEmitter,
+  NativeModules,
+  PermissionsAndroid,
+  Platform,
+} from 'react-native';
 
 export type VoiceDiagnostics = {
   nativeVoiceEngine: string;
@@ -530,7 +535,7 @@ export type AudioPipelineStatus = {
   sileroVad: SileroVadStatus;
 };
 
-/** Native WebSocket transport metadata only; PCM and tokens are excluded. */
+/** Native WebSocket event data; PCM, tokens, and provider secrets are excluded. */
 export type VoiceGatewayStatus = {
   state: string;
   connected: boolean;
@@ -556,6 +561,27 @@ export type VoiceGatewayEvent = {
   sessionId: string | null;
   turnId: string | null;
   responseId: string | null;
+  eventId?: string | null;
+  timestampMs?: number | null;
+  text?: string | null;
+  final?: boolean | null;
+  transcriptSequence?: number | null;
+  language?: string | null;
+  audioDurationMs?: number | null;
+  metrics?: Record<string, number | null>;
+  code?: string | null;
+  message?: string | null;
+  retryable?: boolean | null;
+};
+
+/** Native VAD transitions used only to label the active UI turn. */
+export type VoiceVadEvent = {
+  event: string;
+  timestampMs?: number | null;
+  frameIndex?: number | null;
+  inferenceIndex?: number | null;
+  speechDurationMs?: number | null;
+  reason?: string | null;
 };
 
 export type StoredAuthTokens = {
@@ -788,6 +814,44 @@ export async function endVoiceSession(
 
 export async function getVoiceGatewayStatus(): Promise<VoiceGatewayStatus> {
   return requireNativeVoiceModule().getVoiceGatewayStatus();
+}
+
+/** Subscribes to sanitized native gateway status transitions. */
+export function subscribeVoiceGatewayStatus(
+  listener: (status: VoiceGatewayStatus) => void,
+): () => void {
+  const subscription = DeviceEventEmitter.addListener(
+    'VOICE_GATEWAY_STATUS',
+    listener,
+  );
+  return () => subscription.remove();
+}
+
+/** Subscribes to normalized gateway event metadata; payload bodies stay native. */
+export function subscribeVoiceGatewayEvent(
+  listener: (event: VoiceGatewayEvent) => void,
+): () => void {
+  const subscription = DeviceEventEmitter.addListener(
+    'VOICE_GATEWAY_EVENT',
+    listener,
+  );
+  return () => subscription.remove();
+}
+
+/** Subscribes to low-frequency native speech start/stop transitions. */
+export function subscribeVoiceVadEvent(
+  listener: (event: VoiceVadEvent) => void,
+): () => void {
+  const eventNames = [
+    'VAD_SPEECH_STARTED',
+    'VAD_SPEECH_STOPPED',
+    'SILERO_VAD_SPEECH_STARTED',
+    'SILERO_VAD_SPEECH_STOPPED',
+  ];
+  const subscriptions = eventNames.map(eventName =>
+    DeviceEventEmitter.addListener(eventName, listener),
+  );
+  return () => subscriptions.forEach(subscription => subscription.remove());
 }
 
 /**

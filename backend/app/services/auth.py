@@ -189,6 +189,7 @@ class AuthService:
         self,
         session: AsyncSession,
         *,
+        name: str | None = None,
         email: str,
         password: str,
         request=None,
@@ -198,7 +199,12 @@ class AuthService:
         if existing is not None:
             raise ValueError("An account with this login identity already exists")
 
-        user = User(email=normalized_email, password_hash=hash_password(password), status="active")
+        user = User(
+            name=name.strip() if name else None,
+            email=normalized_email,
+            password_hash=hash_password(password),
+            status="active",
+        )
         session.add(user)
         try:
             await session.flush()
@@ -210,6 +216,26 @@ class AuthService:
             "ACCOUNT_REGISTERED",
             user_id=user.id,
             metadata={"login_identity_type": "email"},
+            request=request,
+        )
+        await session.commit()
+        await session.refresh(user)
+        return user
+
+    async def update_profile(
+        self,
+        session: AsyncSession,
+        user: User,
+        *,
+        name: str,
+        request=None,
+    ) -> User:
+        user.name = name.strip()
+        record_audit(
+            session,
+            "PROFILE_UPDATED",
+            user_id=user.id,
+            metadata={"fields": ["name"]},
             request=request,
         )
         await session.commit()

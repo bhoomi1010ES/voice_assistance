@@ -22,7 +22,8 @@ import java.util.TimeZone
  * Native Phase 3 voice gateway transport.
  *
  * Network work runs outside AudioRecord and the PCM callback only performs a
- * bounded copy. The listener exposes status and protocol metadata only.
+ * bounded copy. The listener exposes status and bounded protocol/transcript
+ * metadata only.
  * Tokens are read from AuthTokenStorage and are never included in callbacks
  * or logs.
  */
@@ -70,6 +71,17 @@ class VoiceWebSocketTransport(
         val lastError: String? = null,
     )
 
+    data class ServerEventPayload(
+        val text: String? = null,
+        val isFinal: Boolean? = null,
+        val transcriptSequence: Long? = null,
+        val language: String? = null,
+        val audioDurationMs: Long? = null,
+        val metrics: Map<String, Double?> = emptyMap(),
+        val errorCode: String? = null,
+        val retryable: Boolean? = null,
+    )
+
     interface Listener {
         fun onStatus(status: Status)
 
@@ -79,6 +91,29 @@ class VoiceWebSocketTransport(
             turnId: String?,
             responseId: String?,
         )
+
+        fun onServerEvent(
+            eventType: String,
+            sessionId: String?,
+            turnId: String?,
+            responseId: String?,
+            eventId: String?,
+            timestampMs: Long?,
+        ) {
+            onServerEvent(eventType, sessionId, turnId, responseId)
+        }
+
+        fun onServerEvent(
+            eventType: String,
+            sessionId: String?,
+            turnId: String?,
+            responseId: String?,
+            eventId: String?,
+            timestampMs: Long?,
+            payload: ServerEventPayload?,
+        ) {
+            onServerEvent(eventType, sessionId, turnId, responseId, eventId, timestampMs)
+        }
     }
 
     private val stateLock = Any()
@@ -88,50 +123,6 @@ class VoiceWebSocketTransport(
     private var status = Status()
     private var turnFrameCount = 0L
     private var turnByteCount = 0L
-
-    private fun autoSeedToken(): String? {
-        return try {
-            val baseUrl = "http://127.0.0.1:8000"
-            val email = "rmx5070-primary@voiceai.local"
-            val password = "rmx5070-permanent-auth-password-123"
-
-            try {
-                val regConn = java.net.URL("$baseUrl/auth/register").openConnection() as java.net.HttpURLConnection
-                regConn.requestMethod = "POST"
-                regConn.doOutput = true
-                regConn.connectTimeout = 3000
-                regConn.readTimeout = 5000
-                regConn.setRequestProperty("Content-Type", "application/json")
-                regConn.outputStream.use { it.write("{\"email\":\"$email\",\"password\":\"$password\"}".toByteArray(Charsets.UTF_8)) }
-                regConn.responseCode
-                regConn.disconnect()
-            } catch (_: Exception) {}
-
-            val loginConn = java.net.URL("$baseUrl/auth/login").openConnection() as java.net.HttpURLConnection
-            loginConn.requestMethod = "POST"
-            loginConn.doOutput = true
-            loginConn.connectTimeout = 3000
-            loginConn.readTimeout = 5000
-            loginConn.setRequestProperty("Content-Type", "application/json")
-            val loginBody = "{\"email\":\"$email\",\"password\":\"$password\",\"device_identifier\":\"rmx5070-physical-primary\",\"platform\":\"android\"}"
-            loginConn.outputStream.use { it.write(loginBody.toByteArray(Charsets.UTF_8)) }
-            if (loginConn.responseCode in 200..299) {
-                val res = loginConn.inputStream.bufferedReader().use { it.readText() }
-                val json = JSONObject(res)
-                val access = json.getString("access_token")
-                val refresh = json.getString("refresh_token")
-                tokenStorage.save(access, refresh)
-                loginConn.disconnect()
-                access
-            } else {
-                loginConn.disconnect()
-                null
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Auto-auth failed in VoiceWebSocketTransport", e)
-            null
-        }
-    }
 
     fun connect(url: String): Result {
         if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
@@ -161,7 +152,7 @@ class VoiceWebSocketTransport(
         notifyStatus()
 
         networkExecutor.execute {
-            var token = autoSeedToken() ?: tokenStorage.read()?.accessToken
+            val token = tokenStorage.read()?.accessToken
             if (token.isNullOrBlank()) {
                 recordError("E_VOICE_AUTH", "No access token is stored securely on this device.")
                 return@execute
@@ -405,7 +396,6 @@ class VoiceWebSocketTransport(
                     "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
             )
             stopHeartbeat()
-            tokenStorage.clear()
             recordError("E_VOICE_WEBSOCKET", "Voice gateway connection failed.")
         }
     }
@@ -465,6 +455,10 @@ class VoiceWebSocketTransport(
     }
 
     private fun handleServerEvent(raw: String) {
+        if (raw.toByteArray(Charsets.UTF_8).size > MAX_SERVER_EVENT_BYTES) {
+            recordError("E_VOICE_PROTOCOL", "Voice gateway event is too large.")
+            return
+        }
         val json = try {
             JSONObject(raw)
         } catch (_: Exception) {
@@ -475,11 +469,18 @@ class VoiceWebSocketTransport(
         val sessionId = json.optStringOrNull("session_id")
         val turnId = json.optStringOrNull("turn_id")
         val responseId = json.optStringOrNull("response_id")
+        val eventId = json.optStringOrNull("event_id")
+        val timestampMs = if (json.has("timestamp_ms") && !json.isNull("timestamp_ms")) {
+            json.optLong("timestamp_ms")
+        } else {
+            null
+        }
+        val payload = extractServerEventPayload(eventType, json)
         Log.i(
             TAG,
             "VOICE server event type=$eventType sessionId=${sessionId ?: "NONE"} " +
                 "turnId=${turnId ?: "NONE"} responseId=${responseId ?: "NONE"} " +
-                "payload=$raw wallMs=${System.currentTimeMillis()} " +
+                "wallMs=${System.currentTimeMillis()} " +
                 "elapsedMs=${SystemClock.elapsedRealtime()}",
         )
         if (eventType == "server.session.ready") {
@@ -512,7 +513,87 @@ class VoiceWebSocketTransport(
             )
         }
         notifyStatus()
-        listener.onServerEvent(eventType, sessionId, turnId, responseId)
+        listener.onServerEvent(
+            eventType,
+            sessionId,
+            turnId,
+            responseId,
+            eventId,
+            timestampMs,
+            payload,
+        )
+    }
+
+    private fun extractServerEventPayload(
+        eventType: String,
+        json: JSONObject,
+    ): ServerEventPayload? {
+        val isTranscript = eventType in setOf(
+            "transcript.partial",
+            "transcript.final",
+            "voice.transcript.partial",
+            "voice.transcript.final.delivered",
+        )
+        val isError = eventType == "server.error" || eventType == "server.turn.failed" ||
+            eventType == "assistant.response.failed" || eventType == "llm.response.failed"
+        if (!isTranscript && !isError) {
+            return null
+        }
+
+        val text = json.optStringOrNull("text")?.takeIf { it.length <= MAX_TRANSCRIPT_BYTES }
+        val isFinal = if (json.has("final") && !json.isNull("final")) {
+            json.optBoolean("final")
+        } else {
+            null
+        }
+        val transcriptSequence = if (
+            json.has("transcript_sequence") && !json.isNull("transcript_sequence")
+        ) {
+            json.optLong("transcript_sequence").takeIf { it >= 0L }
+        } else {
+            null
+        }
+        val audioDurationMs = if (
+            json.has("audio_duration_ms") && !json.isNull("audio_duration_ms")
+        ) {
+            json.optLong("audio_duration_ms").takeIf { it >= 0L }
+        } else {
+            null
+        }
+        return ServerEventPayload(
+            text = text,
+            isFinal = isFinal,
+            transcriptSequence = transcriptSequence,
+            language = json.optStringOrNull("language")?.takeIf { it.length <= MAX_LANGUAGE_BYTES },
+            audioDurationMs = audioDurationMs,
+            metrics = boundedMetrics(json.optJSONObject("metrics")),
+            errorCode = json.optStringOrNull("code")?.takeIf { it.length <= MAX_ERROR_CODE_BYTES },
+            retryable = if (json.has("retryable") && !json.isNull("retryable")) {
+                json.optBoolean("retryable")
+            } else {
+                null
+            },
+        )
+    }
+
+    private fun boundedMetrics(metricsJson: JSONObject?): Map<String, Double?> {
+        if (metricsJson == null) {
+            return emptyMap()
+        }
+        val metrics = linkedMapOf<String, Double?>()
+        val keys = metricsJson.keys()
+        while (keys.hasNext() && metrics.size < MAX_METRIC_COUNT) {
+            val key = keys.next()
+            if (key.length > MAX_METRIC_KEY_BYTES) {
+                continue
+            }
+            val value = metricsJson.opt(key)
+            when {
+                value == null || value == JSONObject.NULL -> metrics[key] = null
+                value is Number -> metrics[key] = value.toDouble()
+            }
+        }
+        return metrics
     }
 
     private fun fail(code: String, message: String): Result {
@@ -601,5 +682,11 @@ class VoiceWebSocketTransport(
         const val TAG = "VoiceAI-VoiceGateway"
         const val DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 15L
         const val MAX_HEARTBEAT_INTERVAL_SECONDS = 60L
+        const val MAX_SERVER_EVENT_BYTES = 16 * 1024
+        const val MAX_TRANSCRIPT_BYTES = 16 * 1024
+        const val MAX_LANGUAGE_BYTES = 32
+        const val MAX_ERROR_CODE_BYTES = 128
+        const val MAX_METRIC_COUNT = 32
+        const val MAX_METRIC_KEY_BYTES = 64
     }
 }

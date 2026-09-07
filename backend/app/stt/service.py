@@ -13,6 +13,7 @@ from typing import Any, Literal
 from app.core.config import Settings
 from app.stt.base import (
     STTAudioError,
+    STTAudioTooLongError,
     STTCancelledError,
     STTConfigurationError,
     STTEngine,
@@ -355,7 +356,7 @@ class STTTurn:
             * 2
         )
         if (self._audio_samples * 2) + len(pcm_bytes) > max_bytes:
-            raise STTAudioError("STT turn audio limit exceeded")
+            raise STTAudioTooLongError("STT turn audio limit exceeded")
         if self._audio_start is None:
             self._audio_start = time.monotonic()
             self._speech_start = self._audio_start

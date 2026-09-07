@@ -6,7 +6,12 @@ import {
   endVoiceSession,
   stopMicrophone,
 } from '../native/VoiceModule';
-import { loginRequest, logoutRequest, refreshRequest } from './authApi';
+import {
+  loginRequest,
+  logoutRequest,
+  refreshRequest,
+  registerRequest,
+} from './authApi';
 import {
   createNativeAuthTokenStorage,
   AuthTokenStorage,
@@ -103,6 +108,19 @@ export class AuthController {
       restoreError: null,
       sessionExpired: false,
     });
+  }
+
+  async register(name: string, email: string, password: string): Promise<void> {
+    await registerRequest({ name, email, password }, this.fetchImpl);
+  }
+
+  async updateProfile(name: string): Promise<UserProfile> {
+    const profile = await this.request<UserProfile>('/auth/me', {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    });
+    this.setState({ profile });
+    return profile;
   }
 
   async logout(): Promise<void> {

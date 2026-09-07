@@ -20,6 +20,7 @@ from app.schemas import (
     RefreshRequest,
     RegisterRequest,
     TokenResponse,
+    UpdateProfileRequest,
     UserResponse,
 )
 from app.services.auth import (
@@ -61,6 +62,7 @@ async def register(
     try:
         return await auth_service.register_user(
             session,
+            name=payload.name,
             email=payload.email,
             password=payload.password,
             request=request,
@@ -166,6 +168,32 @@ async def logout(
 @router.get("/me", response_model=UserResponse)
 async def me(user: Annotated[User, Depends(get_current_user)]) -> User:
     return user
+
+
+@router.patch("/me", response_model=UserResponse)
+async def update_me(
+    payload: UpdateProfileRequest,
+    request: Request,
+    user: Annotated[User, Depends(get_current_user)],
+    session: DatabaseSessionDependency,
+    auth_service: AuthServiceDependency,
+) -> User:
+    try:
+        return await auth_service.update_profile(
+            session,
+            user,
+            name=payload.name,
+            request=request,
+        )
+    except SQLAlchemyError as error:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "AUTH_SERVICE_UNAVAILABLE",
+                "message": "Authentication service unavailable.",
+            },
+        ) from error
 
 
 @router.get("/sessions", response_model=list[AuthSessionResponse])

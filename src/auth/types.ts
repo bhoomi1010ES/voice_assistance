@@ -8,6 +8,7 @@ export type AuthTokens = {
 export type UserProfile = {
   id: string;
   email: string;
+  name: string | null;
   status: string;
   created_at: string;
   updated_at: string;

@@ -19,15 +19,22 @@ from app.core.config import Settings
 from app.stt.base import (
     EnginePartialCallback,
     STTAudioError,
+    STTAudioTooLongError,
     STTCancelledError,
+    STTAuthenticationError,
     STTConfigurationError,
+    STTEmptyAudioError,
+    STTEmptyTranscriptError,
     STTEngine,
     STTEngineFinal,
     STTEngineInfo,
     STTEngineTurn,
     STTError,
     STTInferenceError,
+    STTNetworkError,
+    STTRateLimitError,
     STTTimeoutError,
+    STTUnavailableError,
 )
 
 LOGGER = logging.getLogger("voice-assistance-backend")
@@ -177,7 +184,7 @@ class RemoteTranscriptionEngine(STTEngine):
             * 2
         )
         if len(state.audio) + len(pcm_bytes) > max_bytes:
-            raise STTAudioError("STT turn audio limit exceeded")
+            raise STTAudioTooLongError("STT turn audio limit exceeded")
         state.audio.extend(pcm_bytes)
         state.audio_samples += len(pcm_bytes) // 2
 
@@ -190,7 +197,7 @@ class RemoteTranscriptionEngine(STTEngine):
         state.finalized = True
         state.generation = generation
         if not state.audio:
-            return self._empty_final(turn, generation)
+            raise STTEmptyAudioError("STT turn did not contain audio")
 
         state.request_task = asyncio.create_task(
             self._transcribe(state, generation),
@@ -293,10 +300,10 @@ class RemoteTranscriptionEngine(STTEngine):
         except httpx.TimeoutException as error:
             raise STTTimeoutError("remote STT request timed out") from error
         except httpx.RequestError as error:
-            raise STTInferenceError("remote STT request failed") from error
+            raise STTNetworkError("remote STT request failed") from error
         duration_ms = round((time.perf_counter() - started) * 1000, 1)
         if len(response.content) > self.settings.stt_api_max_response_bytes:
-            raise STTInferenceError("remote STT response exceeded the configured size limit")
+            raise STTUnavailableError("remote STT response exceeded the configured size limit")
         self._raise_for_status(response)
         text = self._extract_text(response)
         completed = time.monotonic()
@@ -349,12 +356,12 @@ class RemoteTranscriptionEngine(STTEngine):
         try:
             payload: Any = response.json()
         except ValueError as error:
-            raise STTInferenceError("remote STT returned invalid JSON") from error
+            raise STTUnavailableError("remote STT returned invalid JSON") from error
         if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
-            raise STTInferenceError("remote STT response did not contain text")
+            raise STTUnavailableError("remote STT response did not contain text")
         text = payload["text"].strip()
         if not text:
-            raise STTInferenceError("remote STT returned an empty transcript")
+            raise STTEmptyTranscriptError("remote STT returned an empty transcript")
         return text
 
     @staticmethod
@@ -363,13 +370,13 @@ class RemoteTranscriptionEngine(STTEngine):
         if 200 <= status < 300:
             return
         if status in {401, 403}:
-            raise STTConfigurationError(f"remote STT authentication failed (HTTP {status})")
+            raise STTAuthenticationError(f"remote STT authentication failed (HTTP {status})")
         if status == 413:
-            raise STTAudioError("remote STT rejected the audio size (HTTP 413)")
+            raise STTAudioTooLongError("remote STT rejected the audio size (HTTP 413)")
         if status == 429:
-            raise STTInferenceError("remote STT rate limited the request (HTTP 429)")
+            raise STTRateLimitError("remote STT rate limited the request (HTTP 429)")
         if status == 408 or status >= 500:
-            raise STTInferenceError(f"remote STT service unavailable (HTTP {status})")
+            raise STTUnavailableError(f"remote STT service unavailable (HTTP {status})")
         raise STTInferenceError(f"remote STT request rejected (HTTP {status})")
 
     def _to_wav(self, pcm_bytes: bytes) -> bytes:

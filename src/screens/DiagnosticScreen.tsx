@@ -50,8 +50,9 @@ import {
   WakeWordStatus,
   WakeWordStatusEvent,
 } from '../native/VoiceModule';
+import { publicApiConfig } from '../config/environment';
 
-const DEFAULT_VOICE_GATEWAY_URL = 'ws://127.0.0.1:8000/v1/voice';
+const DEFAULT_VOICE_GATEWAY_URL = `${publicApiConfig.websocketBaseUrl}/v1/voice`;
 
 const WAKE_CALIBRATION_CONDITIONS = [
   'QUIET_25CM',
@@ -677,7 +678,7 @@ export function DiagnosticScreen() {
 
       // Register device user (ignore if already registered)
       try {
-        await fetch('http://127.0.0.1:8000/auth/register', {
+        await fetch(`${publicApiConfig.httpBaseUrl}/auth/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, password }),
@@ -687,16 +688,19 @@ export function DiagnosticScreen() {
       }
 
       // Login to retrieve valid tokens
-      const loginRes = await fetch('http://127.0.0.1:8000/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email,
-          password,
-          device_identifier: deviceId,
-          platform: 'android',
-        }),
-      });
+      const loginRes = await fetch(
+        `${publicApiConfig.httpBaseUrl}/auth/login`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email,
+            password,
+            device_identifier: deviceId,
+            platform: 'android',
+          }),
+        },
+      );
 
       if (loginRes.ok) {
         const data = await loginRes.json();

@@ -29,6 +29,14 @@ class STTAudioError(STTError):
     code = "stt_invalid_audio"
 
 
+class STTEmptyAudioError(STTAudioError):
+    code = "stt_empty_audio"
+
+
+class STTAudioTooLongError(STTAudioError):
+    code = "stt_audio_too_long"
+
+
 class STTCancelledError(STTError):
     code = "stt_cancelled"
 
@@ -39,6 +47,26 @@ class STTTimeoutError(STTError):
 
 class STTInferenceError(STTError):
     code = "stt_inference_error"
+
+
+class STTEmptyTranscriptError(STTInferenceError):
+    code = "stt_empty_transcript"
+
+
+class STTNetworkError(STTInferenceError):
+    code = "stt_network_error"
+
+
+class STTRateLimitError(STTInferenceError):
+    code = "stt_rate_limited"
+
+
+class STTUnavailableError(STTInferenceError):
+    code = "stt_unavailable"
+
+
+class STTAuthenticationError(STTConfigurationError):
+    code = "stt_authentication_error"
 
 
 @dataclass(frozen=True)

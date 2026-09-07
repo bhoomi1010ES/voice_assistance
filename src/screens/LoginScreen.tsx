@@ -17,13 +17,19 @@ import { useAuth } from '../auth/AuthProvider';
 export function LoginScreen({
   sessionExpired,
   onDismissSessionExpired,
+  onCreateAccount,
+  initialEmail = '',
+  registrationMessage,
 }: {
   sessionExpired: boolean;
   onDismissSessionExpired: () => void;
+  onCreateAccount: () => void;
+  initialEmail?: string;
+  registrationMessage?: string | null;
 }) {
   const { controller } = useAuth();
   const { colors } = useAppTheme();
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +65,9 @@ export function LoginScreen({
         <Heading>{strings.auth.title}</Heading>
         <AppText style={styles.body}>{strings.auth.body}</AppText>
         <Card>
+          {registrationMessage ? (
+            <StatusBanner>{registrationMessage}</StatusBanner>
+          ) : null}
           {error ? <StatusBanner tone="error">{error}</StatusBanner> : null}
           <AppText style={styles.label}>{strings.auth.email}</AppText>
           <TextInput
@@ -118,6 +127,19 @@ export function LoginScreen({
             onPress={submit}
             style={styles.submit}
           />
+          <View style={styles.accountPrompt}>
+            <AppText>{strings.auth.noAccount}</AppText>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={strings.auth.createAccount}
+              onPress={onCreateAccount}
+              testID="create-account-link"
+            >
+              <AppText style={[styles.link, { color: colors.accent }]}>
+                {strings.auth.createAccount}
+              </AppText>
+            </Pressable>
+          </View>
         </Card>
       </View>
       <Modal
@@ -170,6 +192,14 @@ const styles = StyleSheet.create({
   passwordInput: { flex: 1 },
   visibilityButton: { marginLeft: spacing.sm, maxWidth: 92 },
   submit: { marginTop: spacing.lg },
+  accountPrompt: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    marginTop: spacing.md,
+  },
+  link: { fontWeight: '700', marginLeft: spacing.xs },
   modalBackdrop: {
     alignItems: 'center',
     backgroundColor: '#00000088',

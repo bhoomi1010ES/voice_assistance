@@ -1,10 +1,31 @@
 import { requestJson } from '../api/httpClient';
-import { AuthTokenResponse, Device, UserProfile, AuthSession } from './types';
+import { AuthTokenResponse, AuthSession, Device, UserProfile } from './types';
 
 export type LoginDetails = {
   email: string;
   password: string;
 };
+
+export type RegisterDetails = {
+  name: string;
+  email: string;
+  password: string;
+};
+
+export function registerRequest(
+  details: RegisterDetails,
+  fetchImpl: typeof fetch = fetch,
+): Promise<UserProfile> {
+  return requestJson<UserProfile>('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: details.name,
+      email: details.email,
+      password: details.password,
+    }),
+    fetchImpl,
+  });
+}
 
 export function loginRequest(
   details: LoginDetails,

@@ -9,6 +9,7 @@ from app.schemas.auth import (
     RefreshRequest,
     RegisterRequest,
     TokenResponse,
+    UpdateProfileRequest,
     UserResponse,
 )
 from app.schemas.resources import (
@@ -31,6 +32,7 @@ __all__ = [
     "RefreshRequest",
     "RegisterRequest",
     "TokenResponse",
+    "UpdateProfileRequest",
     "UserResponse",
     "MemoryCreateRequest",
     "MemoryResponse",

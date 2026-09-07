@@ -4,6 +4,7 @@ import { ThemeProvider } from '../design/ThemeProvider';
 import { AuthController } from '../auth/AuthController';
 import { AuthProvider } from '../auth/AuthProvider';
 import { BootstrapDependency } from './bootstrap';
+import { VoiceSocketProvider } from '../voice/VoiceSocketProvider';
 
 export function AppProviders({
   children,
@@ -18,7 +19,7 @@ export function AppProviders({
     <SafeAreaProvider>
       <ThemeProvider>
         <AuthProvider controller={authController} bootstrap={bootstrap}>
-          {children}
+          <VoiceSocketProvider>{children}</VoiceSocketProvider>
         </AuthProvider>
       </ThemeProvider>
     </SafeAreaProvider>

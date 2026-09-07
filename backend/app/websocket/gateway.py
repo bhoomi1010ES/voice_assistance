@@ -52,7 +52,7 @@ from app.services.voice_registry import (
     VoiceRegistryOwner,
     VoiceSessionConflict,
 )
-from app.stt.base import STTCancelledError, STTError
+from app.stt.base import STTCancelledError, STTEmptyTranscriptError, STTError
 from app.stt.service import (
     STTService,
     STTTranscriptEvent,
@@ -618,6 +618,10 @@ class VoiceGateway:
             if stt_turn is not None:
                 try:
                     stt_result = await stt_turn.finalize()
+                    if not stt_result.event.text.strip():
+                        raise STTEmptyTranscriptError(
+                            "STT returned an empty transcript"
+                        )
                 except STTCancelledError:
                     if self._stt_finalize_cancel_requested or self._closing.is_set():
                         return

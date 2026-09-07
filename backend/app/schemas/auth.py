@@ -12,8 +12,17 @@ class StrictSchema(BaseModel):
 
 
 class RegisterRequest(StrictSchema):
+    name: str | None = Field(default=None, max_length=120)
     email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=12, max_length=256)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
 
 class LoginRequest(StrictSchema):
@@ -37,11 +46,24 @@ class RefreshRequest(StrictSchema):
     refresh_token: str = Field(min_length=1, max_length=512)
 
 
+class UpdateProfileRequest(StrictSchema):
+    name: str = Field(min_length=1, max_length=120)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("must not be blank")
+        return normalized
+
+
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     email: str
+    name: str | None
     status: str
     created_at: datetime
     updated_at: datetime

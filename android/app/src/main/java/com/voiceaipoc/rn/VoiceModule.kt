@@ -57,13 +57,58 @@ class VoiceModule(
                 turnId: String?,
                 responseId: String?,
             ) {
+                onServerEvent(eventType, sessionId, turnId, responseId, null, null)
+            }
+
+            override fun onServerEvent(
+                eventType: String,
+                sessionId: String?,
+                turnId: String?,
+                responseId: String?,
+                eventId: String?,
+                timestampMs: Long?,
+            ) {
                 Log.i(
                     TAG,
                     "VOICE server event type=$eventType sessionId=${sessionId ?: "NONE"} " +
                         "turnId=${turnId ?: "NONE"} responseId=${responseId ?: "NONE"} " +
                         "wallMs=${System.currentTimeMillis()}",
                 )
-                emitVoiceGatewayEvent(eventType, sessionId, turnId, responseId)
+                emitVoiceGatewayEvent(
+                    eventType,
+                    sessionId,
+                    turnId,
+                    responseId,
+                    eventId,
+                    timestampMs,
+                    null,
+                )
+            }
+
+            override fun onServerEvent(
+                eventType: String,
+                sessionId: String?,
+                turnId: String?,
+                responseId: String?,
+                eventId: String?,
+                timestampMs: Long?,
+                payload: VoiceWebSocketTransport.ServerEventPayload?,
+            ) {
+                Log.i(
+                    TAG,
+                    "VOICE server event type=$eventType sessionId=${sessionId ?: "NONE"} " +
+                        "turnId=${turnId ?: "NONE"} responseId=${responseId ?: "NONE"} " +
+                        "wallMs=${System.currentTimeMillis()}",
+                )
+                emitVoiceGatewayEvent(
+                    eventType,
+                    sessionId,
+                    turnId,
+                    responseId,
+                    eventId,
+                    timestampMs,
+                    payload,
+                )
             }
         },
     )
@@ -555,16 +600,56 @@ class VoiceModule(
         sessionId: String?,
         turnId: String?,
         responseId: String?,
+        eventId: String?,
+        timestampMs: Long?,
+        eventPayload: VoiceWebSocketTransport.ServerEventPayload?,
     ) {
         if (!reactApplicationContext.hasActiveReactInstance()) {
             return
         }
 
+        val eventText = eventPayload?.text
+        val eventFinal = eventPayload?.isFinal
+        val transcriptSequence = eventPayload?.transcriptSequence
+        val eventLanguage = eventPayload?.language
+        val audioDurationMs = eventPayload?.audioDurationMs
+        val errorCode = eventPayload?.errorCode
+        val retryable = eventPayload?.retryable
+        val metrics = eventPayload?.metrics
         val payload = Arguments.createMap().apply {
             putString("event", eventType)
             if (sessionId == null) putNull("sessionId") else putString("sessionId", sessionId)
             if (turnId == null) putNull("turnId") else putString("turnId", turnId)
             if (responseId == null) putNull("responseId") else putString("responseId", responseId)
+            if (eventId == null) putNull("eventId") else putString("eventId", eventId)
+            if (timestampMs == null) putNull("timestampMs") else putDouble("timestampMs", timestampMs.toDouble())
+            if (eventText == null) putNull("text") else putString("text", eventText)
+            if (eventFinal == null) putNull("final") else putBoolean("final", eventFinal)
+            if (transcriptSequence == null) {
+                putNull("transcriptSequence")
+            } else {
+                putDouble("transcriptSequence", transcriptSequence.toDouble())
+            }
+            if (eventLanguage == null) putNull("language") else putString("language", eventLanguage)
+            if (audioDurationMs == null) {
+                putNull("audioDurationMs")
+            } else {
+                putDouble("audioDurationMs", audioDurationMs.toDouble())
+            }
+            if (errorCode == null) putNull("code") else putString("code", errorCode)
+            if (retryable == null) putNull("retryable") else putBoolean("retryable", retryable)
+            if (metrics == null) {
+                putNull("metrics")
+            } else {
+                putMap(
+                    "metrics",
+                    Arguments.createMap().apply {
+                        metrics.forEach { (key, value) ->
+                            if (value == null) putNull(key) else putDouble(key, value)
+                        }
+                    },
+                )
+            }
         }
         reactApplicationContext
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
