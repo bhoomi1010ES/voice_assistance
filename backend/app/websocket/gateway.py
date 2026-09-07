@@ -1070,38 +1070,64 @@ class VoiceGateway:
         )
         stored = await store.create_or_get(pending)
         if stored.tool_name != tool.name or stored.tool_call_id != call.tool_call_id:
-            return False
-        await self.persistence.merge_turn_metadata(
-            self.db,
-            self.principal,
-            turn_id=original_turn_id,
-            metadata={
-                "confirmation": {
-                    "confirmation_id": str(stored.confirmation_id),
-                    "status": stored.status,
-                    "tool_name": stored.tool_name,
-                    "validated_arguments": stored.validated_tool_arguments,
-                    "expires_at": stored.expires_at.isoformat(),
-                }
-            },
-        )
-        await self.db.commit()
-        await self._send(
-            server_event(
-                "confirmation.required",
-                session_id=stored.session_id,
-                turn_id=stored.original_turn_id,
-                response_id=stored.original_response_id,
-                confirmation_id=stored.confirmation_id,
-                tool_name=stored.tool_name,
-                validated_arguments=stored.validated_tool_arguments,
-                timezone=stored.user_timezone,
-                due_at_utc=_confirmation_due_at_utc(stored.validated_tool_arguments),
-                due_at_local=_confirmation_due_at_local(stored),
-                expires_at=stored.expires_at.isoformat(),
-                status=stored.status,
+            LOGGER.warning(
+                "Existing voice confirmation made tool proposal terminal",
+                extra={
+                    "event": "voice.confirmation.persist.existing",
+                    "existing_confirmation_id": str(stored.confirmation_id),
+                    "existing_tool_name": stored.tool_name,
+                    "existing_tool_call_id": stored.tool_call_id,
+                    "proposed_tool_name": tool.name,
+                    "proposed_tool_call_id": call.tool_call_id,
+                },
             )
+            return True
+        try:
+            await self.persistence.merge_turn_metadata(
+                self.db,
+                self.principal,
+                turn_id=original_turn_id,
+                metadata={
+                    "confirmation": {
+                        "confirmation_id": str(stored.confirmation_id),
+                        "status": stored.status,
+                        "tool_name": stored.tool_name,
+                        "validated_arguments": stored.validated_tool_arguments,
+                        "expires_at": stored.expires_at.isoformat(),
+                    }
+                },
+            )
+            await self.db.commit()
+        except Exception:  # noqa: BLE001 - Redis pending state remains terminal
+            await self.db.rollback()
+            LOGGER.exception(
+                "Voice confirmation metadata persistence failed after pending state was saved",
+                extra={"event": "voice.confirmation.metadata.failed"},
+            )
+        confirmation_event = server_event(
+            "confirmation.required",
+            session_id=stored.session_id,
+            turn_id=stored.original_turn_id,
+            response_id=stored.original_response_id,
+            confirmation_id=stored.confirmation_id,
+            tool_name=stored.tool_name,
+            validated_arguments=stored.validated_tool_arguments,
+            timezone=stored.user_timezone,
+            due_at_utc=_confirmation_due_at_utc(stored.validated_tool_arguments),
+            due_at_local=_confirmation_due_at_local(stored),
+            expires_at=stored.expires_at.isoformat(),
+            status=stored.status,
         )
+        try:
+            await asyncio.wait_for(self._send(confirmation_event), timeout=2.0)
+        except (TimeoutError, RuntimeError, WebSocketDisconnect):
+            LOGGER.warning(
+                "Voice confirmation notification was not delivered",
+                extra={
+                    "event": "voice.confirmation.notification.failed",
+                    "confirmation_id": str(stored.confirmation_id),
+                },
+            )
         LOGGER.info(
             "Voice confirmation required",
             extra={
@@ -1938,7 +1964,11 @@ class VoiceGateway:
         return getattr(self, "clock", SystemClock())
 
     def _user_timezone(self) -> str:
-        metadata = self.voice_session.client_metadata if self.voice_session is not None else None
+        metadata = (
+            getattr(self.voice_session, "client_metadata", None)
+            if self.voice_session is not None
+            else None
+        )
         if isinstance(metadata, dict):
             timezone_name = metadata.get("timezone")
             if isinstance(timezone_name, str) and timezone_name.strip():

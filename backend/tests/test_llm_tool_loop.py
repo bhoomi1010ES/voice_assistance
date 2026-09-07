@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.clock import FrozenClock
 from app.core.config import Settings
 from app.llm.errors import LLMToolLoopLimitError
 from app.llm.task_tools import CreateTaskArguments, register_task_tools
@@ -234,6 +235,7 @@ async def test_create_task_uses_authenticated_owner_and_rejects_privileged_field
         scopes=frozenset({"tasks:write"}),
         confirmed_tool_call_ids=frozenset({"call-task-1"}),
         db=database,
+        clock=FrozenClock(datetime(2026, 9, 3, 18, 0, tzinfo=UTC)),
     )
 
     result = await executor.execute(

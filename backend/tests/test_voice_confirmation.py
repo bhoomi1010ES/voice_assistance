@@ -349,3 +349,25 @@ async def test_tool_executor_persists_confirmation_request_after_validation() ->
     assert execution_count == 0
     assert len(requested) == 1
     assert requested[0].status == "PENDING"
+
+
+@pytest.mark.asyncio
+async def test_existing_pending_confirmation_is_terminal_for_new_tool_proposal() -> None:
+    gateway, store, _outbound, _response_id, _count = await _gateway()
+    gateway._response_turn_id = uuid.uuid4()
+    gateway._last_response_id = uuid.uuid4()
+    pending = _pending(gateway.principal, gateway.voice_session.id)
+    await store.create_or_get(pending)
+
+    result = await gateway._persist_confirmation_request(
+        SimpleNamespace(tool_call_id="new-call", name="create_task"),
+        CreateTaskArguments(title="Different task"),
+        SimpleNamespace(name="create_task"),
+    )
+
+    assert result is True
+    stored = await store.get(
+        (gateway.principal.user_id, gateway.principal.device_id, gateway.voice_session.id)
+    )
+    assert stored is not None
+    assert stored.confirmation_id == pending.confirmation_id
