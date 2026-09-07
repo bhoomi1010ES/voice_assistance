@@ -564,11 +564,19 @@ export type VoiceGatewayEvent = {
   eventId?: string | null;
   timestampMs?: number | null;
   text?: string | null;
+  delta?: string | null;
   final?: boolean | null;
+  sequence?: number | null;
+  attempt?: number | null;
   transcriptSequence?: number | null;
   language?: string | null;
   audioDurationMs?: number | null;
   metrics?: Record<string, number | null>;
+  usage?: Record<string, number | null>;
+  toolCallId?: string | null;
+  toolName?: string | null;
+  toolStatus?: string | null;
+  capability?: string | null;
   code?: string | null;
   message?: string | null;
   retryable?: boolean | null;
@@ -634,8 +642,14 @@ type NativeVoiceModule = {
   startVoiceTurn: (clientTurnId?: string | null) => Promise<VoiceGatewayStatus>;
   commitVoiceAudio: (durationMs: number) => Promise<VoiceGatewayStatus>;
   cancelVoiceResponse: (reason?: string | null) => Promise<VoiceGatewayStatus>;
+  retryVoiceResponse: (
+    turnId: string,
+    originalResponseId: string,
+    transcript: string,
+  ) => Promise<VoiceGatewayStatus>;
   endVoiceSession: (reason?: string | null) => Promise<VoiceGatewayStatus>;
   getVoiceGatewayStatus: () => Promise<VoiceGatewayStatus>;
+  copyTextToClipboard: (text: string) => Promise<boolean>;
 };
 
 export type AudioProcessingCalibrationMode =
@@ -806,6 +820,18 @@ export async function cancelVoiceResponse(
   return requireNativeVoiceModule().cancelVoiceResponse(reason);
 }
 
+export async function retryVoiceResponse(
+  turnId: string,
+  originalResponseId: string,
+  transcript: string,
+): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().retryVoiceResponse(
+    turnId,
+    originalResponseId,
+    transcript,
+  );
+}
+
 export async function endVoiceSession(
   reason?: string | null,
 ): Promise<VoiceGatewayStatus> {
@@ -814,6 +840,10 @@ export async function endVoiceSession(
 
 export async function getVoiceGatewayStatus(): Promise<VoiceGatewayStatus> {
   return requireNativeVoiceModule().getVoiceGatewayStatus();
+}
+
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+  return requireNativeVoiceModule().copyTextToClipboard(text);
 }
 
 /** Subscribes to sanitized native gateway status transitions. */

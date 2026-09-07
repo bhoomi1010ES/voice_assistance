@@ -7,6 +7,7 @@ import {
   endVoiceSession,
   getVoiceGatewayStatus,
   requestMicrophonePermission,
+  retryVoiceResponse,
   startMicrophone,
   startVoiceSession,
   startVoiceTurn,
@@ -30,6 +31,19 @@ import {
   MappedTranscriptError,
   VoiceTranscriptMessage,
 } from './transcript';
+import {
+  clearConversation,
+  createConversationState,
+  ConversationAssistantMessage,
+  ConversationMessage,
+  ConversationState,
+  ensureConversationUserPlaceholder,
+  mapConversationError,
+  markConversationUserPhase,
+  markConversationRendered as markConversationRenderedState,
+  reduceVoiceEvent,
+  VoiceEvent,
+} from './conversation';
 
 export const VOICE_GATEWAY_URL = `${publicApiConfig.websocketBaseUrl}/v1/voice`;
 
@@ -52,6 +66,10 @@ export const VOICE_SERVER_EVENT_TYPES = [
   'transcript.final',
   'voice.transcript.partial',
   'voice.transcript.final.delivered',
+  'assistant.response.started',
+  'assistant.request.started',
+  'assistant.text.delta',
+  'assistant.text.final',
   'assistant.response.failed',
   'llm.response.failed',
   'llm.response.completed',
@@ -96,7 +114,10 @@ export type VoiceSocketSnapshot = {
   responseId: string | null;
   speechDetected: boolean;
   transcriptMessages: VoiceTranscriptMessage[];
+  conversationMessages: ConversationMessage[];
   transcriptError: MappedTranscriptError | null;
+  firstTextAtMs: number | null;
+  conversationRenderCompletedAtMs: number | null;
   eventSequence: number;
   lastEvent: VoiceServerEventType | null;
   lastEventAtMs: number | null;
@@ -126,6 +147,11 @@ export type VoiceSocketAdapter = {
   startTurn: (clientTurnId?: string | null) => Promise<VoiceGatewayStatus>;
   commitAudio: (durationMs: number) => Promise<VoiceGatewayStatus>;
   cancelResponse: (reason?: string | null) => Promise<VoiceGatewayStatus>;
+  retryResponse?: (
+    turnId: string,
+    originalResponseId: string,
+    transcript: string,
+  ) => Promise<VoiceGatewayStatus>;
   endSession: (reason?: string | null) => Promise<VoiceGatewayStatus>;
   getStatus: () => Promise<VoiceGatewayStatus>;
   startMicrophone?: () => Promise<unknown>;
@@ -159,7 +185,10 @@ const INITIAL_SNAPSHOT: VoiceSocketSnapshot = {
   responseId: null,
   speechDetected: false,
   transcriptMessages: [],
+  conversationMessages: [],
   transcriptError: null,
+  firstTextAtMs: null,
+  conversationRenderCompletedAtMs: null,
   eventSequence: 0,
   lastEvent: null,
   lastEventAtMs: null,
@@ -183,6 +212,10 @@ const RESPONSE_SCOPED_EVENTS = new Set<VoiceServerEventType>([
   'transcript.final',
   'voice.transcript.partial',
   'voice.transcript.final.delivered',
+  'assistant.response.started',
+  'assistant.request.started',
+  'assistant.text.delta',
+  'assistant.text.final',
   'server.turn.failed',
   'server.turn.completed',
   'assistant.response.failed',
@@ -204,6 +237,10 @@ const TURN_SCOPED_EVENTS = new Set<VoiceServerEventType>([
   'transcript.final',
   'voice.transcript.partial',
   'voice.transcript.final.delivered',
+  'assistant.response.started',
+  'assistant.request.started',
+  'assistant.text.delta',
+  'assistant.text.final',
   'assistant.response.failed',
   'llm.response.failed',
   'llm.response.completed',
@@ -220,6 +257,7 @@ const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
   startTurn: startVoiceTurn,
   commitAudio: commitVoiceAudio,
   cancelResponse: cancelVoiceResponse,
+  retryResponse: retryVoiceResponse,
   endSession: endVoiceSession,
   getStatus: getVoiceGatewayStatus,
   startMicrophone,
@@ -238,6 +276,7 @@ export type NormalizedVoiceEvent = {
   responseId: string | null;
   timestampMs: number | null;
   transcript?: CanonicalTranscriptEvent;
+  assistant?: VoiceEvent;
   errorCode?: string;
   errorMessage?: string;
   retryable?: boolean;
@@ -282,6 +321,7 @@ export function normalizeVoiceGatewayEvent(
 
   const timestampMs = readTimestamp(record.timestampMs ?? record.timestamp_ms);
   const transcript = readTranscriptEvent(rawType, record);
+  const assistant = readAssistantEvent(rawType, record);
   const errorCode = readString(record.code ?? record.errorCode, MAX_ID_LENGTH);
   const errorMessage = readString(record.message ?? record.errorMessage, 180);
   const retryable = readBoolean(record.retryable);
@@ -296,6 +336,7 @@ export function normalizeVoiceGatewayEvent(
     ),
     timestampMs,
     ...(transcript ? { transcript } : {}),
+    ...(assistant ? { assistant } : {}),
     ...(errorCode ? { errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(retryable !== null ? { retryable } : {}),
@@ -317,6 +358,9 @@ export class VoiceSocket {
   private readonly retiredSessionIds = new Set<string>();
   private readonly retiredTurnIds = new Set<string>();
   private readonly retiredResponseIds = new Set<string>();
+  private conversationState: ConversationState = createConversationState();
+  private pendingConversationEvents: VoiceEvent[] = [];
+  private conversationFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private snapshot: VoiceSocketSnapshot = { ...INITIAL_SNAPSHOT };
   private started = false;
   private explicitStop = false;
@@ -409,11 +453,38 @@ export class VoiceSocket {
       return this.connectPromise;
     }
 
+    const connectionPromise = this.reconcileAndConnect();
+    this.connectPromise = connectionPromise;
+    try {
+      return await connectionPromise;
+    } finally {
+      if (this.connectPromise === connectionPromise) {
+        this.connectPromise = null;
+      }
+    }
+  }
+
+  private async reconcileAndConnect(): Promise<void> {
+    // Reconcile the native transport before opening a new socket. The native
+    // WebSocket can outlive a stale JS snapshot after a session/heartbeat
+    // transition; calling connect in that state creates an avoidable
+    // "already connected" failure.
+    try {
+      const nativeStatus = await this.adapter.getStatus();
+      this.handleStatus(nativeStatus);
+      // A stale CLOSING/DISCONNECTED status can make handleStatus schedule a
+      // bounded automatic retry. A deliberate connect/retry owns this attempt,
+      // so do not leave that second transport open behind it.
+      this.clearReconnectTimer();
+      if (isTransportConnected(nativeStatus)) {
+        return;
+      }
+    } catch {
+      // A failed status read should not prevent the normal connect attempt.
+    }
+
     this.setSnapshot({ connection: 'connecting', error: null });
-    this.connectPromise = this.openTransport(false).finally(() => {
-      this.connectPromise = null;
-    });
-    return this.connectPromise;
+    await this.openTransport(false);
   }
 
   async retry(): Promise<void> {
@@ -470,6 +541,7 @@ export class VoiceSocket {
       ) {
         throw new Error('Microphone permission is required for a voice turn.');
       }
+      await this.stopMicrophoneSafely();
       await this.adapter.startMicrophone?.();
       this.turnStartedAtMs = this.now();
       this.speechEndedAtMs = null;
@@ -511,7 +583,9 @@ export class VoiceSocket {
       error: null,
     });
     try {
-      this.handleStatus(await this.adapter.commitAudio(durationMs));
+      const status = await this.adapter.commitAudio(durationMs);
+      await this.stopMicrophoneSafely();
+      this.handleStatus(status);
     } catch (error) {
       this.markCurrentTranscriptError(error);
       this.setSnapshot({ turn: 'failed', error: safeVoiceError(error) });
@@ -526,13 +600,27 @@ export class VoiceSocket {
       return;
     }
     const turnId = this.snapshot.turnId;
+    const responseId = this.snapshot.responseId;
     this.markCurrentTranscriptCancelled();
+    if (turnId && responseId) {
+      this.applyConversationEvent({
+        type: 'assistant.response.cancelled',
+        sessionId: this.snapshot.sessionId,
+        turnId,
+        responseId,
+        timestampMs: this.now(),
+      });
+      // Reject late deltas as soon as the user presses Stop, before the
+      // network cancellation round trip completes.
+      this.retireCorrelation(null, null, responseId);
+    }
     try {
       this.setSnapshot({
         turn: 'cancelled',
         speechDetected: false,
         error: null,
       });
+      await this.stopMicrophoneSafely();
       this.handleStatus(await this.adapter.cancelResponse(reason));
     } catch (error) {
       this.markCurrentTranscriptError(error);
@@ -551,6 +639,98 @@ export class VoiceSocket {
         session: 'ready',
       });
     }
+  }
+
+  async retryResponse(turnId: string): Promise<void> {
+    const userMessage = this.conversationState.messages.find(
+      message =>
+        message.role === 'user' &&
+        message.turnId === turnId &&
+        message.final &&
+        message.text.trim(),
+    );
+    const failedResponse = this.conversationState.messages.find(
+      message =>
+        message.role === 'assistant' &&
+        message.turnId === turnId &&
+        message.status === 'failed',
+    );
+    if (
+      !userMessage ||
+      userMessage.role !== 'user' ||
+      !failedResponse ||
+      failedResponse.role !== 'assistant'
+    ) {
+      throw new Error('This response cannot be retried.');
+    }
+    if (!failedResponse.retryable) {
+      throw new Error(mapConversationError(failedResponse.errorCode).message);
+    }
+    if (!this.adapter.retryResponse) {
+      throw new Error('Retry is not available for this voice session.');
+    }
+
+    this.retireCorrelation(null, null, failedResponse.responseId);
+    this.setSnapshot({
+      turn: 'waiting',
+      responseId: null,
+      error: null,
+      transcriptError: null,
+    });
+    try {
+      const status = await this.adapter.retryResponse(
+        turnId,
+        failedResponse.responseId,
+        userMessage.text,
+      );
+      if (!status.connected) {
+        this.handleStatus(status);
+      }
+    } catch (error) {
+      const message = safeVoiceError(error);
+      this.setSnapshot({ turn: 'failed', error: message });
+      throw new Error(message);
+    }
+  }
+
+  async resetConversation(): Promise<void> {
+    if (this.snapshot.responseId) {
+      await this.cancelTurn('new_conversation');
+    } else if (this.snapshot.turn !== 'idle') {
+      await this.adapter.stopMicrophone?.();
+      this.retireCurrentTurnCorrelation();
+      this.setSnapshot({
+        turn: 'idle',
+        turnId: null,
+        responseId: null,
+        speechDetected: false,
+      });
+    }
+    this.flushConversationEvents();
+    this.conversationState = clearConversation();
+    this.setSnapshot({
+      conversationMessages: [],
+      transcriptMessages: [],
+      transcriptError: null,
+      firstTextAtMs: null,
+      conversationRenderCompletedAtMs: null,
+    });
+  }
+
+  markConversationRendered(responseId: string): void {
+    const next = markConversationRenderedState(
+      this.conversationState,
+      responseId,
+      this.now(),
+    );
+    if (next === this.conversationState) {
+      return;
+    }
+    this.conversationState = next;
+    this.setSnapshot({
+      conversationMessages: next.messages,
+      conversationRenderCompletedAtMs: this.now(),
+    });
   }
 
   async endSession(reason = 'client_requested'): Promise<void> {
@@ -662,6 +842,17 @@ export class VoiceSocket {
           error: safeVoiceError(error),
         });
       }
+    }
+  }
+
+  private async stopMicrophoneSafely(): Promise<void> {
+    if (!this.adapter.stopMicrophone) {
+      return;
+    }
+    try {
+      await this.adapter.stopMicrophone();
+    } catch {
+      // Capture may already have stopped after VAD/transport cancellation.
     }
   }
 
@@ -871,6 +1062,9 @@ export class VoiceSocket {
     if (event.transcript) {
       this.handleTranscriptEvent(event.transcript);
     }
+    if (event.assistant) {
+      this.applyConversationEvent(event.assistant);
+    }
 
     if (event.type === 'server.pong') {
       this.setSnapshot({
@@ -901,6 +1095,7 @@ export class VoiceSocket {
         this.setSnapshot({ session: 'ending' });
         break;
       case 'voice.session.stale.reaped':
+        this.clearConversationState();
         this.retireCorrelation(
           event.sessionId ?? this.snapshot.sessionId,
           event.turnId ?? this.snapshot.turnId,
@@ -921,6 +1116,7 @@ export class VoiceSocket {
         });
         break;
       case 'server.session.ended':
+        this.clearConversationState();
         this.retireCorrelation(
           event.sessionId ?? this.snapshot.sessionId,
           event.turnId ?? this.snapshot.turnId,
@@ -960,6 +1156,13 @@ export class VoiceSocket {
         this.markCurrentTranscriptPhase('transcribing');
         this.setSnapshot({ turn: 'waiting', speechDetected: false });
         break;
+      case 'assistant.response.started':
+      case 'assistant.request.started':
+      case 'assistant.text.delta':
+      case 'assistant.text.final':
+      case 'llm.response.completed':
+        this.setSnapshot({ turn: 'waiting', speechDetected: false });
+        break;
       case 'transcript.partial':
       case 'voice.transcript.partial':
         this.setSnapshot({ turn: 'waiting', speechDetected: false });
@@ -970,9 +1173,16 @@ export class VoiceSocket {
         }
         break;
       case 'server.turn.completed':
+        this.applyConversationEvent({
+          type: 'turn.completed',
+          sessionId: event.sessionId,
+          turnId: event.turnId,
+          responseId: event.responseId,
+          timestampMs: event.timestampMs,
+        });
         this.retireCorrelation(
           null,
-          event.turnId ?? this.snapshot.turnId,
+          null,
           event.responseId ?? this.snapshot.responseId,
         );
         this.turnStartedAtMs = null;
@@ -985,6 +1195,13 @@ export class VoiceSocket {
         this.setSnapshot({ turn: 'idle' });
         break;
       case 'response.cancelled':
+        this.applyConversationEvent({
+          type: 'assistant.response.cancelled',
+          sessionId: event.sessionId,
+          turnId: event.turnId,
+          responseId: event.responseId,
+          timestampMs: event.timestampMs,
+        });
         this.retireCorrelation(
           null,
           event.turnId ?? this.snapshot.turnId,
@@ -1072,8 +1289,80 @@ export class VoiceSocket {
       }
       this.speechEndedAtMs = this.now();
       this.markCurrentTranscriptSpeechEnded();
+      this.markCurrentTranscriptPhase('listening');
       this.setSnapshot({ turn: 'recording', speechDetected: false });
     }
+  }
+
+  private applyConversationEvent(event: VoiceEvent): void {
+    if (event.type === 'assistant.text.delta') {
+      this.pendingConversationEvents.push(event);
+      if (!this.conversationFlushTimer) {
+        this.conversationFlushTimer = setTimeout(() => {
+          this.conversationFlushTimer = null;
+          this.flushConversationEvents();
+        }, 16);
+      }
+      return;
+    }
+
+    this.flushConversationEvents();
+    const result = reduceVoiceEvent(this.conversationState, event, this.now());
+    if (result.accepted) {
+      this.publishConversation(result.state);
+    }
+  }
+
+  private flushConversationEvents(): void {
+    if (this.conversationFlushTimer) {
+      clearTimeout(this.conversationFlushTimer);
+      this.conversationFlushTimer = null;
+    }
+    if (!this.pendingConversationEvents.length) {
+      return;
+    }
+
+    let state = this.conversationState;
+    for (const event of this.pendingConversationEvents) {
+      const result = reduceVoiceEvent(state, event, this.now());
+      if (result.accepted) {
+        state = result.state;
+      }
+    }
+    this.pendingConversationEvents = [];
+    if (state !== this.conversationState) {
+      this.publishConversation(state);
+    }
+  }
+
+  private clearConversationState(): void {
+    if (this.conversationFlushTimer) {
+      clearTimeout(this.conversationFlushTimer);
+      this.conversationFlushTimer = null;
+    }
+    this.pendingConversationEvents = [];
+    this.conversationState = clearConversation();
+    this.setSnapshot({
+      conversationMessages: [],
+      firstTextAtMs: null,
+      conversationRenderCompletedAtMs: null,
+    });
+  }
+
+  private publishConversation(state: ConversationState): void {
+    this.conversationState = state;
+    const latestAssistant = [...state.messages]
+      .reverse()
+      .find(
+        (message): message is ConversationAssistantMessage =>
+          message.role === 'assistant' && message.firstTextAtMs !== null,
+      );
+    this.setSnapshot({
+      conversationMessages: state.messages,
+      firstTextAtMs: latestAssistant?.firstTextAtMs ?? null,
+      conversationRenderCompletedAtMs:
+        latestAssistant?.renderCompletedAtMs ?? null,
+    });
   }
 
   private canAcceptTranscript(event: CanonicalTranscriptEvent): boolean {
@@ -1119,6 +1408,15 @@ export class VoiceSocket {
       ),
       transcriptError: null,
     });
+    const nextConversation = ensureConversationUserPlaceholder(
+      this.conversationState,
+      turnId,
+      this.snapshot.responseId,
+      this.now(),
+    );
+    if (nextConversation !== this.conversationState) {
+      this.publishConversation(nextConversation);
+    }
   }
 
   private handleTranscriptEvent(event: CanonicalTranscriptEvent): void {
@@ -1142,6 +1440,36 @@ export class VoiceSocket {
         ? { transcriptError: mapTranscriptError('stt_empty_transcript') }
         : {}),
     });
+    if (event.kind === 'partial') {
+      this.applyConversationEvent({
+        type: 'user.transcript.partial',
+        sessionId: event.sessionId,
+        turnId: event.turnId,
+        responseId: event.responseId,
+        text: event.text,
+        sequence: event.sequence,
+        timestampMs: event.timestampMs,
+      });
+    } else if (message?.final && event.text.trim()) {
+      this.applyConversationEvent({
+        type: 'user.transcript.final',
+        sessionId: event.sessionId,
+        turnId: event.turnId,
+        responseId: event.responseId,
+        text: event.text,
+        sequence: event.sequence,
+        timestampMs: event.timestampMs,
+      });
+      this.applyConversationEvent({
+        type: 'assistant.request.started',
+        sessionId: event.sessionId,
+        turnId: event.turnId,
+        responseId: event.responseId,
+        sequence: null,
+        retry: false,
+        timestampMs: event.timestampMs,
+      });
+    }
     if (event.kind === 'final' && !message?.final) {
       const emptyError = mapTranscriptError('stt_empty_transcript');
       this.setSnapshot({
@@ -1164,6 +1492,14 @@ export class VoiceSocket {
         this.now(),
       ),
     });
+    const nextConversation = markConversationUserPhase(
+      this.conversationState,
+      this.snapshot.turnId,
+      phase,
+    );
+    if (nextConversation !== this.conversationState) {
+      this.publishConversation(nextConversation);
+    }
   }
 
   private markCurrentTranscriptSpeechEnded(): void {
@@ -1394,6 +1730,7 @@ export class VoiceSocket {
   }
 
   private resetToDisconnected(): void {
+    this.clearConversationState();
     this.retireCorrelation(
       this.snapshot.sessionId,
       this.snapshot.turnId,
@@ -1447,6 +1784,114 @@ function readTimestamp(value: unknown): number | null {
 
 function readBoolean(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null;
+}
+
+function readAssistantEvent(
+  type: string,
+  record: Record<string, unknown>,
+): VoiceEvent | null {
+  const sessionId = readString(
+    record.sessionId ?? record.session_id,
+    MAX_ID_LENGTH,
+  );
+  const turnId = readString(record.turnId ?? record.turn_id, MAX_ID_LENGTH);
+  const responseId = readString(
+    record.responseId ?? record.response_id,
+    MAX_ID_LENGTH,
+  );
+  const timestampMs = readTimestamp(record.timestampMs ?? record.timestamp_ms);
+  const sequence = readSequence(record.sequence);
+
+  if (
+    type === 'assistant.response.started' ||
+    type === 'assistant.request.started'
+  ) {
+    if (!turnId || !responseId) {
+      return null;
+    }
+    return {
+      type: 'assistant.request.started',
+      sessionId,
+      turnId,
+      responseId,
+      sequence,
+      retry: readBoolean(record.retry) ?? false,
+      timestampMs,
+    };
+  }
+
+  if (type === 'assistant.text.delta') {
+    const delta = readString(record.delta, MAX_TRANSCRIPT_LENGTH);
+    if (!turnId || !responseId || !delta || sequence === null) {
+      return null;
+    }
+    return {
+      type: 'assistant.text.delta',
+      sessionId,
+      turnId,
+      responseId,
+      delta,
+      sequence,
+      timestampMs,
+    };
+  }
+
+  if (type === 'assistant.text.final' || type === 'llm.response.completed') {
+    const text = readString(record.text, MAX_TRANSCRIPT_LENGTH);
+    if (!turnId || !responseId || !text) {
+      return null;
+    }
+    return {
+      type: 'assistant.text.completed',
+      sessionId,
+      turnId,
+      responseId,
+      text,
+      sequence,
+      metrics: readMetrics(record.metrics),
+      timestampMs,
+    };
+  }
+
+  if (type === 'assistant.response.failed' || type === 'llm.response.failed') {
+    if (!turnId || !responseId) {
+      return null;
+    }
+    const errorCode =
+      readString(record.code ?? record.errorCode, MAX_ID_LENGTH) ??
+      'llm_provider_error';
+    return {
+      type: 'assistant.response.failed',
+      sessionId,
+      turnId,
+      responseId,
+      errorCode,
+      retryable:
+        readBoolean(record.retryable) ??
+        mapConversationError(errorCode).retryable,
+      timestampMs,
+    };
+  }
+
+  return null;
+}
+
+function readMetrics(value: unknown): Record<string, number | null> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  const metrics: Record<string, number | null> = {};
+  for (const [key, metric] of Object.entries(value)) {
+    if (Object.keys(metrics).length >= MAX_METRIC_COUNT) {
+      break;
+    }
+    if (typeof metric === 'number' && Number.isFinite(metric)) {
+      metrics[key.slice(0, MAX_METRIC_KEY_LENGTH)] = metric;
+    } else if (metric === null) {
+      metrics[key.slice(0, MAX_METRIC_KEY_LENGTH)] = null;
+    }
+  }
+  return metrics;
 }
 
 function readTranscriptEvent(
@@ -1548,6 +1993,19 @@ function safeVoiceError(error: unknown): string {
     return message.slice(0, 180);
   }
   return 'Voice connection could not be completed. Try again.';
+}
+
+function isTransportConnected(status: VoiceGatewayStatus): boolean {
+  return (
+    status.connected ||
+    [
+      'CONNECTED',
+      'SESSION_STARTING',
+      'SESSION_READY',
+      'TURN_STARTING',
+      'STREAMING_AUDIO',
+    ].includes(status.state.toUpperCase())
+  );
 }
 
 const MAX_TRANSCRIPT_LENGTH = 16 * 1024;

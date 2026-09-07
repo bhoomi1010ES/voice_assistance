@@ -1,5 +1,8 @@
 package com.voiceaipoc.rn
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.SystemClock
 import android.util.Log
 import com.facebook.react.bridge.Arguments
@@ -300,6 +303,19 @@ class VoiceModule(
     }
 
     @ReactMethod
+    fun retryVoiceResponse(
+        turnId: String,
+        originalResponseId: String,
+        transcript: String,
+        promise: Promise,
+    ) {
+        resolveVoiceResult(
+            voiceGateway.retryResponse(turnId, originalResponseId, transcript),
+            promise,
+        )
+    }
+
+    @ReactMethod
     fun endVoiceSession(reason: String?, promise: Promise) {
         resolveVoiceResult(voiceGateway.endSession(reason ?: "client_requested"), promise)
     }
@@ -307,6 +323,18 @@ class VoiceModule(
     @ReactMethod
     fun getVoiceGatewayStatus(promise: Promise) {
         promise.resolve(toWritableVoiceGatewayMap(voiceGateway.getStatus()))
+    }
+
+    @ReactMethod
+    fun copyTextToClipboard(text: String, promise: Promise) {
+        val clipboard = reactApplicationContext.getSystemService(Context.CLIPBOARD_SERVICE)
+            as? ClipboardManager
+        if (clipboard == null) {
+            promise.reject("E_CLIPBOARD", "Clipboard is unavailable.")
+            return
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText("Voice Assistant", text))
+        promise.resolve(true)
     }
 
     @ReactMethod
@@ -609,13 +637,17 @@ class VoiceModule(
         }
 
         val eventText = eventPayload?.text
+        val eventDelta = eventPayload?.delta
         val eventFinal = eventPayload?.isFinal
+        val eventSequence = eventPayload?.sequence
+        val eventAttempt = eventPayload?.attempt
         val transcriptSequence = eventPayload?.transcriptSequence
         val eventLanguage = eventPayload?.language
         val audioDurationMs = eventPayload?.audioDurationMs
         val errorCode = eventPayload?.errorCode
         val retryable = eventPayload?.retryable
         val metrics = eventPayload?.metrics
+        val usage = eventPayload?.usage
         val payload = Arguments.createMap().apply {
             putString("event", eventType)
             if (sessionId == null) putNull("sessionId") else putString("sessionId", sessionId)
@@ -624,7 +656,10 @@ class VoiceModule(
             if (eventId == null) putNull("eventId") else putString("eventId", eventId)
             if (timestampMs == null) putNull("timestampMs") else putDouble("timestampMs", timestampMs.toDouble())
             if (eventText == null) putNull("text") else putString("text", eventText)
+            if (eventDelta == null) putNull("delta") else putString("delta", eventDelta)
             if (eventFinal == null) putNull("final") else putBoolean("final", eventFinal)
+            if (eventSequence == null) putNull("sequence") else putDouble("sequence", eventSequence.toDouble())
+            if (eventAttempt == null) putNull("attempt") else putDouble("attempt", eventAttempt.toDouble())
             if (transcriptSequence == null) {
                 putNull("transcriptSequence")
             } else {
@@ -645,6 +680,18 @@ class VoiceModule(
                     "metrics",
                     Arguments.createMap().apply {
                         metrics.forEach { (key, value) ->
+                            if (value == null) putNull(key) else putDouble(key, value)
+                        }
+                    },
+                )
+            }
+            if (usage == null) {
+                putNull("usage")
+            } else {
+                putMap(
+                    "usage",
+                    Arguments.createMap().apply {
+                        usage.forEach { (key, value) ->
                             if (value == null) putNull(key) else putDouble(key, value)
                         }
                     },

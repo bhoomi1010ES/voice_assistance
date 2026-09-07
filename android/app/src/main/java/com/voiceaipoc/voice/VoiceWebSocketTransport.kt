@@ -73,11 +73,15 @@ class VoiceWebSocketTransport(
 
     data class ServerEventPayload(
         val text: String? = null,
+        val delta: String? = null,
         val isFinal: Boolean? = null,
+        val sequence: Long? = null,
+        val attempt: Long? = null,
         val transcriptSequence: Long? = null,
         val language: String? = null,
         val audioDurationMs: Long? = null,
         val metrics: Map<String, Double?> = emptyMap(),
+        val usage: Map<String, Double?> = emptyMap(),
         val errorCode: String? = null,
         val retryable: Boolean? = null,
     )
@@ -129,10 +133,21 @@ class VoiceWebSocketTransport(
             return fail("E_VOICE_URL", "Voice gateway URL must use ws:// or wss://.")
         }
 
+        val socketToCancel: WebSocket?
         synchronized(stateLock) {
-            if (status.state !in setOf(State.DISCONNECTED, State.ERROR)) {
-                return Result(false, "E_VOICE_ALREADY_CONNECTED", "Voice gateway is already connected.")
+            if (status.state in setOf(
+                    State.CONNECTING,
+                    State.CONNECTED,
+                    State.SESSION_STARTING,
+                    State.SESSION_READY,
+                    State.TURN_STARTING,
+                    State.STREAMING_AUDIO,
+                )
+            ) {
+                return Result(true)
             }
+            socketToCancel = webSocket
+            webSocket = null
             status = status.copy(
                 state = State.CONNECTING,
                 connected = false,
@@ -144,6 +159,7 @@ class VoiceWebSocketTransport(
                 lastError = null,
             )
         }
+        socketToCancel?.cancel()
         Log.i(
             TAG,
             "VOICE connect requested wallMs=${System.currentTimeMillis()} " +
@@ -161,20 +177,33 @@ class VoiceWebSocketTransport(
                 .url(url)
                 .header("Authorization", "Bearer $token")
                 .build()
-            webSocket = client.newWebSocket(request, socketListener)
+            val candidate = client.newWebSocket(request, socketListener)
+            val accepted = synchronized(stateLock) {
+                if (status.state == State.CONNECTING && webSocket == null) {
+                    webSocket = candidate
+                    true
+                } else {
+                    false
+                }
+            }
+            if (!accepted) {
+                candidate.cancel()
+            }
         }
         return Result(true)
     }
 
     fun disconnect() {
         stopHeartbeat()
+        val socketToClose: WebSocket?
         synchronized(stateLock) {
             if (status.state == State.DISCONNECTED) return
+            socketToClose = webSocket
             status = status.copy(state = State.CLOSING, connected = false, turnActive = false)
         }
         sendQueue.clear()
         notifyStatus()
-        webSocket?.close(1000, "client_disconnect")
+        socketToClose?.close(1000, "client_disconnect")
     }
 
     fun startSession(resumeSessionId: String? = null): Result {
@@ -308,6 +337,34 @@ class VoiceWebSocketTransport(
         return Result(true)
     }
 
+    fun retryResponse(
+        turnId: String,
+        originalResponseId: String,
+        transcript: String,
+    ): Result {
+        if (turnId.isBlank() || originalResponseId.isBlank() || transcript.isBlank()) {
+            return Result(false, "E_VOICE_RETRY", "A completed transcript is required to retry.")
+        }
+        if (transcript.toByteArray(Charsets.UTF_8).size > MAX_TRANSCRIPT_BYTES) {
+            return Result(false, "E_VOICE_RETRY", "The transcript is too large to retry.")
+        }
+        synchronized(stateLock) {
+            if (status.state != State.SESSION_READY || !status.sessionStarted) {
+                return Result(false, "E_VOICE_STATE", "The voice session is not ready for retry.")
+            }
+            status = status.copy(responseId = null, turnId = turnId, turnActive = false)
+        }
+        postControl(
+            JSONObject()
+                .put("type", "client.response.retry")
+                .put("turn_id", turnId)
+                .put("original_response_id", originalResponseId)
+                .put("transcript", transcript),
+        )
+        notifyStatus()
+        return Result(true)
+    }
+
     fun endSession(reason: String = "client_requested"): Result {
         synchronized(stateLock) {
             if (!status.sessionStarted) {
@@ -342,6 +399,10 @@ class VoiceWebSocketTransport(
 
     private val socketListener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            if (!isCurrentSocket(webSocket)) {
+                webSocket.cancel()
+                return
+            }
             Log.i(
                 TAG,
                 "VOICE websocket opened wallMs=${System.currentTimeMillis()} " +
@@ -355,14 +416,17 @@ class VoiceWebSocketTransport(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            if (!isCurrentSocket(webSocket)) return
             handleServerEvent(text)
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            if (!isCurrentSocket(webSocket)) return
             recordError("E_VOICE_PROTOCOL", "Unexpected binary server message.")
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+            if (!isCurrentSocket(webSocket)) return
             Log.i(
                 TAG,
                 "VOICE websocket closing code=$code reason=$reason " +
@@ -376,6 +440,7 @@ class VoiceWebSocketTransport(
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (!isCurrentSocket(webSocket)) return
             Log.i(
                 TAG,
                 "VOICE websocket closed code=$code reason=$reason " +
@@ -383,6 +448,7 @@ class VoiceWebSocketTransport(
             )
             stopHeartbeat()
             synchronized(stateLock) {
+                this@VoiceWebSocketTransport.webSocket = null
                 status = status.copy(state = State.DISCONNECTED, connected = false, turnActive = false)
             }
             sendQueue.clear()
@@ -390,14 +456,24 @@ class VoiceWebSocketTransport(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (!isCurrentSocket(webSocket)) return
             Log.e(
                 TAG,
                 "VOICE websocket failure type=${t::class.java.simpleName} " +
                     "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
             )
             stopHeartbeat()
+            synchronized(stateLock) {
+                if (this@VoiceWebSocketTransport.webSocket === webSocket) {
+                    this@VoiceWebSocketTransport.webSocket = null
+                }
+            }
             recordError("E_VOICE_WEBSOCKET", "Voice gateway connection failed.")
         }
+    }
+
+    private fun isCurrentSocket(candidate: WebSocket): Boolean = synchronized(stateLock) {
+        webSocket === candidate
     }
 
     private fun postControl(message: JSONObject) {
@@ -534,13 +610,21 @@ class VoiceWebSocketTransport(
             "voice.transcript.partial",
             "voice.transcript.final.delivered",
         )
+        val isAssistant = eventType in setOf(
+            "assistant.response.started",
+            "assistant.request.started",
+            "assistant.text.delta",
+            "assistant.text.final",
+            "llm.response.completed",
+        )
         val isError = eventType == "server.error" || eventType == "server.turn.failed" ||
             eventType == "assistant.response.failed" || eventType == "llm.response.failed"
-        if (!isTranscript && !isError) {
+        if (!isTranscript && !isAssistant && !isError) {
             return null
         }
 
         val text = json.optStringOrNull("text")?.takeIf { it.length <= MAX_TRANSCRIPT_BYTES }
+        val delta = json.optStringOrNull("delta")?.takeIf { it.length <= MAX_TRANSCRIPT_BYTES }
         val isFinal = if (json.has("final") && !json.isNull("final")) {
             json.optBoolean("final")
         } else {
@@ -560,13 +644,27 @@ class VoiceWebSocketTransport(
         } else {
             null
         }
+        val sequence = if (json.has("sequence") && !json.isNull("sequence")) {
+            json.optLong("sequence").takeIf { it >= 0L }
+        } else {
+            null
+        }
+        val attempt = if (json.has("attempt") && !json.isNull("attempt")) {
+            json.optLong("attempt").takeIf { it >= 1L }
+        } else {
+            null
+        }
         return ServerEventPayload(
             text = text,
+            delta = delta,
             isFinal = isFinal,
+            sequence = sequence,
+            attempt = attempt,
             transcriptSequence = transcriptSequence,
             language = json.optStringOrNull("language")?.takeIf { it.length <= MAX_LANGUAGE_BYTES },
             audioDurationMs = audioDurationMs,
             metrics = boundedMetrics(json.optJSONObject("metrics")),
+            usage = boundedMetrics(json.optJSONObject("usage")),
             errorCode = json.optStringOrNull("code")?.takeIf { it.length <= MAX_ERROR_CODE_BYTES },
             retryable = if (json.has("retryable") && !json.isNull("retryable")) {
                 json.optBoolean("retryable")

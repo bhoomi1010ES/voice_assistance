@@ -62,6 +62,13 @@ class ResponseCancelMessage(ControlMessage):
     reason: str = Field(default="client_requested", max_length=128)
 
 
+class ResponseRetryMessage(ControlMessage):
+    type: Literal["client.response.retry"]
+    turn_id: uuid.UUID
+    original_response_id: uuid.UUID
+    transcript: str = Field(min_length=1, max_length=16_384)
+
+
 class ClientPingMessage(ControlMessage):
     type: Literal["client.ping"]
     client_timestamp_ms: int = Field(ge=0)
@@ -77,6 +84,7 @@ ControlMessageType = Annotated[
     | TurnStartMessage
     | AudioCommitMessage
     | ResponseCancelMessage
+    | ResponseRetryMessage
     | ClientPingMessage
     | SessionEndMessage,
     Field(discriminator="type"),

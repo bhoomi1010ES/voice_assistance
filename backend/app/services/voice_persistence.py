@@ -199,6 +199,23 @@ class VoicePersistence:
         turn.metadata_json = {**(turn.metadata_json or {}), **(metadata or {})}
         return turn
 
+    async def get_owned_turn(
+        self,
+        db: AsyncSession,
+        principal: AuthPrincipal,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+    ) -> ConversationTurn | None:
+        return await db.scalar(
+            select(ConversationTurn)
+            .where(
+                ConversationTurn.id == turn_id,
+                ConversationTurn.session_id == session_id,
+                ConversationTurn.user_id == principal.user_id,
+            )
+        )
+
     async def finalize_session(
         self,
         db: AsyncSession,

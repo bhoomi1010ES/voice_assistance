@@ -1,7 +1,14 @@
 import React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AccessibilityInfo, ScrollView, StyleSheet, View } from 'react-native';
-import { useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AccessibilityInfo,
+  Alert,
+  Pressable,
+  ScrollView,
+  ScrollViewInstance,
+  StyleSheet,
+  View,
+} from 'react-native';
 import { strings } from '../i18n/strings';
 import {
   ActionButton,
@@ -22,16 +29,33 @@ import {
   mapTranscriptError,
   VoiceTranscriptMessage,
 } from '../voice/transcript';
+import {
+  ConversationAssistantMessage,
+  ConversationMessage,
+  ConversationToolMessage,
+  ConversationUserMessage,
+  mapConversationError,
+} from '../voice/conversation';
+import { copyTextToClipboard } from '../native/VoiceModule';
 
 export function AssistantScreen() {
   const { profile } = useAuth();
   const socketState = useVoiceSocket();
   const { socket } = socketState;
   const [busy, setBusy] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [historyNoticeVisible, setHistoryNoticeVisible] = useState(false);
   const announcedFinalIds = useRef(new Set<string>());
+  const scrollViewRef = useRef<ScrollViewInstance | null>(null);
+  const userScrolling = useRef(false);
+  const atBottom = useRef(true);
   const transcriptMessages = useMemo(
     () => socketState.transcriptMessages ?? EMPTY_TRANSCRIPT_MESSAGES,
     [socketState.transcriptMessages],
+  );
+  const conversationMessages = useMemo(
+    () => socketState.conversationMessages ?? EMPTY_CONVERSATION_MESSAGES,
+    [socketState.conversationMessages],
   );
   const greetingName =
     profile?.name?.trim() ||
@@ -59,21 +83,144 @@ export function AssistantScreen() {
     Boolean(socketState.transcriptError);
 
   useEffect(() => {
-    transcriptMessages
-      .filter(message => message.final && message.text)
-      .forEach(message => {
-        if (announcedFinalIds.current.has(message.id)) {
-          return;
-        }
-        announcedFinalIds.current.add(message.id);
-        AccessibilityInfo.announceForAccessibility(`You said: ${message.text}`);
-      });
-  }, [transcriptMessages]);
+    [
+      ...conversationMessages
+        .filter(
+          (message): message is ConversationUserMessage =>
+            message.role === 'user' && message.final && Boolean(message.text),
+        )
+        .map(message => ({
+          id: message.id,
+          text: `You said: ${message.text}`,
+        })),
+      ...conversationMessages
+        .filter(
+          (message): message is ConversationAssistantMessage =>
+            message.role === 'assistant' && message.status === 'completed',
+        )
+        .map(message => ({
+          id: message.id,
+          text: `Assistant: ${message.text}`,
+        })),
+    ].forEach(message => {
+      if (announcedFinalIds.current.has(message.id)) {
+        return;
+      }
+      announcedFinalIds.current.add(message.id);
+      AccessibilityInfo.announceForAccessibility(message.text);
+    });
+  }, [conversationMessages]);
+
+  useEffect(() => {
+    if (
+      conversationMessages.length &&
+      atBottom.current &&
+      !userScrolling.current
+    ) {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }
+  }, [conversationMessages]);
+
+  useEffect(() => {
+    const activeResponse = [...conversationMessages]
+      .reverse()
+      .find(
+        (message): message is ConversationAssistantMessage =>
+          message.role === 'assistant' && message.firstTextAtMs !== null,
+      );
+    if (activeResponse && activeResponse.renderCompletedAtMs === null) {
+      socket.markConversationRendered(activeResponse.responseId);
+    }
+  }, [conversationMessages, socket]);
+
+  const startNewConversation = useCallback(() => {
+    Alert.alert(
+      strings.assistant.startNewConversationTitle,
+      strings.assistant.startNewConversationBody,
+      [
+        { text: strings.assistant.cancel, style: 'cancel' },
+        {
+          text: strings.assistant.confirm,
+          style: 'destructive',
+          onPress: () => execute(() => socket.resetConversation()),
+        },
+      ],
+    );
+  }, [execute, socket]);
+
+  const copyMessage = useCallback(
+    (message: ConversationAssistantMessage) =>
+      execute(async () => {
+        await copyTextToClipboard(message.text);
+        setCopiedMessageId(message.id);
+      }),
+    [execute],
+  );
+
+  const voiceControlAction = useCallback(() => {
+    if (socketState.connection !== 'connected') {
+      return socketState.connection === 'disconnected'
+        ? socket.connect()
+        : socket.retry();
+    }
+    if (socketState.session === 'idle') return socket.startSession();
+    if (socketState.turn === 'idle') return socket.startTurn();
+    if (
+      ['starting', 'recording', 'speech_detected'].includes(socketState.turn)
+    ) {
+      return socket.commitTurn();
+    }
+    if (['committing', 'waiting'].includes(socketState.turn)) {
+      return socket.cancelTurn('user_stopped_response');
+    }
+    const retryable = [...conversationMessages]
+      .reverse()
+      .find(
+        (message): message is ConversationAssistantMessage =>
+          message.role === 'assistant' && message.status === 'failed',
+      );
+    return retryable
+      ? socket.retryResponse(retryable.turnId)
+      : socket.startTurn();
+  }, [conversationMessages, socket, socketState]);
+
+  const handleScroll = useCallback((event: any) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const distanceFromBottom =
+      contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    atBottom.current = distanceFromBottom <= 48;
+  }, []);
 
   return (
     <Screen testID="assistant-screen">
-      <ScrollView contentContainerStyle={styles.content}>
-        <Heading>{strings.assistant.title}</Heading>
+      <ScrollView
+        ref={scrollViewRef}
+        contentContainerStyle={styles.content}
+        onContentSizeChange={() => {
+          if (atBottom.current && !userScrolling.current) {
+            scrollViewRef.current?.scrollToEnd({ animated: false });
+          }
+        }}
+        onScroll={handleScroll}
+        onScrollBeginDrag={() => {
+          userScrolling.current = true;
+        }}
+        onScrollEndDrag={() => {
+          userScrolling.current = false;
+        }}
+        scrollEventThrottle={100}
+      >
+        <View style={styles.topBar}>
+          <Heading>{strings.assistant.title}</Heading>
+          <Pressable
+            accessibilityLabel={strings.assistant.conversationHistory}
+            accessibilityRole="button"
+            onPress={() => setHistoryNoticeVisible(value => !value)}
+            testID="conversation-history"
+          >
+            <AppText style={styles.historyButton}>•••</AppText>
+          </Pressable>
+        </View>
         <AppText
           accessibilityLabel={`${strings.assistant.greeting}, ${greetingName}`}
           style={styles.greeting}
@@ -90,7 +237,21 @@ export function AssistantScreen() {
           </StatusBanner>
         </View>
 
+        {historyNoticeVisible ? (
+          <Card style={styles.historyNotice}>
+            <AppText style={styles.diagnosticsTitle}>
+              {strings.assistant.conversationHistory}
+            </AppText>
+            <AppText>{strings.assistant.localHistoryNotice}</AppText>
+          </Card>
+        ) : null}
+
         <Card style={styles.card}>
+          <VoiceOrb
+            busy={busy}
+            label={voiceControlLabel(socketState, conversationMessages)}
+            onPress={() => execute(voiceControlAction)}
+          />
           {socketState.connection === 'disconnected' ? (
             <ActionButton
               label={strings.assistant.connect}
@@ -139,15 +300,6 @@ export function AssistantScreen() {
                 disabled={busy}
                 testID="voice-finish-turn"
               />
-              {socketState.responseId ? (
-                <ActionButton
-                  label={strings.assistant.cancelTurn}
-                  onPress={() => execute(() => socket.cancelTurn())}
-                  disabled={busy}
-                  variant="secondary"
-                  testID="voice-cancel-turn"
-                />
-              ) : null}
             </View>
           ) : null}
           {['committing', 'waiting'].includes(socketState.turn) ? (
@@ -155,26 +307,25 @@ export function AssistantScreen() {
               <AppText style={styles.turnStatus}>
                 {turnCopy(socketState.turn)}
               </AppText>
-              {socketState.responseId ? (
-                <ActionButton
-                  label={strings.assistant.cancelTurn}
-                  onPress={() => execute(() => socket.cancelTurn())}
-                  disabled={busy}
-                  variant="secondary"
-                  testID="voice-cancel-response"
-                />
-              ) : null}
+              <ActionButton
+                label={strings.assistant.stopResponse}
+                onPress={() => execute(() => socket.cancelTurn())}
+                disabled={busy}
+                variant="secondary"
+                testID="voice-cancel-response"
+              />
             </View>
           ) : null}
           {socketState.turn === 'failed' ? (
             <View style={styles.actionGroup}>
               <AppText style={styles.turnStatus}>
-                {strings.assistant.turnFailed}
+                {socketState.transcriptError?.message ??
+                  strings.assistant.turnFailed}
               </AppText>
               {socketState.transcriptError?.retryable !== false ? (
                 <ActionButton
                   label={strings.assistant.tryAgain}
-                  onPress={() => execute(() => socket.startTurn())}
+                  onPress={() => execute(voiceControlAction)}
                   disabled={busy || socketState.session !== 'ready'}
                   testID="voice-retry-turn"
                 />
@@ -192,8 +343,27 @@ export function AssistantScreen() {
           ) : null}
         </Card>
 
-        {transcriptMessages.length ? (
-          <Card style={styles.transcriptCard} testID="voice-transcript">
+        {conversationMessages.length ? (
+          <Card style={styles.conversationCard} testID="voice-transcript">
+            <AppText style={styles.diagnosticsTitle}>
+              {strings.assistant.messages}
+            </AppText>
+            <View testID="voice-conversation">
+              {conversationMessages.map(message => (
+                <ConversationMessageView
+                  key={message.id}
+                  message={message}
+                  copied={copiedMessageId === message.id}
+                  onCopy={copyMessage}
+                  onRetry={turnId =>
+                    execute(() => socket.retryResponse(turnId))
+                  }
+                />
+              ))}
+            </View>
+          </Card>
+        ) : transcriptMessages.length ? (
+          <Card style={styles.conversationCard} testID="voice-transcript">
             <AppText style={styles.diagnosticsTitle}>
               {strings.assistant.transcript}
             </AppText>
@@ -201,6 +371,24 @@ export function AssistantScreen() {
               <TranscriptMessageView key={message.id} message={message} />
             ))}
           </Card>
+        ) : (
+          <Card style={styles.emptyConversation} testID="conversation-empty">
+            <AppText style={styles.emptyTitle}>
+              {strings.assistant.emptyConversationTitle}
+            </AppText>
+            <AppText>{strings.assistant.emptyConversationBody}</AppText>
+          </Card>
+        )}
+
+        {conversationMessages.length ? (
+          <ActionButton
+            label={strings.assistant.startNewConversation}
+            onPress={startNewConversation}
+            disabled={busy}
+            variant="quiet"
+            style={styles.resetButton}
+            testID="conversation-reset"
+          />
         ) : null}
 
         {typeof __DEV__ !== 'undefined' && __DEV__ ? (
@@ -244,10 +432,220 @@ export function AssistantScreen() {
               label={strings.assistant.speechToFinal}
               value={formatTranscriptTiming(transcriptMessages)}
             />
+            <DiagnosticRow
+              label={strings.assistant.performanceFirstText}
+              value={formatMs(socketState.firstTextAtMs)}
+            />
+            <DiagnosticRow
+              label={strings.assistant.performanceRender}
+              value={formatMs(socketState.conversationRenderCompletedAtMs)}
+            />
           </Card>
         ) : null}
       </ScrollView>
     </Screen>
+  );
+}
+
+function VoiceOrb({
+  busy,
+  label,
+  onPress,
+}: {
+  busy: boolean;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityHint="Activates the next voice session action"
+      accessibilityLabel={label}
+      accessibilityRole="button"
+      disabled={busy}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.voiceOrb,
+        { opacity: pressed || busy ? 0.72 : 1 },
+      ]}
+      testID="voice-control"
+    >
+      <AppText style={styles.voiceOrbIcon}>◉</AppText>
+      <AppText style={styles.voiceOrbLabel}>{label}</AppText>
+    </Pressable>
+  );
+}
+
+function voiceControlLabel(
+  snapshot: VoiceSocketSnapshot,
+  messages: ConversationMessage[],
+): string {
+  if (snapshot.connection !== 'connected') {
+    return snapshot.connection === 'disconnected'
+      ? strings.assistant.connect
+      : strings.assistant.retry;
+  }
+  if (snapshot.session === 'idle') return strings.assistant.startSession;
+  if (snapshot.turn === 'idle') return strings.assistant.startTurn;
+  if (['starting', 'recording', 'speech_detected'].includes(snapshot.turn)) {
+    return snapshot.turn === 'speech_detected'
+      ? strings.assistant.speechDetected
+      : strings.assistant.listening;
+  }
+  if (snapshot.turn === 'committing') return strings.assistant.transcribing;
+  if (snapshot.turn === 'waiting') return strings.assistant.stopResponse;
+  const failed = [...messages]
+    .reverse()
+    .find(
+      (message): message is ConversationAssistantMessage =>
+        message.role === 'assistant' && message.status === 'failed',
+    );
+  return failed?.retryable
+    ? strings.assistant.tryAgain
+    : strings.assistant.startTurn;
+}
+
+function ConversationMessageView({
+  copied,
+  message,
+  onCopy,
+  onRetry,
+}: {
+  copied: boolean;
+  message: ConversationMessage;
+  onCopy: (message: ConversationAssistantMessage) => void;
+  onRetry: (turnId: string) => void;
+}) {
+  if (message.role === 'user') {
+    return <ConversationUserView message={message} />;
+  }
+  if (message.role === 'assistant') {
+    const mapped = mapConversationError(message.errorCode);
+    return (
+      <View style={styles.messageRow} testID="assistant-message">
+        <AppText style={styles.messageRole}>Assistant</AppText>
+        {message.status === 'pending' ? (
+          <AppText accessibilityLiveRegion="none" style={styles.messageMuted}>
+            {strings.assistant.thinking}
+          </AppText>
+        ) : null}
+        {message.status === 'streaming' || message.status === 'completed' ? (
+          <AppText accessibilityLiveRegion="none" style={styles.messageText}>
+            {message.text || strings.assistant.responding}
+          </AppText>
+        ) : null}
+        {message.status === 'failed' ? (
+          <>
+            <AppText
+              style={styles.transcriptError}
+              testID="assistant-response-error"
+            >
+              {mapped.message || strings.assistant.responseFailed}
+            </AppText>
+            {message.retryable ? (
+              <ActionButton
+                label={strings.assistant.tryAgain}
+                onPress={() => onRetry(message.turnId)}
+                variant="secondary"
+                testID="assistant-response-retry"
+              />
+            ) : null}
+          </>
+        ) : null}
+        {message.status === 'cancelled' ? (
+          <AppText
+            style={styles.messageMuted}
+            testID="assistant-response-cancelled"
+          >
+            {strings.assistant.responseStopped}
+          </AppText>
+        ) : null}
+        {message.status === 'completed' && message.text ? (
+          <ActionButton
+            label={copied ? strings.assistant.copied : strings.assistant.copy}
+            onPress={() => onCopy(message)}
+            variant="quiet"
+            testID="assistant-response-copy"
+          />
+        ) : null}
+      </View>
+    );
+  }
+  if (message.role === 'tool') {
+    return <ConversationToolView message={message} />;
+  }
+  return (
+    <View style={styles.messageRow} testID="system-message">
+      <AppText style={styles.messageRole}>Status</AppText>
+      <AppText
+        style={message.status === 'error' ? styles.transcriptError : undefined}
+      >
+        {message.text}
+      </AppText>
+    </View>
+  );
+}
+
+function ConversationUserView({
+  message,
+}: {
+  message: ConversationUserMessage;
+}) {
+  const placeholder = !message.text.trim();
+  return (
+    <View style={styles.messageRow} testID="voice-transcript-message">
+      <AppText style={styles.messageRole}>You</AppText>
+      {placeholder ? (
+        <AppText
+          accessibilityLiveRegion="none"
+          style={styles.transcriptPlaceholder}
+          testID={
+            message.status === 'transcribing'
+              ? 'voice-transcript-transcribing'
+              : message.status === 'speech_detected'
+              ? 'voice-transcript-speech-detected'
+              : 'voice-transcript-listening'
+          }
+        >
+          {message.status === 'transcribing'
+            ? strings.assistant.transcribing
+            : message.status === 'speech_detected'
+            ? strings.assistant.speechDetected
+            : strings.assistant.listening}
+        </AppText>
+      ) : (
+        <AppText
+          accessibilityLabel={`You said: ${message.text}`}
+          accessibilityLiveRegion="none"
+          style={styles.messageText}
+          testID={
+            message.final
+              ? 'voice-transcript-final'
+              : 'voice-transcript-partial'
+          }
+        >
+          {message.text}
+        </AppText>
+      )}
+    </View>
+  );
+}
+
+function ConversationToolView({
+  message,
+}: {
+  message: ConversationToolMessage;
+}) {
+  const hasDurableResult =
+    message.status === 'completed' && Boolean(message.result);
+  return (
+    <View style={styles.messageRow} testID="tool-status-message">
+      <AppText style={styles.messageRole}>Assistant action</AppText>
+      <AppText>
+        {hasDurableResult
+          ? strings.assistant.toolCompleted
+          : strings.assistant.toolPending}
+      </AppText>
+    </View>
   );
 }
 
@@ -376,16 +774,57 @@ function DiagnosticRow({ label, value }: { label: string; value: string }) {
 
 const styles = StyleSheet.create({
   content: { paddingBottom: 24 },
+  topBar: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  historyButton: { fontSize: 28, fontWeight: '700', letterSpacing: 2 },
+  historyNotice: { gap: 8, marginTop: 12 },
   greeting: {
     fontSize: typography.heading,
     fontWeight: '600',
     marginTop: spacing.sm,
   },
   subtitle: { marginBottom: 20, marginTop: 8 },
-  card: { marginTop: 16 },
+  card: { gap: 12, marginTop: 16 },
   actionGroup: { gap: 12 },
   turnStatus: { marginBottom: 4 },
-  transcriptCard: { gap: 12, marginTop: 16 },
+  voiceOrb: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    backgroundColor: '#3159D8',
+    borderRadius: 72,
+    height: 144,
+    justifyContent: 'center',
+    marginBottom: 4,
+    padding: spacing.md,
+    width: 144,
+  },
+  voiceOrbIcon: { color: '#FFFFFF', fontSize: 42, lineHeight: 46 },
+  voiceOrbLabel: {
+    color: '#FFFFFF',
+    fontSize: typography.label,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  conversationCard: { gap: 14, marginTop: 16 },
+  emptyConversation: { gap: 8, marginTop: 16 },
+  emptyTitle: { fontWeight: '700' },
+  resetButton: { marginTop: 8 },
+  messageRow: {
+    borderBottomColor: '#E1E5EA',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 6,
+    paddingBottom: 12,
+  },
+  messageRole: {
+    color: '#5D6875',
+    fontSize: typography.label,
+    fontWeight: '700',
+  },
+  messageText: { lineHeight: 26 },
+  messageMuted: { color: '#5D6875', fontStyle: 'italic' },
   transcriptLabel: { color: '#5D6875', fontSize: typography.label },
   transcriptPlaceholder: { color: '#5D6875' },
   transcriptError: { color: '#B42318' },
@@ -401,3 +840,4 @@ const styles = StyleSheet.create({
 });
 
 const EMPTY_TRANSCRIPT_MESSAGES: VoiceTranscriptMessage[] = [];
+const EMPTY_CONVERSATION_MESSAGES: ConversationMessage[] = [];

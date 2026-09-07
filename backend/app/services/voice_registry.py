@@ -173,6 +173,15 @@ class VoiceRegistry:
         await redis.set(self._turn_key(session_id), str(turn_id), ex=self.ttl_seconds)
         await redis.set(self._response_key(session_id), str(response_id), ex=self.ttl_seconds)
 
+    async def set_response(
+        self,
+        owner: VoiceRegistryOwner,
+        session_id: uuid.UUID,
+        response_id: uuid.UUID,
+    ) -> None:
+        redis, _ = await self._device_owned_by(owner, session_id)
+        await redis.set(self._response_key(session_id), str(response_id), ex=self.ttl_seconds)
+
     async def cancel_response(
         self,
         owner: VoiceRegistryOwner,

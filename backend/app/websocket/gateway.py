@@ -67,6 +67,7 @@ from app.websocket.protocol import (
     ControlMessageType,
     ProtocolError,
     ResponseCancelMessage,
+    ResponseRetryMessage,
     SessionEndMessage,
     SessionStartMessage,
     TurnStartMessage,
@@ -346,6 +347,8 @@ class VoiceGateway:
             await self._handle_audio_commit(message)
         elif isinstance(message, ResponseCancelMessage):
             await self._handle_response_cancel(message)
+        elif isinstance(message, ResponseRetryMessage):
+            await self._handle_response_retry(message)
         elif isinstance(message, ClientPingMessage):
             await self._handle_ping(message)
         elif isinstance(message, SessionEndMessage):
@@ -1587,6 +1590,113 @@ class VoiceGateway:
                 code=code,
             )
         )
+
+    async def _handle_response_retry(self, message: ResponseRetryMessage) -> None:
+        self._require_session()
+        if self._stt_finalize_task is not None or self._response_turn_id is not None:
+            await self._send_error("response_in_progress")
+            return
+        if not self.llm_service.enabled or self.voice_session is None:
+            await self._send_error("llm_configuration_error")
+            return
+
+        turn = await self.persistence.get_owned_turn(
+            self.db,
+            self.principal,
+            session_id=self.voice_session.id,
+            turn_id=message.turn_id,
+        )
+        metadata = turn.metadata_json if turn is not None else None
+        stored_transcript = metadata.get("transcript") if metadata else None
+        llm_metadata = metadata.get("llm") if metadata else None
+        llm_status = llm_metadata.get("status") if isinstance(llm_metadata, dict) else None
+        if (
+            turn is None
+            or turn.response_id != message.original_response_id
+            or not isinstance(stored_transcript, str)
+            or stored_transcript != message.transcript
+            or llm_status not in {"failed", "cancelled"}
+        ):
+            await self._send_error("response_retry_not_available")
+            return
+
+        response_id = uuid.uuid4()
+        turn.response_id = response_id
+        turn.metadata_json = {
+            **(metadata or {}),
+            "llm": {
+                **(llm_metadata or {}),
+                "status": "retrying",
+                "original_response_id": str(message.original_response_id),
+            },
+        }
+        self._last_response_id = response_id
+        self._response_turn_id = turn.id
+        self.cancel_guard.activate(response_id)
+        await self.registry.set_response(self.owner, self.voice_session.id, response_id)
+        await self.db.commit()
+        await self._send(
+            server_event(
+                "assistant.response.started",
+                session_id=self.voice_session.id,
+                turn_id=turn.id,
+                response_id=response_id,
+                retry=True,
+            )
+        )
+        asyncio.create_task(
+            self._finish_retry_response(
+                session_id=self.voice_session.id,
+                turn_id=turn.id,
+                response_id=response_id,
+                transcript=stored_transcript,
+            ),
+            name=f"llm-retry-{turn.id}",
+        )
+
+    async def _finish_retry_response(
+        self,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        transcript: str,
+    ) -> None:
+        try:
+            result = await self._stream_llm_response(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                transcript=transcript,
+            )
+            if result["status"] == "cancelled":
+                return
+            await self._complete_response_state(response_id)
+            await self._send(
+                server_event(
+                    "server.turn.completed",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    retry=True,
+                    llm_enabled=True,
+                    llm_status=result["status"],
+                )
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception:  # noqa: BLE001 - isolate retry failures
+            await self._complete_response_state(response_id)
+            await self._send(
+                server_event(
+                    "assistant.response.failed",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    code="llm_provider_error",
+                    retryable=True,
+                )
+            )
 
     async def _handle_response_cancel(self, message: ResponseCancelMessage) -> None:
         self._require_session()
