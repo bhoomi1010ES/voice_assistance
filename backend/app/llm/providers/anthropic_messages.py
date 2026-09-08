@@ -285,9 +285,7 @@ class AnthropicMessagesProvider(OpenAIChatProvider):
                             input_tokens=usage_input,
                             output_tokens=usage_output,
                             total_tokens=(
-                                usage_input + usage_output
-                                if usage_input is not None
-                                else None
+                                usage_input + usage_output if usage_input is not None else None
                             ),
                         ),
                         provider_request_id=provider_request_id,
@@ -298,9 +296,7 @@ class AnthropicMessagesProvider(OpenAIChatProvider):
             if event_type == "content_block_stop":
                 index = payload.get("index")
                 if isinstance(index, int) and index in tools:
-                    for tool_event in self._complete_anthropic_tools(
-                        {index: tools[index]}, event
-                    ):
+                    for tool_event in self._complete_anthropic_tools({index: tools[index]}, event):
                         yield tool_event
                     del tools[index]
                 return

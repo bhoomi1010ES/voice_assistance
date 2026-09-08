@@ -82,6 +82,10 @@ class VoiceWebSocketTransport(
         val audioDurationMs: Long? = null,
         val metrics: Map<String, Double?> = emptyMap(),
         val usage: Map<String, Double?> = emptyMap(),
+        val toolCallId: String? = null,
+        val toolName: String? = null,
+        val toolStatus: String? = null,
+        val confirmationId: String? = null,
         val errorCode: String? = null,
         val retryable: Boolean? = null,
     )
@@ -133,6 +137,18 @@ class VoiceWebSocketTransport(
             return fail("E_VOICE_URL", "Voice gateway URL must use ws:// or wss://.")
         }
 
+        // Reject missing credentials before changing the transport into a
+        // connecting state. This keeps the public connect result truthful and
+        // guarantees that an unauthenticated attempt never reaches OkHttp.
+        val accessToken = try {
+            tokenStorage.read()?.accessToken
+        } catch (_: RuntimeException) {
+            null
+        }
+        if (accessToken.isNullOrBlank()) {
+            return fail("E_VOICE_AUTH", "No access token is stored securely on this device.")
+        }
+
         val socketToCancel: WebSocket?
         synchronized(stateLock) {
             if (status.state in setOf(
@@ -168,14 +184,9 @@ class VoiceWebSocketTransport(
         notifyStatus()
 
         networkExecutor.execute {
-            val token = tokenStorage.read()?.accessToken
-            if (token.isNullOrBlank()) {
-                recordError("E_VOICE_AUTH", "No access token is stored securely on this device.")
-                return@execute
-            }
             val request = Request.Builder()
                 .url(url)
-                .header("Authorization", "Bearer $token")
+                .header("Authorization", "Bearer $accessToken")
                 .build()
             val candidate = client.newWebSocket(request, socketListener)
             val accepted = synchronized(stateLock) {
@@ -552,6 +563,8 @@ class VoiceWebSocketTransport(
             null
         }
         val payload = extractServerEventPayload(eventType, json)
+        val terminalSessionEvent = eventType == "server.session.ended" ||
+            (eventType == "server.error" && payload?.errorCode == "session_not_available")
         Log.i(
             TAG,
             "VOICE server event type=$eventType sessionId=${sessionId ?: "NONE"} " +
@@ -564,6 +577,9 @@ class VoiceWebSocketTransport(
                 json.optLong("heartbeat_interval_seconds", DEFAULT_HEARTBEAT_INTERVAL_SECONDS),
             )
         }
+        if (eventType == "server.error" || eventType == "server.session.ended") {
+            stopHeartbeat()
+        }
         synchronized(stateLock) {
             status = status.copy(
                 state = when (eventType) {
@@ -574,16 +590,17 @@ class VoiceWebSocketTransport(
                     "server.error" -> State.ERROR
                     else -> status.state
                 },
-                connected = eventType != "server.session.ended" && status.connected,
-                sessionStarted = eventType != "server.session.ended" &&
+                connected = eventType != "server.session.ended" &&
+                    eventType != "server.error" && status.connected,
+                sessionStarted = !terminalSessionEvent &&
                     (status.sessionStarted || eventType == "server.session.ready"),
                 turnActive = when (eventType) {
                     "server.turn.completed", "response.cancelled", "server.error" -> false
                     else -> status.turnActive
                 },
-                sessionId = sessionId ?: status.sessionId,
-                turnId = turnId ?: status.turnId,
-                responseId = responseId ?: status.responseId,
+                sessionId = if (terminalSessionEvent) null else sessionId ?: status.sessionId,
+                turnId = if (terminalSessionEvent) null else turnId ?: status.turnId,
+                responseId = if (terminalSessionEvent) null else responseId ?: status.responseId,
                 lastServerEvent = eventType,
                 lastServerEventTimestampMs = System.currentTimeMillis(),
             )
@@ -619,7 +636,8 @@ class VoiceWebSocketTransport(
         )
         val isError = eventType == "server.error" || eventType == "server.turn.failed" ||
             eventType == "assistant.response.failed" || eventType == "llm.response.failed"
-        if (!isTranscript && !isAssistant && !isError) {
+        val isTool = eventType == "tool.status" || eventType == "confirmation.required"
+        if (!isTranscript && !isAssistant && !isError && !isTool) {
             return null
         }
 
@@ -665,7 +683,21 @@ class VoiceWebSocketTransport(
             audioDurationMs = audioDurationMs,
             metrics = boundedMetrics(json.optJSONObject("metrics")),
             usage = boundedMetrics(json.optJSONObject("usage")),
-            errorCode = json.optStringOrNull("code")?.takeIf { it.length <= MAX_ERROR_CODE_BYTES },
+            toolCallId = json.optStringOrNull("tool_call_id")
+                ?.takeIf { it.length <= MAX_ERROR_CODE_BYTES },
+            toolName = json.optStringOrNull("tool_name")
+                ?.takeIf { it.length <= MAX_ERROR_CODE_BYTES },
+            toolStatus = (
+                if (eventType == "confirmation.required") {
+                    "confirmation_required"
+                } else {
+                    json.optStringOrNull("tool_status")
+                }
+                )?.takeIf { it.length <= MAX_ERROR_CODE_BYTES },
+            confirmationId = json.optStringOrNull("confirmation_id")
+                ?.takeIf { it.length <= MAX_ERROR_CODE_BYTES },
+            errorCode = (json.optStringOrNull("code") ?: json.optStringOrNull("error_code"))
+                ?.takeIf { it.length <= MAX_ERROR_CODE_BYTES },
             retryable = if (json.has("retryable") && !json.isNull("retryable")) {
                 json.optBoolean("retryable")
             } else {

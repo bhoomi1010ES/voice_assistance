@@ -644,6 +644,10 @@ class VoiceModule(
         val transcriptSequence = eventPayload?.transcriptSequence
         val eventLanguage = eventPayload?.language
         val audioDurationMs = eventPayload?.audioDurationMs
+        val toolCallId = eventPayload?.toolCallId
+        val toolName = eventPayload?.toolName
+        val toolStatus = eventPayload?.toolStatus
+        val confirmationId = eventPayload?.confirmationId
         val errorCode = eventPayload?.errorCode
         val retryable = eventPayload?.retryable
         val metrics = eventPayload?.metrics
@@ -670,6 +674,14 @@ class VoiceModule(
                 putNull("audioDurationMs")
             } else {
                 putDouble("audioDurationMs", audioDurationMs.toDouble())
+            }
+            if (toolCallId == null) putNull("toolCallId") else putString("toolCallId", toolCallId)
+            if (toolName == null) putNull("toolName") else putString("toolName", toolName)
+            if (toolStatus == null) putNull("toolStatus") else putString("toolStatus", toolStatus)
+            if (confirmationId == null) {
+                putNull("confirmationId")
+            } else {
+                putString("confirmationId", confirmationId)
             }
             if (errorCode == null) putNull("code") else putString("code", errorCode)
             if (retryable == null) putNull("retryable") else putBoolean("retryable", retryable)

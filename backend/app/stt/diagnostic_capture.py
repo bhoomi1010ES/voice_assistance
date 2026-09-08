@@ -62,9 +62,11 @@ class DiagnosticPcmCapture:
         error: str | None = None,
     ) -> dict[str, object]:
         if self._finalized:
-            return self._metadata_path().exists() and json.loads(
-                self._metadata_path().read_text(encoding="utf-8")
-            ) or {}
+            return (
+                self._metadata_path().exists()
+                and json.loads(self._metadata_path().read_text(encoding="utf-8"))
+                or {}
+            )
         self._finalized = True
 
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -99,9 +101,7 @@ class DiagnosticPcmCapture:
             "encoding": "signed_pcm16_little_endian",
             "byte_count": len(pcm),
             "sample_count": len(pcm) // self.SAMPLE_WIDTH_BYTES,
-            "duration_ms": round(
-                len(pcm) / (self.SAMPLE_RATE_HZ * self.SAMPLE_WIDTH_BYTES) * 1000
-            ),
+            "duration_ms": round(len(pcm) / (self.SAMPLE_RATE_HZ * self.SAMPLE_WIDTH_BYTES) * 1000),
             "sha256": hashlib.sha256(pcm).hexdigest(),
             "raw_path": str(raw_path),
             "wav_path": str(wav_path),

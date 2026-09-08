@@ -186,13 +186,21 @@ async def test_approval_executes_once_and_replay_cannot_mutate_again() -> None:
     stored = await store.get((pending.authenticated_user_id, pending.device_id, pending.session_id))
     assert stored is not None and stored.status == "CONSUMED"
     assert [event["type"] for event in outbound] == [
+        "tool.status",
+        "tool.status",
+        "tool.status",
         "confirmation.resolved",
         "assistant.text.final",
         "confirmation.resolved",
         "assistant.text.final",
     ]
-    assert outbound[1]["text"].startswith("Done.")
-    assert outbound[3]["text"] == "That confirmation has already been handled."
+    assert [event["tool_status"] for event in outbound[:3]] == [
+        "approved",
+        "executing",
+        "success",
+    ]
+    assert outbound[4]["text"].startswith("Done.")
+    assert outbound[6]["text"] == "That confirmation has already been handled."
 
 
 @pytest.mark.asyncio
@@ -232,7 +240,9 @@ async def test_expired_confirmation_never_executes() -> None:
     assert result == {"status": "completed", "confirmation": "expired"}
     assert stored is not None and stored.status == "EXPIRED"
     assert count() == 0
-    assert "expired" in outbound[1]["text"]
+    assert outbound[0]["type"] == "tool.status"
+    assert outbound[0]["tool_status"] == "failed"
+    assert "expired" in outbound[2]["text"]
 
 
 @pytest.mark.asyncio

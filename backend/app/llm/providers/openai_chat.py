@@ -166,8 +166,13 @@ class OpenAIChatProvider:
                 raise LLMProtocolError("The provider returned malformed SSE JSON.") from error
             if not isinstance(chunk, dict):
                 raise LLMProtocolError("The provider returned a non-object SSE payload.")
-            if chunk.get("error") is not None:
-                raise LLMProviderError("The provider returned an in-stream error.")
+            provider_error = chunk.get("error")
+            if provider_error is not None:
+                raise self._stream_error(
+                    provider_error,
+                    request_id=provider_request_id,
+                    retry_after_seconds=self._retry_after(response.headers),
+                )
 
             saw_payload = True
             chunk_request_id = chunk.get("id")
@@ -328,7 +333,8 @@ class OpenAIChatProvider:
                         "type": "function",
                         "function": {
                             "name": tool_call.name,
-                            "arguments": tool_call.arguments_json or json.dumps(
+                            "arguments": tool_call.arguments_json
+                            or json.dumps(
                                 tool_call.arguments or {},
                                 separators=(",", ":"),
                             ),
@@ -589,3 +595,59 @@ class OpenAIChatProvider:
         if status >= 500:
             return LLMProviderError("The provider returned a server error.", **common)
         return LLMInvalidRequestError("The provider rejected the request.", **common)
+
+    @classmethod
+    def _stream_error(
+        cls,
+        value: Any,
+        *,
+        request_id: str | None,
+        retry_after_seconds: float | None,
+    ) -> LLMError:
+        """Map provider errors embedded in an otherwise successful SSE response.
+
+        NVIDIA can return a 503 as an SSE data frame after the HTTP headers have
+        already been accepted. Treat that response exactly like an overloaded
+        HTTP request so the bounded retry policy and provider-neutral UI copy
+        remain accurate.
+        """
+
+        if isinstance(value, dict):
+            raw_code = value.get("code")
+            raw_type = value.get("type")
+            status = raw_code if isinstance(raw_code, int) else None
+            if status is None and isinstance(raw_code, str) and raw_code.isdigit():
+                status = int(raw_code)
+            normalized_type = raw_type.strip().lower() if isinstance(raw_type, str) else ""
+            common = {
+                "status_code": status,
+                "request_id": request_id,
+                "retry_after_seconds": retry_after_seconds,
+            }
+            if status in {502, 503, 504, 529} or normalized_type in {
+                "overloaded",
+                "service_unavailable",
+            }:
+                return LLMOverloadedError(
+                    "The provider is temporarily overloaded.",
+                    **common,
+                )
+            if status == 401:
+                return LLMAuthenticationError("The provider rejected authentication.", **common)
+            if status == 403:
+                return LLMPermissionError("The provider rejected model access.", **common)
+            if status == 404:
+                return LLMModelNotFoundError(
+                    "The configured model or endpoint was not found.",
+                    **common,
+                )
+            if status in {408, 504}:
+                return LLMTimeoutError("The provider request timed out.", **common)
+            if status in {400, 413, 422}:
+                return LLMInvalidRequestError("The provider rejected the request.", **common)
+            if status == 429:
+                return LLMRateLimitError("The provider rate limit was reached.", **common)
+            if status is not None and status >= 500:
+                return LLMProviderError("The provider returned a server error.", **common)
+
+        return LLMProviderError("The provider returned an in-stream error.")

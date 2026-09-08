@@ -124,7 +124,7 @@ class FakeLLMService:
         yield _event(request, "request_started", 0)
         yield _event(request, "text_delta", 1, delta="I will check that.")
         yield _event(request, "tool_call_started", 2, tool_call=call)
-        yield _event(request, "tool_call_arguments_delta", 3, delta='}', tool_call=call)
+        yield _event(request, "tool_call_arguments_delta", 3, delta="}", tool_call=call)
         yield _event(request, "tool_call_completed", 4, tool_call=call)
         yield _event(request, "response_completed", 5, text="", finish_reason="tool_calls")
 
@@ -447,6 +447,7 @@ async def test_tool_loop_runs_sequential_round_and_suppresses_premature_text() -
         "tool_call_started",
         "tool_call_arguments_delta",
         "tool_call_completed",
+        "tool_execution_completed",
         "request_started",
         "text_delta",
         "response_completed",

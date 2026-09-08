@@ -803,7 +803,9 @@ class InteractiveValidationRunner:
 
             # Server event received on Android with response correlation
             m = re.search(
-                r"VOICE server event type=(\S+)\s+sessionId=(\S+)\s+turnId=(\S+)\s+responseId=(\S+)\s+payload=(.*?)\s+wallMs=(\d+)(?:\s+elapsedMs=(\d+))?",
+                r"VOICE server event type=(\S+)\s+sessionId=(\S+)\s+turnId=(\S+)\s+"
+                r"responseId=(\S+)(?:\s+payload=(.*?)\s+)?wallMs=(\d+)"
+                r"(?:\s+elapsedMs=(\d+))?",
                 line,
             )
             if m:
@@ -880,10 +882,11 @@ Speak NO to cancel.
                         )
                         return
 
-                    if (
-                        evt_type == "transcript.final"
-                        or evt_type == "server.turn.completed"
-                    ):
+                    if evt_type in {
+                        "transcript.final",
+                        "voice.transcript.final.delivered",
+                        "server.turn.completed",
+                    }:
                         self.current_turn_data["android_final_received_timestamp"] = (
                             wall_ms
                         )

@@ -635,16 +635,28 @@ function ConversationToolView({
 }: {
   message: ConversationToolMessage;
 }) {
-  const hasDurableResult =
-    message.status === 'completed' && Boolean(message.result);
+  const statusText = {
+    understanding: strings.assistant.toolUnderstanding,
+    confirmation_required: strings.assistant.toolConfirmationRequired,
+    approved: strings.assistant.toolApproved,
+    executing: strings.assistant.toolExecuting,
+    success: strings.assistant.toolSuccess,
+    failed: strings.assistant.toolFailed,
+    cancelled: strings.assistant.toolCancelled,
+  }[message.status];
   return (
-    <View style={styles.messageRow} testID="tool-status-message">
+    <View
+      accessibilityLabel={`Assistant action: ${statusText}`}
+      accessibilityLiveRegion={
+        ['success', 'failed', 'cancelled'].includes(message.status)
+          ? 'polite'
+          : 'none'
+      }
+      style={styles.messageRow}
+      testID="tool-status-message"
+    >
       <AppText style={styles.messageRole}>Assistant action</AppText>
-      <AppText>
-        {hasDurableResult
-          ? strings.assistant.toolCompleted
-          : strings.assistant.toolPending}
-      </AppText>
+      <AppText testID={`tool-status-${message.status}`}>{statusText}</AppText>
     </View>
   );
 }

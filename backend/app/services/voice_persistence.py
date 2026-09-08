@@ -208,8 +208,7 @@ class VoicePersistence:
         turn_id: uuid.UUID,
     ) -> ConversationTurn | None:
         return await db.scalar(
-            select(ConversationTurn)
-            .where(
+            select(ConversationTurn).where(
                 ConversationTurn.id == turn_id,
                 ConversationTurn.session_id == session_id,
                 ConversationTurn.user_id == principal.user_id,

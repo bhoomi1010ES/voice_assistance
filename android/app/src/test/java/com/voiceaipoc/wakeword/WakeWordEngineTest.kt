@@ -148,7 +148,10 @@ class WakeWordEngineTest {
             assertTrue(engine.offerPcmFrame(frame, frame.size))
         }
 
-        waitUntil { runtime.inputs.size == 2 }
+        waitUntil {
+            runtime.inputs.size == 2 &&
+                engine.getStatus().inferenceCount == 2L
+        }
         assertArrayEquals(
             ShortArray(INFERENCE_SAMPLES) { it.toShort() },
             runtime.inputs[0],

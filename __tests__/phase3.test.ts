@@ -60,6 +60,7 @@ class FakeVoiceAdapter implements VoiceSocketAdapter {
   status = gatewayStatus();
   connectCalls = 0;
   startSessionCalls = 0;
+  startSessionResumeIds: Array<string | null> = [];
   startTurnCalls = 0;
   commitCalls = 0;
   disconnectCalls = 0;
@@ -82,8 +83,9 @@ class FakeVoiceAdapter implements VoiceSocketAdapter {
     return this.status;
   }
 
-  async startSession() {
+  async startSession(resumeSessionId?: string | null) {
     this.startSessionCalls += 1;
+    this.startSessionResumeIds.push(resumeSessionId ?? null);
     this.status = gatewayStatus({
       state: 'SESSION_STARTING',
       connected: true,
@@ -398,6 +400,101 @@ test('reconciles foreground state without creating a duplicate session', async (
 
   expect(adapter.startSessionCalls).toBe(startSessionCalls);
   expect(socket.getSnapshot().session).toBe('ready');
+});
+
+test('retires an unavailable resumed session and reconnects without replaying it', async () => {
+  jest.useFakeTimers();
+  const appState = new FakeAppState();
+  const { socket, adapter } = createSocket(new FakeVoiceAdapter(), {
+    appState,
+  });
+  await prepareSession(socket, adapter);
+
+  adapter.emitStatus(
+    gatewayStatus({
+      state: 'DISCONNECTED',
+      sessionStarted: true,
+      sessionId: SESSION_ID,
+    }),
+  );
+  await jest.advanceTimersByTimeAsync(5);
+  await Promise.resolve();
+
+  expect(adapter.connectCalls).toBe(2);
+  expect(adapter.startSessionResumeIds).toEqual([null, SESSION_ID]);
+
+  // Native status is delivered before the correlated server event on Android.
+  adapter.emitStatus(
+    gatewayStatus({
+      state: 'ERROR',
+      sessionStarted: true,
+      sessionId: SESSION_ID,
+    }),
+  );
+  adapter.emitEvent({
+    event: 'server.error',
+    sessionId: null,
+    turnId: null,
+    responseId: null,
+    eventId: 'resume-rejected-1',
+    timestampMs: 2,
+    code: 'session_not_available',
+  });
+  adapter.emitStatus(gatewayStatus({ state: 'CLOSING' }));
+
+  expect(socket.getSnapshot()).toMatchObject({
+    connection: 'reconnecting',
+    session: 'idle',
+    turn: 'idle',
+    sessionId: null,
+    turnId: null,
+    responseId: null,
+  });
+
+  await jest.advanceTimersByTimeAsync(10);
+  await Promise.resolve();
+
+  expect(adapter.connectCalls).toBe(3);
+  expect(adapter.startSessionResumeIds).toEqual([null, SESSION_ID]);
+  expect(socket.getSnapshot()).toMatchObject({
+    connection: 'connected',
+    session: 'idle',
+    sessionId: null,
+  });
+
+  adapter.emitEvent({
+    event: 'server.pong',
+    sessionId: null,
+    turnId: null,
+    responseId: null,
+    eventId: 'stable-pong-1',
+    timestampMs: 3,
+  });
+  expect(socket.getSnapshot().reconnectAttempt).toBe(0);
+});
+
+test('keeps the reconnect budget across sockets that open then immediately close', async () => {
+  jest.useFakeTimers();
+  const appState = new FakeAppState();
+  const { socket, adapter } = createSocket(new FakeVoiceAdapter(), {
+    appState,
+  });
+  await socket.connect();
+
+  adapter.emitStatus(gatewayStatus());
+  await jest.advanceTimersByTimeAsync(5);
+  expect(adapter.connectCalls).toBe(2);
+  expect(socket.getSnapshot().reconnectAttempt).toBe(1);
+
+  adapter.emitStatus(gatewayStatus());
+  await jest.advanceTimersByTimeAsync(10);
+  expect(adapter.connectCalls).toBe(3);
+  expect(socket.getSnapshot().reconnectAttempt).toBe(2);
+
+  adapter.emitStatus(gatewayStatus());
+  expect(socket.getSnapshot().connection).toBe('failed');
+  await jest.advanceTimersByTimeAsync(100);
+  expect(adapter.connectCalls).toBe(3);
 });
 
 test('bounds reconnect and stops it during logout', async () => {

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 import time
 import uuid
+import warnings
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 from redis.asyncio import from_url
 from sqlalchemy import delete, select
+from sqlalchemy.exc import SAWarning
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.websockets import WebSocketDisconnect
 
@@ -21,7 +24,10 @@ from app.services.voice_registry import VoiceRegistry, VoiceRegistryOwner
 from app.websocket.binary import encode_pcm_frame
 from tests.test_support import NoopSTTService
 
-pytestmark = pytest.mark.integration
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.filterwarnings("error::sqlalchemy.exc.SAWarning"),
+]
 
 
 def _email(label: str) -> str:
@@ -56,12 +62,21 @@ def voice_client():
         refresh_token_expire_days=1,
     )
     emails: set[str] = set()
-    with TestClient(create_app(settings=settings, stt_service=NoopSTTService())) as client:
-        readiness = client.get("/ready")
-        if readiness.status_code != 200:
-            pytest.skip(f"Infrastructure unavailable: {readiness.json()}")
-        yield client, settings, emails
-    asyncio.run(_cleanup(settings, emails))
+    with warnings.catch_warnings(record=True) as captured_warnings:
+        warnings.simplefilter("always", SAWarning)
+        with TestClient(create_app(settings=settings, stt_service=NoopSTTService())) as client:
+            application_pool = client.app.state.infrastructure.database.engine.sync_engine.pool
+            readiness = client.get("/ready")
+            if readiness.status_code != 200:
+                pytest.skip(f"Infrastructure unavailable: {readiness.json()}")
+            yield client, settings, emails
+        assert application_pool.checkedout() == 0
+        asyncio.run(_cleanup(settings, emails))
+        gc.collect()
+    cleanup_warnings = [
+        warning for warning in captured_warnings if issubclass(warning.category, SAWarning)
+    ]
+    assert cleanup_warnings == []
 
 
 def _create_account(client: TestClient, email: str, device: str) -> dict:
@@ -310,8 +325,7 @@ def test_voice_gateway_reaps_scoped_stale_session_after_backend_restart(voice_cl
                 registry = VoiceRegistry(
                     redis,
                     ttl_seconds=(
-                        settings.voice_max_session_seconds
-                        + settings.voice_reconnect_grace_seconds
+                        settings.voice_max_session_seconds + settings.voice_reconnect_grace_seconds
                     ),
                     lease_ttl_seconds=(
                         settings.voice_heartbeat_timeout_seconds

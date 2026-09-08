@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import time
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
 from app.core.config import Settings
-from app.llm.types import LLMCapabilities, LLMEvent, LLMProviderInfo, LLMUsage
+from app.llm.types import (
+    LLMCapabilities,
+    LLMEvent,
+    LLMProviderInfo,
+    LLMToolCall,
+    LLMUsage,
+)
 from app.websocket.cancellation import CancellationGuard
 from app.websocket.gateway import VoiceGateway
 
@@ -152,6 +159,62 @@ async def test_gateway_streams_correlated_text_and_persists_safe_metadata() -> N
     assert persisted["response_text"] == "Hello there"
     assert persisted["usage"] == {"input_tokens": 9, "output_tokens": 2, "total_tokens": 11}
     assert "test-placeholder-key" not in repr(persisted)
+
+
+@pytest.mark.asyncio
+async def test_gateway_emits_ordered_server_owned_tool_lifecycle() -> None:
+    gateway, outbound = _gateway(lambda _request: ())
+    gateway.principal = SimpleNamespace(user_id=uuid.uuid4())
+    gateway.voice_session = None
+    gateway.tool_registry = SimpleNamespace(definitions=lambda: ())
+
+    class FakeToolLoop:
+        async def stream(self, request, *, context):
+            call = LLMToolCall(
+                tool_call_id="call-time-1",
+                name="get_current_time",
+                arguments={},
+            )
+            yield _event(request, "tool_call_completed", 1, tool_call=call)
+            assert context.tool_execution_started is not None
+            await context.tool_execution_started(call, time.monotonic())
+            assert context.tool_execution_finished is not None
+            context.tool_execution_finished(call, time.monotonic())
+            yield _event(request, "tool_execution_completed", 2, tool_call=call)
+            yield _event(
+                request,
+                "response_completed",
+                3,
+                text="It is noon UTC.",
+                finish_reason="stop",
+            )
+
+    gateway.tool_loop = FakeToolLoop()
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    response_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._stream_llm_response(
+        session_id=session_id,
+        turn_id=turn_id,
+        response_id=response_id,
+        transcript="What time is it?",
+    )
+
+    assert result["status"] == "completed"
+    assert [event["type"] for event in outbound] == [
+        "tool.status",
+        "tool.status",
+        "tool.status",
+        "assistant.text.final",
+    ]
+    assert [event["tool_status"] for event in outbound[:3]] == [
+        "understanding",
+        "executing",
+        "success",
+    ]
+    assert all(event["tool_call_id"] == "call-time-1" for event in outbound[:3])
 
 
 @pytest.mark.asyncio

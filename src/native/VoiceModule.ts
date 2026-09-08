@@ -576,6 +576,7 @@ export type VoiceGatewayEvent = {
   toolCallId?: string | null;
   toolName?: string | null;
   toolStatus?: string | null;
+  confirmationId?: string | null;
   capability?: string | null;
   code?: string | null;
   message?: string | null;

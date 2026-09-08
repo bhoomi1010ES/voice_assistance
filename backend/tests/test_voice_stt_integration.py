@@ -1,23 +1,33 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import json
 import os
 import time
 import uuid
+import warnings
 from types import SimpleNamespace
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
+from sqlalchemy.exc import SAWarning
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import Settings
+from app.llm.service import LLMService
+from app.llm.types import LLMCapabilities, LLMEvent, LLMProviderInfo, LLMRequest
 from app.main import create_app
 from app.models import ConversationTurn, User
 from app.stt.service import STTService
 from app.websocket.binary import encode_pcm_frame
 
-pytestmark = pytest.mark.integration
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.filterwarnings("error::sqlalchemy.exc.SAWarning"),
+]
 
 
 def _email(label: str) -> str:
@@ -46,6 +56,125 @@ class FakeGatewayModel:
             time.sleep(self.delay_seconds)
         language = options.get("language") or "en"
         return iter([SimpleNamespace(text=" hello world")]), SimpleNamespace(language=language)
+
+
+class DeterministicLLMProvider:
+    """In-process Phase 5 provider: this test double has no network client."""
+
+    def __init__(self) -> None:
+        self.stream_calls = 0
+        self.closed = False
+
+    async def initialize(self) -> LLMProviderInfo:
+        return LLMProviderInfo(
+            provider="deterministic_test",
+            api_family="test",
+            host="https://llm.invalid",
+            configured_model="deterministic-test-model",
+            capabilities=LLMCapabilities(
+                streaming=True,
+                text_generation=True,
+                cancellation=True,
+            ),
+        )
+
+    async def stream(self, request: LLMRequest, *, attempt: int = 1):
+        self.stream_calls += 1
+        values = {
+            "session_id": request.session_id,
+            "turn_id": request.turn_id,
+            "response_id": request.response_id,
+            "provider": "deterministic_test",
+            "configured_model": "deterministic-test-model",
+            "attempt": attempt,
+        }
+        yield LLMEvent(
+            event_type="request_started",
+            monotonic_seconds=time.monotonic(),
+            sequence=0,
+            **values,
+        )
+        yield LLMEvent(
+            event_type="text_delta",
+            monotonic_seconds=time.monotonic(),
+            sequence=1,
+            delta="Deterministic response.",
+            **values,
+        )
+        yield LLMEvent(
+            event_type="response_completed",
+            monotonic_seconds=time.monotonic(),
+            sequence=2,
+            text="Deterministic response.",
+            finish_reason="stop",
+            **values,
+        )
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def _receive_with_timeout(receiver, timeout_seconds: float):
+    with anyio.fail_after(timeout_seconds):
+        return await receiver.receive()
+
+
+def _receive_json(socket, *, timeout_seconds: float = 3.0) -> dict:
+    try:
+        message = socket.portal.call(
+            _receive_with_timeout,
+            socket._send_rx,
+            timeout_seconds,
+        )
+    except TimeoutError:
+        pytest.fail(f"Timed out after {timeout_seconds:.1f}s waiting for a WebSocket event")
+    socket._raise_on_close(message)
+    return json.loads(message["text"])
+
+
+def _receive_turn_completed(
+    socket,
+    *,
+    session_id: str,
+    turn_id: str,
+    response_id: str,
+    timeout_seconds: float = 5.0,
+) -> tuple[dict, list[dict]]:
+    deadline = time.monotonic() + timeout_seconds
+    intermediate: list[dict] = []
+    allowed_intermediate = {
+        "assistant.text.delta",
+        "assistant.text.final",
+        "server.pong",
+    }
+    fatal_events = {
+        "assistant.response.failed",
+        "server.error",
+        "server.turn.failed",
+    }
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            pytest.fail(
+                "Timed out waiting for server.turn.completed; observed "
+                f"{[event.get('type') for event in intermediate]}"
+            )
+        event = _receive_json(socket, timeout_seconds=remaining)
+        event_type = event.get("type")
+        if event_type in fatal_events:
+            pytest.fail(f"Unexpected fatal WebSocket event: {event_type}")
+        if event_type == "server.turn.completed":
+            assert event["session_id"] == session_id
+            assert event["turn_id"] == turn_id
+            assert event["response_id"] == response_id
+            return event, intermediate
+        if event_type not in allowed_intermediate:
+            pytest.fail(f"Unexpected event before turn completion: {event_type}")
+        assert event["session_id"] == session_id
+        assert event["turn_id"] == turn_id
+        assert event["response_id"] == response_id
+        intermediate.append(event)
 
 
 def _session_start(language: str | None = "en") -> dict:
@@ -86,7 +215,12 @@ def stt_client(tmp_path, request):
     if os.getenv("RUN_INTEGRATION_TESTS") != "1":
         pytest.skip("Set RUN_INTEGRATION_TESTS=1 to run STT gateway checks.")
 
+    infrastructure_settings = Settings()
     settings = Settings(
+        _env_file=None,
+        app_env="test",
+        database_url=infrastructure_settings.database_url,
+        redis_url=infrastructure_settings.redis_url,
         jwt_secret_key="phase4-stt-integration-secret-key-do-not-use",
         access_token_expire_minutes=15,
         refresh_token_expire_days=1,
@@ -95,6 +229,10 @@ def stt_client(tmp_path, request):
         stt_partial_window_seconds=30,
         stt_timeout=5,
         stt_workers=1,
+        llm_provider="nvidia",
+        llm_base_url="https://llm.invalid/v1",
+        llm_api_key="deterministic-placeholder-key",
+        llm_model="deterministic-test-model",
     )
     for filename in STTService._REQUIRED_MODEL_FILES:
         (tmp_path / filename).write_bytes(b"test")
@@ -104,13 +242,27 @@ def stt_client(tmp_path, request):
         settings,
         model_factory=lambda *args, **kwargs: FakeGatewayModel(delay_seconds=delay_seconds),
     )
+    provider = DeterministicLLMProvider()
+    llm_service = LLMService(settings, provider=provider)
     emails: set[str] = set()
-    with TestClient(create_app(settings=settings, stt_service=service)) as client:
-        readiness = client.get("/ready")
-        if readiness.status_code != 200:
-            pytest.skip(f"Infrastructure unavailable: {readiness.json()}")
-        yield client, settings, emails
-    asyncio.run(_cleanup(settings, emails))
+    with warnings.catch_warnings(record=True) as captured_warnings:
+        warnings.simplefilter("always", SAWarning)
+        with TestClient(
+            create_app(settings=settings, stt_service=service, llm_service=llm_service)
+        ) as client:
+            application_pool = client.app.state.infrastructure.database.engine.sync_engine.pool
+            readiness = client.get("/ready")
+            if readiness.status_code != 200:
+                pytest.skip(f"Infrastructure unavailable: {readiness.json()}")
+            yield client, settings, emails
+        assert application_pool.checkedout() == 0
+        asyncio.run(_cleanup(settings, emails))
+        gc.collect()
+    cleanup_warnings = [
+        warning for warning in captured_warnings if issubclass(warning.category, SAWarning)
+    ]
+    assert cleanup_warnings == []
+    assert provider.closed is True
 
 
 def test_stt_gateway_emits_partial_final_and_persists_metadata(stt_client) -> None:
@@ -174,8 +326,19 @@ def test_stt_gateway_emits_partial_final_and_persists_metadata(stt_client) -> No
         assert final["response_id"] == response_id
         assert final["metrics"]["speech_end_to_final_transcript_ms"] >= 0
 
-        completed = socket.receive_json()
-        assert completed["type"] == "server.turn.completed"
+        completed, intermediate = _receive_turn_completed(
+            socket,
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+        )
+        assert completed["llm_status"] == "completed"
+        assert [event["type"] for event in intermediate] == [
+            "assistant.text.delta",
+            "assistant.text.final",
+        ]
+        assert intermediate[0]["delta"] == "Deterministic response."
+        assert intermediate[1]["text"] == "Deterministic response."
         socket.send_json({"type": "client.session.end", "reason": "test_complete"})
         assert socket.receive_json()["type"] == "server.session.ending"
         assert socket.receive_json()["type"] == "server.session.ended"
@@ -237,11 +400,20 @@ def test_stt_gateway_cancellation_allows_next_turn(stt_client) -> None:
             }
         )
         final = socket.receive_json()
-        completed = socket.receive_json()
         assert final["type"] == "transcript.final"
-        assert completed["type"] == "server.turn.completed"
         assert final["turn_id"] == second["turn_id"]
         assert final["turn_id"] != first["turn_id"]
+        completed, intermediate = _receive_turn_completed(
+            socket,
+            session_id=final["session_id"],
+            turn_id=final["turn_id"],
+            response_id=final["response_id"],
+        )
+        assert completed["llm_status"] == "completed"
+        assert [event["type"] for event in intermediate] == [
+            "assistant.text.delta",
+            "assistant.text.final",
+        ]
 
 
 @pytest.mark.slow_stt_gateway(1.5)

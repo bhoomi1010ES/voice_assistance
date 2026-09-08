@@ -11,10 +11,12 @@ import com.voiceaipoc.auth.SecureTokenStorage
 import com.voiceaipoc.auth.StoredAuthTokens
 import com.voiceaipoc.voice.VoiceWebSocketTransport
 import java.util.Collections
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -203,6 +205,30 @@ class PhysicalVoiceGatewayTest {
     }
 
     @Test
+    fun unavailableSessionResumeClearsTerminalNativeState() {
+        val eventLog = EventLog()
+        val transport = createTransport(eventLog)
+        try {
+            assertTrue(transport.connect(GATEWAY_URL).succeeded)
+            eventLog.awaitState(VoiceWebSocketTransport.State.CONNECTED, 5)
+            assertTrue(
+                "missing session resume was not sent",
+                transport.startSession(UUID.randomUUID().toString()).succeeded,
+            )
+            eventLog.await("server.error", 5)
+
+            val errorStatus = eventLog.awaitStatus(VoiceWebSocketTransport.State.ERROR, 5)
+            assertFalse("terminal server error remained connected", errorStatus.connected)
+            assertFalse("terminal session remained started", errorStatus.sessionStarted)
+            assertNull("terminal session id was retained", errorStatus.sessionId)
+            assertNull("terminal turn id was retained", errorStatus.turnId)
+            assertNull("terminal response id was retained", errorStatus.responseId)
+        } finally {
+            transport.shutdown()
+        }
+    }
+
+    @Test
     fun physicalMissingCredentialIsRejectedBeforeHandshake() {
         val transport = VoiceWebSocketTransport(
             tokenStorage = StaticTokenStorage(null),
@@ -270,11 +296,13 @@ class PhysicalVoiceGatewayTest {
         val events = Collections.synchronizedList(mutableListOf<ServerEvent>())
         val errors = Collections.synchronizedList(mutableListOf<String>())
         val states = Collections.synchronizedList(mutableListOf<VoiceWebSocketTransport.State>())
+        val statuses = Collections.synchronizedList(mutableListOf<VoiceWebSocketTransport.Status>())
         private val lock = Any()
 
         override fun onStatus(status: VoiceWebSocketTransport.Status) {
             synchronized(lock) {
                 states += status.state
+                statuses += status
             }
             if (status.state == VoiceWebSocketTransport.State.ERROR) {
                 status.lastError?.let(errors::add)
@@ -297,10 +325,17 @@ class PhysicalVoiceGatewayTest {
         fun count(type: String): Int = synchronized(lock) { events.count { it.type == type } }
 
         fun awaitState(state: VoiceWebSocketTransport.State, timeoutSeconds: Long) {
+            awaitStatus(state, timeoutSeconds)
+        }
+
+        fun awaitStatus(
+            state: VoiceWebSocketTransport.State,
+            timeoutSeconds: Long,
+        ): VoiceWebSocketTransport.Status {
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
             while (true) {
                 synchronized(lock) {
-                    if (states.contains(state)) return
+                    statuses.firstOrNull { it.state == state }?.let { return it }
                 }
                 val remaining = deadline - System.nanoTime()
                 assertTrue(

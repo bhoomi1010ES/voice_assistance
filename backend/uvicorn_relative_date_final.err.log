@@ -9,3 +9,116 @@ INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
 {"timestamp":"2026-09-07T16:55:48.223075+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"8ebaa33d-86f1-445c-8b5c-4a159517ed7b","method":"GET","path":"/health","status_code":200,"duration_ms":2.696,"taskName":"Task-10"}
 {"timestamp":"2026-09-07T18:40:18.520908+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"79d24977-6217-4ebf-a87f-fc4c41dcf6e1","method":"GET","path":"/health","status_code":200,"duration_ms":5.884,"taskName":"Task-12"}
 {"timestamp":"2026-09-07T18:41:32.501363+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"a8d7dde8-0f79-4666-b330-91487be16599","method":"GET","path":"/health","status_code":200,"duration_ms":1.152,"taskName":"Task-14"}
+INFO:     127.0.0.1:52223 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-08T00:03:27.747220+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-16","backend_pid":12524,"monotonic_ms":525872609.0}
+{"timestamp":"2026-09-08T00:03:27.787424+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.closed","message":"Voice WebSocket connection closed","taskName":"Task-20","session_id":null,"close_code":1008,"close_reason":"client_disconnect","backend_pid":12524,"monotonic_ms":525872640.0}
+INFO:     127.0.0.1:53086 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+{"timestamp":"2026-09-08T00:12:51.193800+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"b6f3061d-94b5-439b-9d91-ff1a1a402608","method":"GET","path":"/health","status_code":200,"duration_ms":1.403,"taskName":"Task-27"}
+INFO:     127.0.0.1:54337 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+{"timestamp":"2026-09-08T01:55:47.235692+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"d283c2f5-ff7e-489b-a1d9-e9add599e564","method":"GET","path":"/health","status_code":200,"duration_ms":5.382,"taskName":"Task-34"}
+{"timestamp":"2026-09-08T01:55:47.290106+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"695873ae-030d-4b35-8a3e-297b6b4bd563","method":"GET","path":"/ready","status_code":503,"duration_ms":23.354,"taskName":"Task-35"}
+{"timestamp":"2026-09-08T01:55:55.782228+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"e4a7dd89-5a53-464c-91d5-5bd4f8264bde","method":"GET","path":"/ready","status_code":200,"duration_ms":907.812,"taskName":"Task-38"}
+{"timestamp":"2026-09-08T01:58:25.615692+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"6ed4fc60-98db-47d7-996b-42039ec89817","method":"POST","path":"/auth/register","status_code":201,"duration_ms":187.715,"taskName":"Task-41"}
+{"timestamp":"2026-09-08T01:58:25.774018+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"d01e72ba-dce5-4480-a843-4ecabf8c1d31","method":"POST","path":"/auth/login","status_code":200,"duration_ms":147.036,"taskName":"Task-44"}
+{"timestamp":"2026-09-08T17:16:44.031686+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"407b120d-f3e6-46e5-b733-1a7b70821697","method":"GET","path":"/health","status_code":200,"duration_ms":0.689,"taskName":"Task-48"}
+{"timestamp":"2026-09-08T17:17:02.944216+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"0a357679-7902-4f38-ab3c-8457f239502b","method":"POST","path":"/auth/register","status_code":201,"duration_ms":147.011,"taskName":"Task-50"}
+{"timestamp":"2026-09-08T17:17:03.106928+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"bc68b879-93e4-4114-abea-47a4700de35f","method":"POST","path":"/auth/login","status_code":200,"duration_ms":138.472,"taskName":"Task-53"}
+INFO:     127.0.0.1:58494 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-08T17:17:16.143641+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-57","backend_pid":12524,"monotonic_ms":587901000.0}
+{"timestamp":"2026-09-08T17:17:21.163255+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.closed","message":"Voice WebSocket connection closed","taskName":"Task-61","session_id":null,"close_code":1000,"close_reason":"client_disconnect","backend_pid":12524,"monotonic_ms":587906015.0}
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 86, in send
+    await self._send(message)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 39, in sender
+    await send(message)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\protocols\websockets\websockets_sansio_impl.py", line 436, in send
+    raise ClientDisconnected()
+uvicorn.protocols.utils.ClientDisconnected
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\protocols\websockets\websockets_sansio_impl.py", line 409, in run_asgi
+    result = await self.app(self.scope, self.receive, self.send)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\applications.py", line 96, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\errors.py", line 151, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\base.py", line 103, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\routing.py", line 670, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2734, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1780, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2789, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1791, in _handle_selected
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1780, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2789, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1802, in _handle_selected
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\routing.py", line 354, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 184, in app
+    await wrap_app_handling_exceptions(app, session)(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 181, in app
+    await func(session)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 796, in app
+    await dependant.call(**solved_result.values)
+  File "C:\Users\lenovo\Desktop\voice_assistance\backend\app\api\voice.py", line 80, in voice_gateway
+    await gateway.run()
+  File "C:\Users\lenovo\Desktop\voice_assistance\backend\app\websocket\gateway.py", line 224, in run
+    await self.websocket.close(
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 181, in close
+    await self.send({"type": "websocket.close", "code": code, "reason": reason or ""})
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 89, in send
+    raise WebSocketDisconnect(code=1006)
+starlette.websockets.WebSocketDisconnect
+INFO:     127.0.0.1:58498 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-08T17:17:21.393277+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-64","backend_pid":12524,"monotonic_ms":587906250.0}
+{"timestamp":"2026-09-08T17:17:21.433709+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.closed","message":"Voice WebSocket connection closed","taskName":"Task-68","session_id":null,"close_code":1008,"close_reason":"client_disconnect","backend_pid":12524,"monotonic_ms":587906296.0}
+INFO:     127.0.0.1:58499 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+{"timestamp":"2026-09-08T17:20:53.535521+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"91b2407e-6aaf-4b2d-bec4-9a2b56053782","method":"POST","path":"/auth/register","status_code":201,"duration_ms":123.955,"taskName":"Task-75"}
+{"timestamp":"2026-09-08T17:20:53.636880+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"a3886588-161f-4740-af52-78a1a16b9c54","method":"POST","path":"/auth/login","status_code":200,"duration_ms":89.051,"taskName":"Task-78"}
+INFO:     127.0.0.1:59597 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-08T17:21:06.858299+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-82","backend_pid":12524,"monotonic_ms":588131718.0}
+{"timestamp":"2026-09-08T17:21:08.031642+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.session.started","message":"Voice session started","taskName":"Task-84","session_id":"827e85e9-3520-40b8-a018-3543fc28ad51","user_id":"4746f5b0-92b1-4c89-8d0a-0904aad38e0c","device_id":"2e3324c8-1cc9-4f6c-807d-3614fcf6f91e","stt_enabled":true,"stt_language":null,"reconnect":false,"timestamp_ms":1788888068031,"monotonic_ms":588132890.0,"backend_pid":12524}
+{"timestamp":"2026-09-08T17:21:24.312576+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.closed","message":"Voice WebSocket connection closed","taskName":"Task-86","session_id":"827e85e9-3520-40b8-a018-3543fc28ad51","close_code":1000,"close_reason":"client_disconnect","backend_pid":12524,"monotonic_ms":588149171.0}
+{"timestamp":"2026-09-08T17:21:25.169743+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.session.registry.released","message":"Voice session registry released","taskName":"Task-82","session_id":"827e85e9-3520-40b8-a018-3543fc28ad51","user_id":"4746f5b0-92b1-4c89-8d0a-0904aad38e0c","device_id":"2e3324c8-1cc9-4f6c-807d-3614fcf6f91e","timestamp_ms":1788888085169,"monotonic_ms":588150031.0}
+INFO:     127.0.0.1:58545 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-08T17:21:39.660364+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-90","backend_pid":12524,"monotonic_ms":588164515.0}
+{"timestamp":"2026-09-08T17:21:39.685963+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.closed","message":"Voice WebSocket connection closed","taskName":"Task-94","session_id":null,"close_code":1008,"close_reason":"client_disconnect","backend_pid":12524,"monotonic_ms":588164546.0}
+INFO:     127.0.0.1:58564 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)

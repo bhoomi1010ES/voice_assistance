@@ -1,0 +1,302 @@
+INFO:     Started server process [21696]
+INFO:     Waiting for application startup.
+{"timestamp":"2026-09-08T17:23:31.651253+00:00","level":"INFO","service":"voice-assistance-backend","event":"STT_ENGINE_STARTED","message":"Remote STT engine ready","taskName":"Task-2","engine":"remote","runtime":"httpx","endpoint_host":"mixing-companion-interim-certainly.trycloudflare.com","language":"en","partials_supported":false}
+{"timestamp":"2026-09-08T17:23:31.942169+00:00","level":"INFO","service":"voice-assistance-backend","event":"llm.provider.initialized","message":"LLM provider initialized","taskName":"Task-2","provider":"nvidia","provider_host":"https://integrate.api.nvidia.com","configured_model":"nvidia/nemotron-3-super-120b-a12b","api_family":"openai_chat_completions","live_verified":false}
+{"timestamp":"2026-09-08T17:23:31.956261+00:00","level":"INFO","service":"voice-assistance-backend","event":"service.started","message":"application started","taskName":"Task-2"}
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+{"timestamp":"2026-09-08T17:23:32.261560+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"9a2404d8-755e-4b08-bee5-b30ec2ef5afc","method":"GET","path":"/health","status_code":200,"duration_ms":49.604,"taskName":"Task-6"}
+{"timestamp":"2026-09-08T17:24:26.276450+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"99668bcb-b555-4ec4-a221-7d3e34ab9d2d","method":"GET","path":"/health","status_code":200,"duration_ms":0.718,"taskName":"Task-8"}
+{"timestamp":"2026-09-08T17:24:27.363806+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"cac46d35-3389-44db-b05c-569badbe90b6","method":"GET","path":"/ready","status_code":200,"duration_ms":1077.156,"taskName":"Task-10"}
+{"timestamp":"2026-09-08T17:30:53.530691+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"953db4ae-f0dd-4797-b703-87ab1342557b","method":"GET","path":"/health","status_code":200,"duration_ms":0.708,"taskName":"Task-15"}
+{"timestamp":"2026-09-08T17:36:42.123354+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"92de8cae-769e-4762-82e3-2515d52ad3c1","method":"GET","path":"/health","status_code":200,"duration_ms":0.589,"taskName":"Task-17"}
+{"timestamp":"2026-09-08T17:37:04.853941+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"1795bbc0-c01b-4dd2-a463-5e8c119785a5","method":"GET","path":"/auth/me","status_code":401,"duration_ms":38.047,"taskName":"Task-19"}
+{"timestamp":"2026-09-08T17:37:04.999063+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"b4b2dba8-3214-4860-b142-5b745f17ff64","method":"POST","path":"/auth/refresh","status_code":200,"duration_ms":45.271,"taskName":"Task-21"}
+{"timestamp":"2026-09-08T17:37:05.122661+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"abdb014a-c06d-4d1d-ab63-761c67fbcb27","method":"GET","path":"/auth/me","status_code":200,"duration_ms":33.158,"taskName":"Task-24"}
+INFO:     192.168.1.9:46198 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-08T17:37:05.702426+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-27","backend_pid":21696,"monotonic_ms":589090562.0}
+{"timestamp":"2026-09-08T17:37:16.824311+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"f093ec52-30cc-465d-a71a-f038ac65ddc1","method":"GET","path":"/health","status_code":200,"duration_ms":0.601,"taskName":"Task-34"}
+{"timestamp":"2026-09-08T17:37:27.148116+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.closed","message":"Voice WebSocket connection closed","taskName":"Task-31","session_id":null,"close_code":1005,"close_reason":"client_disconnect","backend_pid":21696,"monotonic_ms":589112000.0}
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 86, in send
+    await self._send(message)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 39, in sender
+    await send(message)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\protocols\websockets\websockets_sansio_impl.py", line 436, in send
+    raise ClientDisconnected()
+uvicorn.protocols.utils.ClientDisconnected
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\protocols\websockets\websockets_sansio_impl.py", line 409, in run_asgi
+    result = await self.app(self.scope, self.receive, self.send)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\applications.py", line 96, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\errors.py", line 151, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\base.py", line 103, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\routing.py", line 670, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2734, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1780, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2789, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1791, in _handle_selected
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1780, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2789, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1802, in _handle_selected
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\routing.py", line 354, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 184, in app
+    await wrap_app_handling_exceptions(app, session)(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 181, in app
+    await func(session)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 796, in app
+    await dependant.call(**solved_result.values)
+  File "C:\Users\lenovo\Desktop\voice_assistance\backend\app\api\voice.py", line 80, in voice_gateway
+    await gateway.run()
+  File "C:\Users\lenovo\Desktop\voice_assistance\backend\app\websocket\gateway.py", line 224, in run
+    await self.websocket.close(
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 181, in close
+    await self.send({"type": "websocket.close", "code": code, "reason": reason or ""})
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 89, in send
+    raise WebSocketDisconnect(code=1006)
+starlette.websockets.WebSocketDisconnect
+{"timestamp":"2026-09-08T17:38:40.291013+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"eef0d62e-c339-4928-8e80-a7faf5535bf3","method":"GET","path":"/auth/me","status_code":200,"duration_ms":6.9,"taskName":"Task-38"}
+INFO:     192.168.1.9:38092 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-08T17:38:40.752134+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-41","backend_pid":21696,"monotonic_ms":589185609.0}
+{"timestamp":"2026-09-08T17:39:35.274819+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"c40ebaf6-00b8-4cf3-a332-f4a295f877e4","method":"GET","path":"/health","status_code":200,"duration_ms":0.689,"taskName":"Task-50"}
+{"timestamp":"2026-09-08T17:40:00.212775+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.closed","message":"Voice WebSocket connection closed","taskName":"Task-45","session_id":null,"close_code":1000,"close_reason":"client_disconnect","backend_pid":21696,"monotonic_ms":589265078.0}
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 86, in send
+    await self._send(message)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 39, in sender
+    await send(message)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\protocols\websockets\websockets_sansio_impl.py", line 436, in send
+    raise ClientDisconnected()
+uvicorn.protocols.utils.ClientDisconnected
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\protocols\websockets\websockets_sansio_impl.py", line 409, in run_asgi
+    result = await self.app(self.scope, self.receive, self.send)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\applications.py", line 96, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\errors.py", line 151, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\base.py", line 103, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\routing.py", line 670, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2734, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1780, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2789, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1791, in _handle_selected
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1780, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2789, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1802, in _handle_selected
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\routing.py", line 354, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 184, in app
+    await wrap_app_handling_exceptions(app, session)(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 181, in app
+    await func(session)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 796, in app
+    await dependant.call(**solved_result.values)
+  File "C:\Users\lenovo\Desktop\voice_assistance\backend\app\api\voice.py", line 80, in voice_gateway
+    await gateway.run()
+  File "C:\Users\lenovo\Desktop\voice_assistance\backend\app\websocket\gateway.py", line 224, in run
+    await self.websocket.close(
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 181, in close
+    await self.send({"type": "websocket.close", "code": code, "reason": reason or ""})
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 89, in send
+    raise WebSocketDisconnect(code=1006)
+starlette.websockets.WebSocketDisconnect
+{"timestamp":"2026-09-08T17:40:00.354493+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"adea4da5-0369-47d6-b52e-2f987f363b50","method":"POST","path":"/auth/logout","status_code":200,"duration_ms":19.987,"taskName":"Task-54"}
+{"timestamp":"2026-09-08T17:40:09.919287+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"0643ca48-a49b-4f20-bc9d-b7a84285daf7","method":"POST","path":"/auth/login","status_code":200,"duration_ms":89.426,"taskName":"Task-57"}
+INFO:     192.168.1.9:37378 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-08T17:40:10.213174+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-61","backend_pid":21696,"monotonic_ms":589275078.0}
+{"timestamp":"2026-09-08T17:40:34.984516+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.session.started","message":"Voice session started","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","user_id":"51de3b9d-211e-414f-889b-37258b54508e","device_id":"394274ab-ebda-4020-bff0-a1dc3b36d112","stt_enabled":true,"stt_language":null,"reconnect":false,"timestamp_ms":1788889234984,"monotonic_ms":589299843.0,"backend_pid":21696}
+{"timestamp":"2026-09-08T17:40:40.818352+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.turn.started","message":"Voice turn started","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","response_id":"523af9ac-e71e-4b32-aaca-070fb43e5f1c","turn_number":1,"timestamp_ms":1788889240818,"monotonic_ms":589305671.0}
+{"timestamp":"2026-09-08T17:40:40.826894+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","sequence_no":0,"payload_bytes":640,"frames_accepted":1,"bytes_received":640,"queue_depth":19,"timestamp_ms":1788889240826,"monotonic_ms":589305687.0}
+{"timestamp":"2026-09-08T17:40:40.826894+00:00","level":"INFO","service":"voice-assistance-backend","event":"STT_AUDIO_RECEIVED","message":"STT audio started","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","response_id":"523af9ac-e71e-4b32-aaca-070fb43e5f1c","generation":0,"audio_start_timestamp_ms":1788889240826,"audio_start_monotonic_ms":589305687.0}
+{"timestamp":"2026-09-08T17:40:41.382838+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","sequence_no":50,"payload_bytes":640,"frames_accepted":51,"bytes_received":32640,"queue_depth":0,"timestamp_ms":1788889241382,"monotonic_ms":589306234.0}
+{"timestamp":"2026-09-08T17:40:42.419665+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","sequence_no":100,"payload_bytes":640,"frames_accepted":101,"bytes_received":64640,"queue_depth":2,"timestamp_ms":1788889242419,"monotonic_ms":589307281.0}
+{"timestamp":"2026-09-08T17:40:43.373168+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","sequence_no":150,"payload_bytes":640,"frames_accepted":151,"bytes_received":96640,"queue_depth":1,"timestamp_ms":1788889243373,"monotonic_ms":589308234.0}
+{"timestamp":"2026-09-08T17:40:44.177080+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.audio.commit.received","message":"Voice audio commit received","duration_ms":4035,"taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","response_id":"523af9ac-e71e-4b32-aaca-070fb43e5f1c","last_sequence_no":187,"frame_count":188,"byte_count":120320,"backend_commit_received_timestamp_ms":1788889244177,"backend_commit_received_monotonic_ms":589309031.0}
+{"timestamp":"2026-09-08T17:40:44.177080+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.turn.finalization.started","message":"Voice turn finalization started","taskName":"stt-finalize-b9348eb9-8746-438f-bd26-b4a90e351bc1","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","response_id":"523af9ac-e71e-4b32-aaca-070fb43e5f1c","timestamp_ms":1788889244177}
+{"timestamp":"2026-09-08T17:40:44.177080+00:00","level":"INFO","service":"voice-assistance-backend","event":"STT_COMMIT_RECEIVED","message":"STT finalization requested","taskName":"stt-finalize-b9348eb9-8746-438f-bd26-b4a90e351bc1","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","response_id":"523af9ac-e71e-4b32-aaca-070fb43e5f1c","generation":1,"audio_duration_ms":3760,"commit_received_timestamp_ms":1788889244177,"commit_received_monotonic_ms":589309031.0,"speech_end_timestamp_ms":1788889244177,"speech_end_monotonic_ms":589309031.0}
+{"timestamp":"2026-09-08T17:40:44.177080+00:00","level":"INFO","service":"voice-assistance-backend","event":"STT_REMOTE_REQUEST_STARTED","message":"Remote STT request started","taskName":"remote-stt-final-b9348eb9-8746-438f-bd26-b4a90e351bc1","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","response_id":"523af9ac-e71e-4b32-aaca-070fb43e5f1c","generation":1,"endpoint_host":"mixing-companion-interim-certainly.trycloudflare.com","audio_bytes":120320,"audio_duration_ms":3760.0,"request_start_timestamp_ms":1788889244177,"request_start_monotonic_ms":589309031.0}
+{"timestamp":"2026-09-08T17:40:46.619278+00:00","level":"INFO","service":"voice-assistance-backend","event":"log","message":"HTTP Request: POST https://mixing-companion-interim-certainly.trycloudflare.com/v1/audio/transcriptions \"HTTP/1.1 200 OK\"","taskName":"remote-stt-final-b9348eb9-8746-438f-bd26-b4a90e351bc1"}
+{"timestamp":"2026-09-08T17:40:46.632771+00:00","level":"INFO","service":"voice-assistance-backend","event":"STT_REMOTE_FINAL","message":"Remote STT transcription completed","status_code":200,"taskName":"remote-stt-final-b9348eb9-8746-438f-bd26-b4a90e351bc1","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","response_id":"523af9ac-e71e-4b32-aaca-070fb43e5f1c","generation":1,"endpoint_host":"mixing-companion-interim-certainly.trycloudflare.com","audio_bytes":120320,"audio_duration_ms":3760.0,"request_start_timestamp_ms":1788889244177,"request_start_monotonic_ms":589309031.0,"response_timestamp_ms":1788889246632,"response_monotonic_ms":589311484.0,"request_duration_ms":2442.0,"remote_request_latency_ms":2442.0}
+{"timestamp":"2026-09-08T17:40:46.632771+00:00","level":"INFO","service":"voice-assistance-backend","event":"STT_FINAL","message":"STT final transcript ready","taskName":"stt-finalize-b9348eb9-8746-438f-bd26-b4a90e351bc1","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","response_id":"523af9ac-e71e-4b32-aaca-070fb43e5f1c","generation":1,"text":"What can you help me today?","language":"en","final_transcript_timestamp_ms":1788889246632,"final_transcript_monotonic_ms":589311484.0,"metrics":{"audio_duration_ms":3760,"inference_duration_ms":2442.0,"confidence":null,"first_partial_latency_ms":null,"speech_end_to_final_transcript_ms":2453.0,"commit_to_final_transcript_ms":2453.0,"real_time_factor":0.6495,"monotonic_audio_start_ms":589305687.0,"monotonic_speech_end_ms":589309031.0,"monotonic_final_ms":589311484.0}}
+{"timestamp":"2026-09-08T17:40:48.361277+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.transcript.final.sent","message":"Voice transcript event sent","taskName":"stt-finalize-b9348eb9-8746-438f-bd26-b4a90e351bc1","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","response_id":"523af9ac-e71e-4b32-aaca-070fb43e5f1c","text":"What can you help me today?","language":"en","final":true,"transcript_sequence":1,"timestamp_ms":1788889248361,"transcript_timestamp_ms":1788889246632,"metrics":{"audio_duration_ms":3760,"inference_duration_ms":2442.0,"confidence":null,"first_partial_latency_ms":null,"speech_end_to_final_transcript_ms":2453.0,"commit_to_final_transcript_ms":2453.0,"real_time_factor":0.6495,"monotonic_audio_start_ms":589305687.0,"monotonic_speech_end_ms":589309031.0,"monotonic_final_ms":589311484.0}}
+{"timestamp":"2026-09-08T17:40:48.361277+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.transcript.final.delivered","message":"Voice final transcript delivered","taskName":"stt-finalize-b9348eb9-8746-438f-bd26-b4a90e351bc1","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","response_id":"523af9ac-e71e-4b32-aaca-070fb43e5f1c","text":"What can you help me today?","language":"en","timestamp_ms":1788889248361,"transcript_timestamp_ms":1788889246632,"monotonic_ms":589313218.0,"metrics":{"audio_duration_ms":3760,"inference_duration_ms":2442.0,"confidence":null,"first_partial_latency_ms":null,"speech_end_to_final_transcript_ms":2453.0,"commit_to_final_transcript_ms":2453.0,"real_time_factor":0.6495,"monotonic_audio_start_ms":589305687.0,"monotonic_speech_end_ms":589309031.0,"monotonic_final_ms":589311484.0}}
+{"timestamp":"2026-09-08T17:40:48.968303+00:00","level":"INFO","service":"voice-assistance-backend","event":"log","message":"HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions \"HTTP/1.1 200 OK\"","taskName":"stt-finalize-b9348eb9-8746-438f-bd26-b4a90e351bc1"}
+{"timestamp":"2026-09-08T17:40:51.151345+00:00","level":"INFO","service":"voice-assistance-backend","event":"llm.response.completed","message":"LLM response completed","taskName":"stt-finalize-b9348eb9-8746-438f-bd26-b4a90e351bc1","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"b9348eb9-8746-438f-bd26-b4a90e351bc1","response_id":"523af9ac-e71e-4b32-aaca-070fb43e5f1c","provider":"nvidia","configured_model":"nvidia/nemotron-3-super-120b-a12b","returned_model":"nvidia/nemotron-3-super-120b-a12b","provider_request_id":"chatcmpl-c188a7b1-2f73-403f-be53-d1e7a8a4d56e","finish_reason":"stop","usage":null,"attempt_count":1,"latency":{"request_to_first_event_ms":1734.0,"request_to_first_text_ms":1734.0,"request_to_completion_ms":2563.0,"request_to_tool_call_ms":null,"tool_execution_duration_ms":null,"tool_result_to_resumed_first_text_ms":null,"total_orchestration_ms":2563.0}}
+{"timestamp":"2026-09-08T17:41:20.690050+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.turn.started","message":"Voice turn started","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","response_id":"6b9eaa0b-411b-49d0-ba0e-e0715d229fac","turn_number":2,"timestamp_ms":1788889280690,"monotonic_ms":589345546.0}
+{"timestamp":"2026-09-08T17:41:21.976813+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","sequence_no":0,"payload_bytes":640,"frames_accepted":189,"bytes_received":120960,"queue_depth":87,"timestamp_ms":1788889281976,"monotonic_ms":589346828.0}
+{"timestamp":"2026-09-08T17:41:21.991555+00:00","level":"INFO","service":"voice-assistance-backend","event":"STT_AUDIO_RECEIVED","message":"STT audio started","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","response_id":"6b9eaa0b-411b-49d0-ba0e-e0715d229fac","generation":0,"audio_start_timestamp_ms":1788889281991,"audio_start_monotonic_ms":589346843.0}
+{"timestamp":"2026-09-08T17:41:21.992327+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","sequence_no":50,"payload_bytes":640,"frames_accepted":239,"bytes_received":152960,"queue_depth":37,"timestamp_ms":1788889281992,"monotonic_ms":589346843.0}
+{"timestamp":"2026-09-08T17:41:22.225332+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","sequence_no":100,"payload_bytes":640,"frames_accepted":289,"bytes_received":184960,"queue_depth":0,"timestamp_ms":1788889282225,"monotonic_ms":589347078.0}
+{"timestamp":"2026-09-08T17:41:23.224515+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","sequence_no":150,"payload_bytes":640,"frames_accepted":339,"bytes_received":216960,"queue_depth":1,"timestamp_ms":1788889283224,"monotonic_ms":589348078.0}
+{"timestamp":"2026-09-08T17:41:24.243301+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","sequence_no":200,"payload_bytes":640,"frames_accepted":389,"bytes_received":248960,"queue_depth":0,"timestamp_ms":1788889284241,"monotonic_ms":589349093.0}
+{"timestamp":"2026-09-08T17:41:25.216595+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.pcm.accepted","message":"Voice PCM frame accepted","taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","sequence_no":250,"payload_bytes":640,"frames_accepted":439,"bytes_received":280960,"queue_depth":1,"timestamp_ms":1788889285216,"monotonic_ms":589350078.0}
+{"timestamp":"2026-09-08T17:41:25.426049+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.audio.commit.received","message":"Voice audio commit received","duration_ms":5346,"taskName":"Task-63","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","response_id":"6b9eaa0b-411b-49d0-ba0e-e0715d229fac","last_sequence_no":259,"frame_count":260,"byte_count":166400,"backend_commit_received_timestamp_ms":1788889285426,"backend_commit_received_monotonic_ms":589350281.0}
+{"timestamp":"2026-09-08T17:41:25.433442+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.turn.finalization.started","message":"Voice turn finalization started","taskName":"stt-finalize-a7f6a98b-9635-4239-a7c5-6ff2084a8c20","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","response_id":"6b9eaa0b-411b-49d0-ba0e-e0715d229fac","timestamp_ms":1788889285433}
+{"timestamp":"2026-09-08T17:41:25.438492+00:00","level":"INFO","service":"voice-assistance-backend","event":"STT_COMMIT_RECEIVED","message":"STT finalization requested","taskName":"stt-finalize-a7f6a98b-9635-4239-a7c5-6ff2084a8c20","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","response_id":"6b9eaa0b-411b-49d0-ba0e-e0715d229fac","generation":1,"audio_duration_ms":5200,"commit_received_timestamp_ms":1788889285438,"commit_received_monotonic_ms":589350296.0,"speech_end_timestamp_ms":1788889285438,"speech_end_monotonic_ms":589350296.0}
+{"timestamp":"2026-09-08T17:41:25.438492+00:00","level":"INFO","service":"voice-assistance-backend","event":"STT_REMOTE_REQUEST_STARTED","message":"Remote STT request started","taskName":"remote-stt-final-a7f6a98b-9635-4239-a7c5-6ff2084a8c20","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","response_id":"6b9eaa0b-411b-49d0-ba0e-e0715d229fac","generation":1,"endpoint_host":"mixing-companion-interim-certainly.trycloudflare.com","audio_bytes":166400,"audio_duration_ms":5200.0,"request_start_timestamp_ms":1788889285438,"request_start_monotonic_ms":589350296.0}
+{"timestamp":"2026-09-08T17:41:27.051102+00:00","level":"INFO","service":"voice-assistance-backend","event":"log","message":"HTTP Request: POST https://mixing-companion-interim-certainly.trycloudflare.com/v1/audio/transcriptions \"HTTP/1.1 200 OK\"","taskName":"remote-stt-final-a7f6a98b-9635-4239-a7c5-6ff2084a8c20"}
+{"timestamp":"2026-09-08T17:41:27.053107+00:00","level":"INFO","service":"voice-assistance-backend","event":"STT_REMOTE_FINAL","message":"Remote STT transcription completed","status_code":200,"taskName":"remote-stt-final-a7f6a98b-9635-4239-a7c5-6ff2084a8c20","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","response_id":"6b9eaa0b-411b-49d0-ba0e-e0715d229fac","generation":1,"endpoint_host":"mixing-companion-interim-certainly.trycloudflare.com","audio_bytes":166400,"audio_duration_ms":5200.0,"request_start_timestamp_ms":1788889285438,"request_start_monotonic_ms":589350296.0,"response_timestamp_ms":1788889287053,"response_monotonic_ms":589351906.0,"request_duration_ms":1614.7,"remote_request_latency_ms":1614.7}
+{"timestamp":"2026-09-08T17:41:27.053107+00:00","level":"INFO","service":"voice-assistance-backend","event":"STT_FINAL","message":"STT final transcript ready","taskName":"stt-finalize-a7f6a98b-9635-4239-a7c5-6ff2084a8c20","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","response_id":"6b9eaa0b-411b-49d0-ba0e-e0715d229fac","generation":1,"text":"What is the current time in India?","language":"en","final_transcript_timestamp_ms":1788889287053,"final_transcript_monotonic_ms":589351906.0,"metrics":{"audio_duration_ms":5200,"inference_duration_ms":1614.7,"confidence":null,"first_partial_latency_ms":null,"speech_end_to_final_transcript_ms":1610.0,"commit_to_final_transcript_ms":1610.0,"real_time_factor":0.3105,"monotonic_audio_start_ms":589346843.0,"monotonic_speech_end_ms":589350296.0,"monotonic_final_ms":589351906.0}}
+{"timestamp":"2026-09-08T17:41:28.768011+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.transcript.final.sent","message":"Voice transcript event sent","taskName":"stt-finalize-a7f6a98b-9635-4239-a7c5-6ff2084a8c20","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","response_id":"6b9eaa0b-411b-49d0-ba0e-e0715d229fac","text":"What is the current time in India?","language":"en","final":true,"transcript_sequence":1,"timestamp_ms":1788889288768,"transcript_timestamp_ms":1788889287053,"metrics":{"audio_duration_ms":5200,"inference_duration_ms":1614.7,"confidence":null,"first_partial_latency_ms":null,"speech_end_to_final_transcript_ms":1610.0,"commit_to_final_transcript_ms":1610.0,"real_time_factor":0.3105,"monotonic_audio_start_ms":589346843.0,"monotonic_speech_end_ms":589350296.0,"monotonic_final_ms":589351906.0}}
+{"timestamp":"2026-09-08T17:41:28.768011+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.transcript.final.delivered","message":"Voice final transcript delivered","taskName":"stt-finalize-a7f6a98b-9635-4239-a7c5-6ff2084a8c20","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","response_id":"6b9eaa0b-411b-49d0-ba0e-e0715d229fac","text":"What is the current time in India?","language":"en","timestamp_ms":1788889288768,"transcript_timestamp_ms":1788889287053,"monotonic_ms":589353625.0,"metrics":{"audio_duration_ms":5200,"inference_duration_ms":1614.7,"confidence":null,"first_partial_latency_ms":null,"speech_end_to_final_transcript_ms":1610.0,"commit_to_final_transcript_ms":1610.0,"real_time_factor":0.3105,"monotonic_audio_start_ms":589346843.0,"monotonic_speech_end_ms":589350296.0,"monotonic_final_ms":589351906.0}}
+{"timestamp":"2026-09-08T17:41:29.222242+00:00","level":"INFO","service":"voice-assistance-backend","event":"log","message":"HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions \"HTTP/1.1 200 OK\"","taskName":"stt-finalize-a7f6a98b-9635-4239-a7c5-6ff2084a8c20"}
+{"timestamp":"2026-09-08T17:41:29.739652+00:00","level":"INFO","service":"voice-assistance-backend","event":"log","message":"HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions \"HTTP/1.1 200 OK\"","taskName":"stt-finalize-a7f6a98b-9635-4239-a7c5-6ff2084a8c20"}
+{"timestamp":"2026-09-08T17:41:30.495563+00:00","level":"INFO","service":"voice-assistance-backend","event":"log","message":"HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions \"HTTP/1.1 200 OK\"","taskName":"stt-finalize-a7f6a98b-9635-4239-a7c5-6ff2084a8c20"}
+{"timestamp":"2026-09-08T17:41:33.442399+00:00","level":"INFO","service":"voice-assistance-backend","event":"log","message":"HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions \"HTTP/1.1 200 OK\"","taskName":"stt-finalize-a7f6a98b-9635-4239-a7c5-6ff2084a8c20"}
+{"timestamp":"2026-09-08T17:41:33.961691+00:00","level":"INFO","service":"voice-assistance-backend","event":"log","message":"HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions \"HTTP/1.1 200 OK\"","taskName":"stt-finalize-a7f6a98b-9635-4239-a7c5-6ff2084a8c20"}
+{"timestamp":"2026-09-08T17:41:34.689307+00:00","level":"INFO","service":"voice-assistance-backend","event":"log","message":"HTTP Request: POST https://integrate.api.nvidia.com/v1/chat/completions \"HTTP/1.1 200 OK\"","taskName":"stt-finalize-a7f6a98b-9635-4239-a7c5-6ff2084a8c20"}
+{"timestamp":"2026-09-08T17:41:34.738958+00:00","level":"WARNING","service":"voice-assistance-backend","event":"llm.response.failed","message":"LLM response failed","taskName":"stt-finalize-a7f6a98b-9635-4239-a7c5-6ff2084a8c20","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","turn_id":"a7f6a98b-9635-4239-a7c5-6ff2084a8c20","response_id":"6b9eaa0b-411b-49d0-ba0e-e0715d229fac","provider":"nvidia","configured_model":"nvidia/nemotron-3-super-120b-a12b","error_code":"llm_provider_error","attempt_count":3,"latency":{"request_to_first_event_ms":4218.0,"request_to_first_text_ms":null,"request_to_completion_ms":5765.0,"request_to_tool_call_ms":4250.0,"tool_execution_duration_ms":0.0,"tool_result_to_resumed_first_text_ms":null,"total_orchestration_ms":5765.0}}
+{"timestamp":"2026-09-08T17:42:12.331256+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.closed","message":"Voice WebSocket connection closed","taskName":"Task-65","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","close_code":1005,"close_reason":"client_disconnect","backend_pid":21696,"monotonic_ms":589397187.0}
+{"timestamp":"2026-09-08T17:42:13.196841+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.session.registry.released","message":"Voice session registry released","taskName":"Task-61","session_id":"e35ef926-075f-4707-a47a-49ffbbcb18ef","user_id":"51de3b9d-211e-414f-889b-37258b54508e","device_id":"394274ab-ebda-4020-bff0-a1dc3b36d112","timestamp_ms":1788889333196,"monotonic_ms":589398046.0}
+INFO:     192.168.1.9:37250 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-08T17:43:01.523478+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-147","backend_pid":21696,"monotonic_ms":589446375.0}
+{"timestamp":"2026-09-08T17:43:01.542867+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.closed","message":"Voice WebSocket connection closed","taskName":"Task-151","session_id":null,"close_code":1008,"close_reason":"client_disconnect","backend_pid":21696,"monotonic_ms":589446406.0}
+INFO:     192.168.1.9:37256 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-08T17:43:02.750753+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-154","backend_pid":21696,"monotonic_ms":589447609.0}
+{"timestamp":"2026-09-08T17:48:00.337476+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.closed","message":"Voice WebSocket connection closed","taskName":"Task-158","session_id":null,"close_code":1005,"close_reason":"client_disconnect","backend_pid":21696,"monotonic_ms":589745203.0}
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 86, in send
+    await self._send(message)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 39, in sender
+    await send(message)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\protocols\websockets\websockets_sansio_impl.py", line 436, in send
+    raise ClientDisconnected()
+uvicorn.protocols.utils.ClientDisconnected
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\protocols\websockets\websockets_sansio_impl.py", line 409, in run_asgi
+    result = await self.app(self.scope, self.receive, self.send)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\applications.py", line 96, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\errors.py", line 151, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\base.py", line 103, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\routing.py", line 670, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2734, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1780, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2789, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1791, in _handle_selected
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1780, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2789, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1802, in _handle_selected
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\routing.py", line 354, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 184, in app
+    await wrap_app_handling_exceptions(app, session)(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 181, in app
+    await func(session)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 796, in app
+    await dependant.call(**solved_result.values)
+  File "C:\Users\lenovo\Desktop\voice_assistance\backend\app\api\voice.py", line 80, in voice_gateway
+    await gateway.run()
+  File "C:\Users\lenovo\Desktop\voice_assistance\backend\app\websocket\gateway.py", line 224, in run
+    await self.websocket.close(
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 181, in close
+    await self.send({"type": "websocket.close", "code": code, "reason": reason or ""})
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 89, in send
+    raise WebSocketDisconnect(code=1006)
+starlette.websockets.WebSocketDisconnect
+INFO:     192.168.1.9:37934 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-08T17:49:08.579445+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-180","backend_pid":21696,"monotonic_ms":589813437.0}

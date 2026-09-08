@@ -135,16 +135,14 @@ class VoiceGateway:
             settings,
             llm_service,
             self.tool_registry,
-            idempotency_store=tool_idempotency_store
-            or PostgresToolIdempotencyStore(db),
+            idempotency_store=tool_idempotency_store or PostgresToolIdempotencyStore(db),
         )
         self.persistence = VoicePersistence()
         self.registry = VoiceRegistry(
             websocket.app.state.infrastructure.redis,
             ttl_seconds=settings.voice_max_session_seconds + settings.voice_reconnect_grace_seconds,
             lease_ttl_seconds=(
-                settings.voice_heartbeat_timeout_seconds
-                + settings.voice_reconnect_grace_seconds
+                settings.voice_heartbeat_timeout_seconds + settings.voice_reconnect_grace_seconds
             ),
         )
         self.confirmation_store = confirmation_store or RedisVoiceConfirmationStore(
@@ -169,6 +167,7 @@ class VoiceGateway:
         self.stt_turn: STTTurn | None = None
         self._stt_event_task: asyncio.Task[None] | None = None
         self._stt_finalize_task: asyncio.Task[None] | None = None
+        self._retry_response_task: asyncio.Task[None] | None = None
         self._stt_finalize_cancel_requested = False
         self._stt_enabled = False
         self._stt_language: str | None = None
@@ -622,9 +621,7 @@ class VoiceGateway:
                 try:
                     stt_result = await stt_turn.finalize()
                     if not stt_result.event.text.strip():
-                        raise STTEmptyTranscriptError(
-                            "STT returned an empty transcript"
-                        )
+                        raise STTEmptyTranscriptError("STT returned an empty transcript")
                 except STTCancelledError:
                     if self._stt_finalize_cancel_requested or self._closing.is_set():
                         return
@@ -775,9 +772,17 @@ class VoiceGateway:
         tool_execution_started_at: float | None = None
         tool_execution_finished_at: float | None = None
 
-        def on_tool_execution_started(_call, timestamp: float) -> None:
+        async def on_tool_execution_started(call, timestamp: float) -> None:
             nonlocal tool_execution_started_at
             tool_execution_started_at = tool_execution_started_at or timestamp
+            await self._send_tool_status(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                tool_call_id=call.tool_call_id,
+                tool_name=call.name,
+                status="executing",
+            )
 
         def on_tool_execution_finished(_call, timestamp: float) -> None:
             nonlocal tool_execution_finished_at
@@ -836,10 +841,34 @@ class VoiceGateway:
                     )
                     continue
                 if event.event_type.startswith("tool_call_"):
-                    # Tool-loop events stay server-side. Only confirmed final
-                    # assistant text is forwarded to the mobile client.
                     if event.event_type == "tool_call_completed":
                         tool_call_at = tool_call_at or event.monotonic_seconds
+                        if event.tool_call is not None:
+                            await self._send_tool_status(
+                                session_id=session_id,
+                                turn_id=turn_id,
+                                response_id=response_id,
+                                tool_call_id=event.tool_call.tool_call_id,
+                                tool_name=event.tool_call.name,
+                                status="understanding",
+                            )
+                    continue
+                if event.event_type.startswith("tool_execution_"):
+                    if event.tool_call is not None:
+                        status = (
+                            "success"
+                            if event.event_type == "tool_execution_completed"
+                            else ("cancelled" if event.error_code == "llm_cancelled" else "failed")
+                        )
+                        await self._send_tool_status(
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            response_id=response_id,
+                            tool_call_id=event.tool_call.tool_call_id,
+                            tool_name=event.tool_call.name,
+                            status=status,
+                            error_code=event.error_code,
+                        )
                     continue
                 if event.event_type == "confirmation_required":
                     return {"status": "confirmation_required"}
@@ -895,9 +924,7 @@ class VoiceGateway:
                         "provider": provider,
                         "configured_model": configured_model,
                         "returned_model": (
-                            terminal_event.returned_model
-                            if terminal_event is not None
-                            else None
+                            terminal_event.returned_model if terminal_event is not None else None
                         ),
                         "provider_request_id": (
                             terminal_event.provider_request_id
@@ -1032,6 +1059,32 @@ class VoiceGateway:
         )
         return {"status": "completed", "metrics": metrics}
 
+    async def _send_tool_status(
+        self,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        tool_call_id: str,
+        tool_name: str,
+        status: str,
+        confirmation_id: uuid.UUID | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        await self._send(
+            server_event(
+                "tool.status",
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                tool_status=status,
+                confirmation_id=confirmation_id,
+                error_code=error_code,
+            )
+        )
+
     async def _persist_confirmation_request(
         self,
         call,
@@ -1117,6 +1170,7 @@ class VoiceGateway:
             turn_id=stored.original_turn_id,
             response_id=stored.original_response_id,
             confirmation_id=stored.confirmation_id,
+            tool_call_id=stored.tool_call_id,
             tool_name=stored.tool_name,
             validated_arguments=stored.validated_tool_arguments,
             timezone=stored.user_timezone,
@@ -1198,6 +1252,16 @@ class VoiceGateway:
         if pending.status == "EXPIRED" or pending.is_expired():
             if pending.status == "PENDING":
                 await store.transition(scope, pending.confirmation_id, "EXPIRED")
+            await self._send_tool_status(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                tool_call_id=pending.tool_call_id,
+                tool_name=pending.tool_name,
+                status="failed",
+                confirmation_id=pending.confirmation_id,
+                error_code="llm_tool_confirmation_expired",
+            )
             text = "That confirmation has expired. Please make the request again."
             await self._send_confirmation_response(
                 session_id=session_id,
@@ -1239,6 +1303,15 @@ class VoiceGateway:
 
         if resolution == "REJECTED":
             await store.transition(scope, pending.confirmation_id, "REJECTED")
+            await self._send_tool_status(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                tool_call_id=pending.tool_call_id,
+                tool_name=pending.tool_name,
+                status="cancelled",
+                confirmation_id=pending.confirmation_id,
+            )
             text = "Okay, I won't create that reminder."
             await self._send_confirmation_response(
                 session_id=session_id,
@@ -1262,6 +1335,16 @@ class VoiceGateway:
         if claimed is None:
             latest = await store.get(scope)
             status = latest.status if latest is not None else "CANCELLED"
+            await self._send_tool_status(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                tool_call_id=pending.tool_call_id,
+                tool_name=pending.tool_name,
+                status="failed" if status == "EXPIRED" else "cancelled",
+                confirmation_id=pending.confirmation_id,
+                error_code=("llm_tool_confirmation_expired" if status == "EXPIRED" else None),
+            )
             text = (
                 "That confirmation has expired. Please make the request again."
                 if status == "EXPIRED"
@@ -1291,6 +1374,16 @@ class VoiceGateway:
             or claimed.session_id != session_id
         ):
             await store.transition(scope, claimed.confirmation_id, "CANCELLED")
+            await self._send_tool_status(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                tool_call_id=claimed.tool_call_id,
+                tool_name=claimed.tool_name,
+                status="failed",
+                confirmation_id=claimed.confirmation_id,
+                error_code="llm_tool_confirmation_scope_invalid",
+            )
             text = "I couldn't verify that confirmation. Please make the request again."
             await self._send_confirmation_response(
                 session_id=session_id,
@@ -1322,6 +1415,27 @@ class VoiceGateway:
             ),
             arguments=claimed.validated_tool_arguments,
         )
+
+        async def on_confirmation_execution_started(_call, _timestamp: float) -> None:
+            await self._send_tool_status(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                tool_call_id=claimed.tool_call_id,
+                tool_name=claimed.tool_name,
+                status="executing",
+                confirmation_id=claimed.confirmation_id,
+            )
+
+        await self._send_tool_status(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            tool_call_id=claimed.tool_call_id,
+            tool_name=claimed.tool_name,
+            status="approved",
+            confirmation_id=claimed.confirmation_id,
+        )
         context = ToolExecutionContext(
             user_id=self.principal.user_id,
             session_id=session_id,
@@ -1333,6 +1447,7 @@ class VoiceGateway:
             clock=self._application_clock(),
             user_timezone=claimed.user_timezone,
             cancellation_check=lambda: not self.cancel_guard.can_emit(response_id),
+            tool_execution_started=on_confirmation_execution_started,
         )
         result = await self.tool_loop.executor.execute(call, context=context)
         if result.success:
@@ -1348,6 +1463,22 @@ class VoiceGateway:
             claimed.confirmation_id,
             status,
             result_content=result.content,
+        )
+        await self._send_tool_status(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            tool_call_id=claimed.tool_call_id,
+            tool_name=claimed.tool_name,
+            status=(
+                "success"
+                if result.success
+                else "cancelled"
+                if result.error_code == "llm_cancelled"
+                else "failed"
+            ),
+            confirmation_id=claimed.confirmation_id,
+            error_code=result.error_code,
         )
         await self._send_confirmation_response(
             session_id=session_id,
@@ -1448,9 +1579,7 @@ class VoiceGateway:
                     "authorization_at_execution": (
                         "PASS" if execution_success is not False else "PASS"
                     ),
-                    "idempotency_key": [
-                        str(value) for value in pending.idempotency_key
-                    ],
+                    "idempotency_key": [str(value) for value in pending.idempotency_key],
                     "tool_execution_count": execution_count,
                     "replayed": replayed,
                     "final_response": final_response,
@@ -1644,7 +1773,7 @@ class VoiceGateway:
                 retry=True,
             )
         )
-        asyncio.create_task(
+        self._retry_response_task = asyncio.create_task(
             self._finish_retry_response(
                 session_id=self.voice_session.id,
                 turn_id=turn.id,
@@ -1697,6 +1826,9 @@ class VoiceGateway:
                     retryable=True,
                 )
             )
+        finally:
+            if self._retry_response_task is asyncio.current_task():
+                self._retry_response_task = None
 
     async def _handle_response_cancel(self, message: ResponseCancelMessage) -> None:
         self._require_session()
@@ -1728,6 +1860,15 @@ class VoiceGateway:
             # A completed action-request response has no active cancellation
             # guard. It still must be possible to cancel its pending mutation.
             if not self.cancel_guard.can_emit(message.response_id):
+                await self._send_tool_status(
+                    session_id=self.voice_session.id,
+                    turn_id=pending_confirmation.original_turn_id,
+                    response_id=message.response_id,
+                    tool_call_id=pending_confirmation.tool_call_id,
+                    tool_name=pending_confirmation.tool_name,
+                    status="cancelled",
+                    confirmation_id=pending_confirmation.confirmation_id,
+                )
                 await self._send(
                     server_event(
                         "confirmation.resolved",
@@ -1794,9 +1935,7 @@ class VoiceGateway:
                 metadata={
                     "llm": {
                         "status": "cancelled",
-                        "provider": (
-                            provider_info.provider if provider_info is not None else None
-                        ),
+                        "provider": (provider_info.provider if provider_info is not None else None),
                         "configured_model": (
                             provider_info.configured_model if provider_info is not None else None
                         ),
@@ -1957,10 +2096,25 @@ class VoiceGateway:
         self._closing.set()
         self._log_connection_closed()
         current = asyncio.current_task()
-        for task in (self._processor_task, self._watchdog_task, self._receive_task):
+        gateway_tasks = [
+            task
+            for task in (self._processor_task, self._watchdog_task, self._receive_task)
+            if task is not None and task is not current
+        ]
+        for task in gateway_tasks:
             if task is not None and task is not current and not task.done():
                 task.cancel()
+        if gateway_tasks:
+            # Do not let the route's database-session context close while a
+            # cancelled processor still owns work that can touch that session.
+            await asyncio.gather(*gateway_tasks, return_exceptions=True)
         await self._cancel_stt_finalize_task()
+        retry_task = self._retry_response_task
+        self._retry_response_task = None
+        if retry_task is not None and retry_task is not current:
+            if not retry_task.done():
+                retry_task.cancel()
+            await asyncio.gather(retry_task, return_exceptions=True)
         if self.stt_turn is not None:
             await self._close_stt_turn(cancel=True)
         await self._finalize_active_turn()

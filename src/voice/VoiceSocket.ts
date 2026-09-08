@@ -74,6 +74,9 @@ export const VOICE_SERVER_EVENT_TYPES = [
   'llm.response.failed',
   'llm.response.completed',
   'voice.confirmation.required',
+  'confirmation.required',
+  'confirmation.resolved',
+  'tool.status',
   'response.cancelled',
   'server.pong',
   'server.error',
@@ -222,6 +225,9 @@ const RESPONSE_SCOPED_EVENTS = new Set<VoiceServerEventType>([
   'llm.response.failed',
   'llm.response.completed',
   'voice.confirmation.required',
+  'confirmation.required',
+  'confirmation.resolved',
+  'tool.status',
   'response.cancelled',
 ]);
 
@@ -245,10 +251,20 @@ const TURN_SCOPED_EVENTS = new Set<VoiceServerEventType>([
   'llm.response.failed',
   'llm.response.completed',
   'voice.confirmation.required',
+  'confirmation.required',
+  'confirmation.resolved',
+  'tool.status',
   'response.cancelled',
 ]);
 
 const KNOWN_EVENT_TYPES = new Set<string>(VOICE_SERVER_EVENT_TYPES);
+const EVENTS_ALLOWED_DURING_CONNECTION_TRANSITION =
+  new Set<VoiceServerEventType>([
+    'server.error',
+    'server.session.ended',
+    'voice.session.stale.reaped',
+  ]);
+const TERMINAL_SESSION_ERROR_CODES = new Set(['session_not_available']);
 
 const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
   connect: connectVoiceGateway,
@@ -952,6 +968,10 @@ export class VoiceSocket {
       ].includes(nativeState);
 
     if (connected) {
+      const connectionBecameConnected =
+        this.snapshot.connection !== 'connected';
+      const sessionIsStable =
+        status.sessionStarted && nativeState === 'SESSION_READY';
       this.hadConnected = true;
       if (status.sessionStarted) {
         this.sessionStartInFlight = false;
@@ -959,8 +979,9 @@ export class VoiceSocket {
       this.setSnapshot({
         connection: 'connected',
         heartbeat: this.snapshot.heartbeat === 'missed' ? 'unknown' : 'healthy',
-        reconnectAttempt: 0,
         error: null,
+        ...(connectionBecameConnected ? { lastHeartbeatAtMs: this.now() } : {}),
+        ...(sessionIsStable ? { reconnectAttempt: 0 } : {}),
         ...(status.sessionStarted
           ? { session: 'ready' as VoiceSessionState }
           : {}),
@@ -1071,6 +1092,7 @@ export class VoiceSocket {
         connection: 'connected',
         heartbeat: 'healthy',
         lastHeartbeatAtMs: receivedAtMs,
+        reconnectAttempt: 0,
         error: null,
       });
       return;
@@ -1088,6 +1110,7 @@ export class VoiceSocket {
           session: 'ready',
           heartbeat: 'healthy',
           lastHeartbeatAtMs: receivedAtMs,
+          reconnectAttempt: 0,
           error: null,
         });
         break;
@@ -1233,6 +1256,10 @@ export class VoiceSocket {
         });
         break;
       case 'server.error':
+        if (isTerminalSessionError(event.errorCode)) {
+          this.handleUnavailableSession();
+          break;
+        }
         const serverError = mapTranscriptError(event.errorCode);
         if (event.turnId || this.snapshot.turnId) {
           this.markCurrentTranscriptError(event.errorCode);
@@ -1253,6 +1280,43 @@ export class VoiceSocket {
         break;
       default:
         break;
+    }
+  }
+
+  private handleUnavailableSession(): void {
+    this.retireCorrelation(
+      this.snapshot.sessionId,
+      this.snapshot.turnId,
+      this.snapshot.responseId,
+    );
+    this.clearConversationState();
+    this.sessionStartInFlight = false;
+    this.desiredSession = false;
+    this.turnStartedAtMs = null;
+    this.speechEndedAtMs = null;
+    this.stopMicrophoneSafely().catch(() => undefined);
+
+    const shouldReconnect = this.desiredConnection && !this.explicitStop;
+    this.allowAutoReconnect = shouldReconnect;
+    this.setSnapshot({
+      connection: shouldReconnect ? 'reconnecting' : 'failed',
+      session: 'idle',
+      turn: 'idle',
+      heartbeat: 'unknown',
+      sessionId: null,
+      turnId: null,
+      responseId: null,
+      speechDetected: false,
+      transcriptMessages: [],
+      transcriptError: null,
+      lastHeartbeatAtMs: null,
+      error: shouldReconnect
+        ? 'The previous voice session expired. Reconnecting safely…'
+        : 'The previous voice session expired. Start a new session.',
+    });
+
+    if (shouldReconnect && !this.reconnectTimer) {
+      this.scheduleReconnect('stale-session');
     }
   }
 
@@ -1544,7 +1608,10 @@ export class VoiceSocket {
   }
 
   private isStaleEvent(event: NormalizedVoiceEvent): boolean {
-    if (this.snapshot.connection !== 'connected') {
+    if (
+      this.snapshot.connection !== 'connected' &&
+      !EVENTS_ALLOWED_DURING_CONNECTION_TRANSITION.has(event.type)
+    ) {
       return true;
     }
     if (event.sessionId && this.retiredSessionIds.has(event.sessionId)) {
@@ -1700,6 +1767,8 @@ export class VoiceSocket {
       error:
         reason === 'heartbeat'
           ? 'Voice connection is recovering…'
+          : reason === 'stale-session'
+          ? 'The previous voice session expired. Reconnecting safely…'
           : 'Voice connection lost. Reconnecting…',
     });
     this.reconnectTimer = setTimeout(() => {
@@ -1873,7 +1942,64 @@ function readAssistantEvent(
     };
   }
 
+  if (type === 'tool.status' || type === 'confirmation.required') {
+    const toolCallId = readString(
+      record.toolCallId ?? record.tool_call_id,
+      MAX_ID_LENGTH,
+    );
+    const name = readString(record.toolName ?? record.tool_name, MAX_ID_LENGTH);
+    const rawStatus =
+      type === 'confirmation.required'
+        ? 'confirmation_required'
+        : readString(record.toolStatus ?? record.tool_status, 32);
+    if (
+      !turnId ||
+      !responseId ||
+      !toolCallId ||
+      !name ||
+      !isConversationToolStatus(rawStatus)
+    ) {
+      return null;
+    }
+    return {
+      type: 'tool.status',
+      sessionId,
+      turnId,
+      responseId,
+      toolCallId,
+      name,
+      status: rawStatus,
+      result: null,
+      confirmationId: readString(
+        record.confirmationId ?? record.confirmation_id,
+        MAX_ID_LENGTH,
+      ),
+      errorCode: readString(
+        record.errorCode ?? record.error_code,
+        MAX_ID_LENGTH,
+      ),
+      timestampMs,
+    };
+  }
+
   return null;
+}
+
+function isConversationToolStatus(
+  value: string | null,
+): value is Extract<VoiceEvent, { type: 'tool.status' }>['status'] {
+  return Boolean(
+    value &&
+      [
+        'understanding',
+        'confirmation_required',
+        'approved',
+        'executing',
+        'success',
+        'failed',
+        'cancelled',
+      ].includes(value),
+  );
 }
 
 function readMetrics(value: unknown): Record<string, number | null> {
@@ -2006,6 +2132,10 @@ function isTransportConnected(status: VoiceGatewayStatus): boolean {
       'STREAMING_AUDIO',
     ].includes(status.state.toUpperCase())
   );
+}
+
+function isTerminalSessionError(code: string | undefined): boolean {
+  return Boolean(code && TERMINAL_SESSION_ERROR_CODES.has(code.toLowerCase()));
 }
 
 const MAX_TRANSCRIPT_LENGTH = 16 * 1024;

@@ -58,10 +58,13 @@ def test_informational_and_ordinary_voice_intent_remains_auto(prompt: str) -> No
 
 
 def test_routing_requires_registered_create_task_tool() -> None:
-    assert classify_voice_tool_choice(
-        "Remind me to call Rahul tomorrow at 9 AM.",
-        (),
-    ) == "auto"
+    assert (
+        classify_voice_tool_choice(
+            "Remind me to call Rahul tomorrow at 9 AM.",
+            (),
+        )
+        == "auto"
+    )
 
 
 def test_named_tool_choice_cannot_reference_an_unregistered_tool() -> None:

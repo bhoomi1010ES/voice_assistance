@@ -1,0 +1,90 @@
+INFO:     Started server process [21200]
+INFO:     Waiting for application startup.
+{"timestamp":"2026-09-08T18:06:08.089065+00:00","level":"INFO","service":"voice-assistance-backend","event":"STT_ENGINE_STARTED","message":"Remote STT engine ready","taskName":"Task-2","engine":"remote","runtime":"httpx","endpoint_host":"mixing-companion-interim-certainly.trycloudflare.com","language":"en","partials_supported":false}
+{"timestamp":"2026-09-08T18:06:08.351301+00:00","level":"INFO","service":"voice-assistance-backend","event":"llm.provider.initialized","message":"LLM provider initialized","taskName":"Task-2","provider":"nvidia","provider_host":"https://integrate.api.nvidia.com","configured_model":"nvidia/nemotron-3-super-120b-a12b","api_family":"openai_chat_completions","live_verified":false}
+{"timestamp":"2026-09-08T18:06:08.358212+00:00","level":"INFO","service":"voice-assistance-backend","event":"service.started","message":"application started","taskName":"Task-2"}
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+{"timestamp":"2026-09-08T18:06:12.173356+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"89864c55-84d7-4f5b-9788-5db7625ac181","method":"GET","path":"/health","status_code":200,"duration_ms":44.373,"taskName":"Task-6"}
+INFO:     192.168.1.9:48270 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-08T18:06:29.480386+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-8","backend_pid":21200,"monotonic_ms":590854343.0}
+{"timestamp":"2026-09-08T18:06:39.297119+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.closed","message":"Voice WebSocket connection closed","taskName":"Task-13","session_id":null,"close_code":1005,"close_reason":"client_disconnect","backend_pid":21200,"monotonic_ms":590864156.0}
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 86, in send
+    await self._send(message)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 39, in sender
+    await send(message)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\protocols\websockets\websockets_sansio_impl.py", line 436, in send
+    raise ClientDisconnected()
+uvicorn.protocols.utils.ClientDisconnected
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\protocols\websockets\websockets_sansio_impl.py", line 409, in run_asgi
+    result = await self.app(self.scope, self.receive, self.send)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\applications.py", line 96, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\errors.py", line 151, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\base.py", line 103, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\routing.py", line 670, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2734, in app
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1780, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2789, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1791, in _handle_selected
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1780, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 2789, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 1802, in _handle_selected
+    await route.handle(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\routing.py", line 354, in handle
+    await self.app(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 184, in app
+    await wrap_app_handling_exceptions(app, session)(scope, receive, send)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 181, in app
+    await func(session)
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\fastapi\routing.py", line 796, in app
+    await dependant.call(**solved_result.values)
+  File "C:\Users\lenovo\Desktop\voice_assistance\backend\app\api\voice.py", line 80, in voice_gateway
+    await gateway.run()
+  File "C:\Users\lenovo\Desktop\voice_assistance\backend\app\websocket\gateway.py", line 224, in run
+    await self.websocket.close(
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 181, in close
+    await self.send({"type": "websocket.close", "code": code, "reason": reason or ""})
+  File "C:\Users\lenovo\Desktop\voice_assistance\.venv\Lib\site-packages\starlette\websockets.py", line 89, in send
+    raise WebSocketDisconnect(code=1006)
+starlette.websockets.WebSocketDisconnect
+{"timestamp":"2026-09-08T18:07:00.764058+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"d571c20c-873d-4a53-963f-b44a1010c5a3","method":"GET","path":"/health","status_code":200,"duration_ms":0.696,"taskName":"Task-16"}
+{"timestamp":"2026-09-08T18:07:01.679926+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"ed5be4f2-4e5c-4cf2-a336-526eb1f6a076","method":"GET","path":"/ready","status_code":200,"duration_ms":911.255,"taskName":"Task-18"}
+{"timestamp":"2026-09-08T18:07:08.943861+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"97f3922d-d336-4629-9417-1a32ba98c476","method":"GET","path":"/auth/me","status_code":200,"duration_ms":9.671,"taskName":"Task-21"}
+INFO:     192.168.1.9:43314 - "WebSocket /v1/voice" [accepted]
+INFO:     connection open
+{"timestamp":"2026-09-08T18:07:09.474686+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-24","backend_pid":21200,"monotonic_ms":590894328.0}

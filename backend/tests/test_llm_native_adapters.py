@@ -152,18 +152,18 @@ async def test_openai_responses_maps_function_call_fragments_once() -> None:
 async def test_anthropic_messages_maps_native_headers_text_usage_and_completion() -> None:
     captured: dict = {}
     body = (
-        'event: message_start\n'
+        "event: message_start\n"
         'data: {"type":"message_start","message":{"id":"msg-1",'
         '"model":"returned-model","usage":{"input_tokens":6}}}\n\n'
-        'event: content_block_start\n'
+        "event: content_block_start\n"
         'data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}\n\n'
-        'event: content_block_delta\n'
+        "event: content_block_delta\n"
         'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta",'
         '"text":"Hello"}}\n\n'
-        'event: message_delta\n'
+        "event: message_delta\n"
         'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
         '"usage":{"output_tokens":2}}\n\n'
-        'event: message_stop\n'
+        "event: message_stop\n"
         'data: {"type":"message_stop"}\n\n'
     )
 

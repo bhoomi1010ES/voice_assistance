@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import time
 import uuid
@@ -55,8 +56,8 @@ class ToolExecutionContext:
     user_timezone: str = "UTC"
     source_transcript: str | None = None
     cancellation_check: Callable[[], bool] | None = None
-    tool_execution_started: Callable[[LLMToolCall, float], None] | None = None
-    tool_execution_finished: Callable[[LLMToolCall, float], None] | None = None
+    tool_execution_started: Callable[[LLMToolCall, float], Awaitable[None] | None] | None = None
+    tool_execution_finished: Callable[[LLMToolCall, float], Awaitable[None] | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -332,7 +333,9 @@ class ToolExecutor:
     ) -> ToolExecutionResult:
         started = time.monotonic()
         if context.tool_execution_started is not None:
-            context.tool_execution_started(call, started)
+            callback_result = context.tool_execution_started(call, started)
+            if inspect.isawaitable(callback_result):
+                await callback_result
         try:
             if context.cancellation_check is not None and context.cancellation_check():
                 return self._failure(call, "llm_cancelled")
@@ -344,7 +347,9 @@ class ToolExecutor:
             return self._failure(call, "llm_tool_execution_failed")
         finally:
             if context.tool_execution_finished is not None:
-                context.tool_execution_finished(call, time.monotonic())
+                callback_result = context.tool_execution_finished(call, time.monotonic())
+                if inspect.isawaitable(callback_result):
+                    await callback_result
         if len(content) > self.max_result_chars:
             return self._failure(call, "llm_tool_result_too_large")
         return ToolExecutionResult(
@@ -453,6 +458,10 @@ class LLMToolLoop:
                 )
             )
             execution_results: list[ToolExecutionResult] = []
+            provider_info = self.llm_service.provider_info
+            if provider_info is None:
+                raise LLMToolLoopLimitError("Tool execution requires provider metadata.")
+            lifecycle_sequence = round_events[-1].sequence + 1 if round_events else 0
             for call in completed_calls:
                 result = await self.executor.execute(call, context=context)
                 execution_results.append(result)
@@ -463,6 +472,25 @@ class LLMToolLoop:
                         tool_call_id=result.tool_call_id,
                     )
                 )
+                if result.error_code != "llm_tool_confirmation_required":
+                    yield LLMEvent(
+                        event_type=(
+                            "tool_execution_completed"
+                            if result.success
+                            else "tool_execution_failed"
+                        ),
+                        session_id=current_request.session_id,
+                        turn_id=current_request.turn_id,
+                        response_id=current_request.response_id,
+                        provider=provider_info.provider,
+                        configured_model=provider_info.configured_model,
+                        monotonic_seconds=time.monotonic(),
+                        sequence=lifecycle_sequence,
+                        attempt=(round_events[-1].attempt if round_events else 1),
+                        tool_call=call,
+                        error_code=result.error_code,
+                    )
+                    lifecycle_sequence += 1
             if any(
                 result.error_code == "llm_tool_confirmation_required"
                 for result in execution_results
@@ -471,11 +499,6 @@ class LLMToolLoop:
                 # not send its tool-result messages back to the provider, since
                 # a model may otherwise keep proposing the same mutation until
                 # the generic loop bound is reached.
-                provider_info = self.llm_service.provider_info
-                if provider_info is None:
-                    raise LLMToolLoopLimitError(
-                        "Confirmation was requested without provider metadata."
-                    )
                 last_event = round_events[-1] if round_events else None
                 confirmation_call = next(
                     call
@@ -490,15 +513,13 @@ class LLMToolLoop:
                     provider=provider_info.provider,
                     configured_model=provider_info.configured_model,
                     monotonic_seconds=time.monotonic(),
-                    sequence=(last_event.sequence + 1 if last_event is not None else 0),
+                    sequence=lifecycle_sequence,
                     attempt=(last_event.attempt if last_event is not None else 1),
                     tool_call=confirmation_call,
                     error_code="llm_tool_confirmation_required",
                 )
                 return
-            current_request = current_request.model_copy(
-                update={"messages": tuple(next_messages)}
-            )
+            current_request = current_request.model_copy(update={"messages": tuple(next_messages)})
             self._enforce_context_bound(current_request)
 
         raise LLMToolLoopLimitError("The tool loop did not reach a terminal response.")

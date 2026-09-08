@@ -136,7 +136,7 @@ class Settings(BaseSettings):
         if any(value is None for value in configured):
             raise ValueError(
                 "LLM_PROVIDER, LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL must be configured together"
-        )
+            )
 
         try:
             _ = self.llm_base_url_resolved

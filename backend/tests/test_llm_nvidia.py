@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from app.core.config import Settings
-from app.llm.errors import LLMAuthenticationError, LLMProtocolError
+from app.llm.errors import LLMAuthenticationError, LLMOverloadedError, LLMProtocolError
 from app.llm.providers.nvidia import NvidiaProvider
 from app.llm.types import (
     LLMMessage,
@@ -178,6 +178,35 @@ async def test_nvidia_authentication_error_is_typed_and_does_not_include_body() 
     assert raised.value.code == "llm_authentication_error"
     assert raised.value.request_id == "request-401"
     assert "credential value" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_nvidia_stream_maps_embedded_service_unavailable_error() -> None:
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"retry-after": "3", "x-request-id": "request-503"},
+                content=(
+                    'data: {"error":{"message":"temporary detail",'
+                    '"type":"service_unavailable","code":503}}\n\n'
+                    "data: [DONE]\n\n"
+                ),
+            )
+        )
+    )
+    provider = NvidiaProvider(_settings(), client=client)
+    await provider.initialize()
+
+    with pytest.raises(LLMOverloadedError) as raised:
+        _ = [event async for event in provider.stream(_request())]
+
+    await client.aclose()
+    assert raised.value.code == "llm_overloaded"
+    assert raised.value.status_code == 503
+    assert raised.value.request_id == "request-503"
+    assert raised.value.retry_after_seconds == 3
+    assert "temporary detail" not in str(raised.value)
 
 
 @pytest.mark.asyncio

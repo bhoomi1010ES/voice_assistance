@@ -20,8 +20,8 @@ from app.stt.base import (
     EnginePartialCallback,
     STTAudioError,
     STTAudioTooLongError,
-    STTCancelledError,
     STTAuthenticationError,
+    STTCancelledError,
     STTConfigurationError,
     STTEmptyAudioError,
     STTEmptyTranscriptError,
@@ -91,9 +91,7 @@ class RemoteTranscriptionEngine(STTEngine):
             except RuntimeError as error:
                 raise STTConfigurationError(str(error)) from error
             if self.settings.stt_api_key is None:
-                raise STTConfigurationError(
-                    "STT_API_KEY is required when STT_ENGINE=remote"
-                )
+                raise STTConfigurationError("STT_API_KEY is required when STT_ENGINE=remote")
             if not self.settings.stt_api_auth_header.strip():
                 raise STTConfigurationError("STT_API_AUTH_HEADER must not be empty")
             if (

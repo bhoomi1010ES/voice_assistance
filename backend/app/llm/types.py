@@ -126,6 +126,8 @@ LLMEventType = Literal[
     "tool_call_started",
     "tool_call_arguments_delta",
     "tool_call_completed",
+    "tool_execution_completed",
+    "tool_execution_failed",
     "confirmation_required",
     "usage",
     "response_completed",
@@ -159,8 +161,10 @@ class LLMEvent(BaseModel):
     def validate_event_payload(self) -> LLMEvent:
         if self.event_type == "text_delta" and self.delta is None:
             raise ValueError("text_delta events require delta")
-        if self.event_type.startswith("tool_call_") and self.tool_call is None:
-            raise ValueError("tool-call events require tool_call")
+        if self.event_type.startswith(("tool_call_", "tool_execution_")) and self.tool_call is None:
+            raise ValueError("tool lifecycle events require tool_call")
+        if self.event_type == "tool_execution_failed" and self.error_code is None:
+            raise ValueError("tool_execution_failed events require error_code")
         if self.event_type == "usage" and self.usage is None:
             raise ValueError("usage events require usage")
         if self.event_type == "response_failed" and self.error_code is None:

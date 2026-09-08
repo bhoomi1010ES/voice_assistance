@@ -338,9 +338,7 @@ class RedisVoiceConfirmationStore:
 
     async def create_or_get(self, pending: PendingConfirmation) -> PendingConfirmation:
         redis = self._require_redis()
-        key = self._key(
-            (pending.authenticated_user_id, pending.device_id, pending.session_id)
-        )
+        key = self._key((pending.authenticated_user_id, pending.device_id, pending.session_id))
         payload = json.dumps(pending.to_dict(), separators=(",", ":"), ensure_ascii=False)
         ttl = max(1, int((pending.expires_at - _utc_now()).total_seconds()))
         if await redis.set(key, payload, ex=ttl, nx=True):
@@ -422,9 +420,7 @@ class RedisVoiceConfirmationStore:
                     if current is None or current.confirmation_id != confirmation_id:
                         await pipe.reset()
                         return None
-                    if not InMemoryVoiceConfirmationStore._can_transition(
-                        current.status, status
-                    ):
+                    if not InMemoryVoiceConfirmationStore._can_transition(current.status, status):
                         await pipe.reset()
                         return None
                     current.status = status
@@ -444,6 +440,4 @@ class RedisVoiceConfirmationStore:
         current = await self.get(scope)
         if current is None or current.status not in {"PENDING", "APPROVED"}:
             return False
-        return (
-            await self.transition(scope, current.confirmation_id, "CANCELLED")
-        ) is not None
+        return (await self.transition(scope, current.confirmation_id, "CANCELLED")) is not None

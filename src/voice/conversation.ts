@@ -21,10 +21,13 @@ export type ConversationAssistantStatus =
   | 'cancelled';
 
 export type ConversationToolStatus =
-  | 'pending'
+  | 'understanding'
   | 'confirmation_required'
-  | 'completed'
-  | 'failed';
+  | 'approved'
+  | 'executing'
+  | 'success'
+  | 'failed'
+  | 'cancelled';
 
 export type ConversationUserMessage = {
   id: string;
@@ -72,6 +75,8 @@ export type ConversationToolMessage = {
   name: string;
   status: ConversationToolStatus;
   result: string | null;
+  confirmationId: string | null;
+  errorCode: string | null;
 };
 
 export type ConversationMessage =
@@ -126,6 +131,8 @@ export type VoiceEvent =
       name: string;
       status: ConversationToolStatus;
       result: string | null;
+      confirmationId: string | null;
+      errorCode: string | null;
     });
 
 export type ConversationState = {
@@ -133,7 +140,26 @@ export type ConversationState = {
 };
 
 export const MAX_CONVERSATION_MESSAGES = 120;
-export const TOOL_UI_ENABLED = false;
+export const TOOL_UI_ENABLED = true;
+
+const SUPPORTED_TOOL_NAMES = new Set(['get_current_time', 'create_task']);
+const TOOL_STATUS_TRANSITIONS: Record<
+  ConversationToolStatus,
+  ReadonlySet<ConversationToolStatus>
+> = {
+  understanding: new Set([
+    'confirmation_required',
+    'executing',
+    'failed',
+    'cancelled',
+  ]),
+  confirmation_required: new Set(['approved', 'failed', 'cancelled']),
+  approved: new Set(['executing', 'failed', 'cancelled']),
+  executing: new Set(['success', 'failed', 'cancelled']),
+  success: new Set(),
+  failed: new Set(),
+  cancelled: new Set(),
+};
 
 const CONVERSATION_ERRORS: Record<string, ConversationError> = {
   llm_configuration_error: {
@@ -316,7 +342,12 @@ export function reduceVoiceEvent(
   }
 
   if (event.type === 'tool.status') {
-    if (!options.toolUiEnabled || !event.turnId || !event.responseId) {
+    if (
+      !(options.toolUiEnabled ?? TOOL_UI_ENABLED) ||
+      !event.turnId ||
+      !event.responseId ||
+      !SUPPORTED_TOOL_NAMES.has(event.name)
+    ) {
       return { state, accepted: false };
     }
     return applyToolEvent(state, event);
@@ -647,8 +678,29 @@ function applyToolEvent(
   const existing = state.messages.find(
     message => message.role === 'tool' && message.id === id,
   ) as ConversationToolMessage | undefined;
+  if (!existing && event.status !== 'understanding') {
+    return { state, accepted: false };
+  }
+  if (
+    existing &&
+    (existing.name !== event.name ||
+      !TOOL_STATUS_TRANSITIONS[existing.status].has(event.status) ||
+      (existing.name === 'create_task' &&
+        existing.status === 'understanding' &&
+        event.status === 'executing') ||
+      (existing.name === 'get_current_time' &&
+        ['confirmation_required', 'approved'].includes(event.status)))
+  ) {
+    return { state, accepted: false };
+  }
   const next: ConversationToolMessage = existing
-    ? { ...existing, status: event.status, result: event.result }
+    ? {
+        ...existing,
+        status: event.status,
+        result: event.result,
+        confirmationId: event.confirmationId ?? existing.confirmationId,
+        errorCode: event.errorCode,
+      }
     : {
         id,
         role: 'tool',
@@ -658,6 +710,8 @@ function applyToolEvent(
         name: event.name,
         status: event.status,
         result: event.result,
+        confirmationId: event.confirmationId,
+        errorCode: event.errorCode,
       };
   return { state: replaceOrAppend(state, next), accepted: true };
 }

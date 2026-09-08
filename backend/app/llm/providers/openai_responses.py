@@ -267,9 +267,7 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
                 arguments = payload.get("arguments")
                 if isinstance(arguments, str):
                     tools[call_id].arguments_json = arguments
-                for tool_event in self._complete_responses_tools(
-                    {call_id: tools[call_id]}, event
-                ):
+                for tool_event in self._complete_responses_tools({call_id: tools[call_id]}, event):
                     yield tool_event
                 del tools[call_id]
                 return

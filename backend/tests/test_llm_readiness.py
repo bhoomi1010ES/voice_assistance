@@ -70,9 +70,7 @@ def test_ready_exposes_only_safe_llm_configuration() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["dependencies"]["llm"]["provider"] == "nvidia"
-    assert payload["dependencies"]["llm"]["model"] == (
-        "nvidia/nemotron-3-super-120b-a12b"
-    )
+    assert payload["dependencies"]["llm"]["model"] == ("nvidia/nemotron-3-super-120b-a12b")
     assert "test-placeholder-key" not in response.text
     assert service.initialized is True
     assert service.closed is True
