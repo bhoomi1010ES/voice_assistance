@@ -5,7 +5,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { StyleSheet, TextInput, View } from 'react-native';
+import { ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { safeUserMessage, toClientError } from '../api/errors';
 import {
   ActionButton,
@@ -300,263 +300,267 @@ export function MemoryScreen() {
 
   return (
     <Screen testID="memory-screen">
-      <Heading>{strings.memory.title}</Heading>
-      <AppText style={styles.body}>{strings.memory.body}</AppText>
-      {error ? <StatusBanner tone="error">{error}</StatusBanner> : null}
-      {message ? <StatusBanner>{message}</StatusBanner> : null}
+      <ScrollView contentContainerStyle={styles.content}>
+        <Heading>{strings.memory.title}</Heading>
+        <AppText style={styles.body}>{strings.memory.body}</AppText>
+        {error ? <StatusBanner tone="error">{error}</StatusBanner> : null}
+        {message ? <StatusBanner>{message}</StatusBanner> : null}
 
-      <Card style={styles.card} testID="memory-settings-card">
-        <AppText style={styles.sectionTitle}>{strings.memory.settings}</AppText>
-        <AppText>
-          {settings?.enabled
-            ? strings.memory.enabledDescription
-            : settings
-            ? strings.memory.disabledDescription
-            : strings.memory.loading}
-        </AppText>
-        <ActionButton
-          disabled={!settings || saving}
-          label={
-            settings?.enabled ? strings.memory.turnOff : strings.memory.turnOn
-          }
-          onPress={toggleMemory}
-          style={styles.action}
-          variant="secondary"
-          testID="memory-toggle"
-        />
-      </Card>
-
-      <Card style={styles.card} testID="memory-search-card">
-        <AppText style={styles.sectionTitle}>
-          {strings.memory.searchTitle}
-        </AppText>
-        <TextInput
-          accessibilityLabel={strings.memory.searchLabel}
-          editable={Boolean(settings?.enabled) && !searching}
-          onChangeText={setQuery}
-          onSubmitEditing={runSearch}
-          placeholder={strings.memory.searchPlaceholder}
-          placeholderTextColor={colors.textMuted}
-          returnKeyType="search"
-          style={[
-            styles.input,
-            { color: colors.text, borderColor: colors.border },
-          ]}
-          testID="memory-search-input"
-          value={query}
-        />
-        <ActionButton
-          disabled={!settings?.enabled || searching}
-          label={searching ? strings.memory.searching : strings.memory.search}
-          onPress={runSearch}
-          style={styles.action}
-          testID="memory-search"
-        />
-      </Card>
-
-      <Card style={styles.card} testID="memory-create-card">
-        <AppText style={styles.sectionTitle}>
-          {strings.memory.createTitle}
-        </AppText>
-        <TextInput
-          accessibilityLabel={strings.memory.contentLabel}
-          editable={Boolean(settings?.enabled) && !saving}
-          multiline
-          onChangeText={setNewContent}
-          placeholder={strings.memory.createPlaceholder}
-          placeholderTextColor={colors.textMuted}
-          style={[
-            styles.input,
-            styles.multilineInput,
-            { color: colors.text, borderColor: colors.border },
-          ]}
-          testID="memory-create-input"
-          value={newContent}
-        />
-        <ActionButton
-          disabled={!settings?.enabled || saving || !newContent.trim()}
-          label={saving ? strings.memory.creating : strings.memory.create}
-          onPress={saveNewMemory}
-          style={styles.action}
-          testID="memory-create"
-        />
-      </Card>
-
-      {sessionId ? (
-        <Card style={styles.card} testID="memory-session-card">
+        <Card style={styles.card} testID="memory-settings-card">
           <AppText style={styles.sectionTitle}>
-            {strings.memory.sessionTitle}
-          </AppText>
-          <AppText>{strings.memory.sessionBody}</AppText>
-          <ActionButton
-            disabled={excluding}
-            label={
-              sessionExcluded
-                ? strings.memory.includeSession
-                : strings.memory.excludeSession
-            }
-            onPress={toggleSessionExclusion}
-            style={styles.action}
-            variant="secondary"
-            testID="memory-session-exclusion"
-          />
-        </Card>
-      ) : null}
-
-      <View style={styles.listHeader}>
-        <AppText style={styles.sectionTitle}>
-          {strings.memory.listTitle}
-        </AppText>
-        <ActionButton
-          disabled={saving || memories.length === 0}
-          label={strings.memory.deleteAll}
-          onPress={() => setConfirmation('delete-all')}
-          variant="quiet"
-          testID="memory-delete-all"
-        />
-      </View>
-
-      {visibleState === 'loading' ? (
-        <AppText>{strings.memory.loading}</AppText>
-      ) : null}
-      {visibleState === 'empty' ? (
-        <Card style={styles.card} testID="memory-empty">
-          <AppText>{strings.memory.empty}</AppText>
-        </Card>
-      ) : null}
-      {memories.map(memory => (
-        <Card key={memory.id} style={styles.card} testID="memory-item">
-          <AppText style={styles.memoryType}>
-            {memoryTypeLabel(memory.memory_type)}
-          </AppText>
-          {memory.supersedes_id ? (
-            <AppText style={styles.replacementNotice}>
-              {strings.memory.replacementNotice}
-            </AppText>
-          ) : null}
-          <AppText
-            accessibilityLabel={`${strings.memory.itemLabel}: ${memory.content}`}
-            style={styles.memoryContent}
-            testID="memory-item-content"
-          >
-            {memory.content}
-          </AppText>
-          <ActionButton
-            label={strings.memory.view}
-            onPress={() => selectMemory(memory)}
-            style={styles.action}
-            variant="secondary"
-            testID="memory-view"
-          />
-        </Card>
-      ))}
-
-      {selected ? (
-        <Card style={styles.card} testID="memory-detail">
-          <AppText style={styles.sectionTitle}>
-            {strings.memory.detailTitle}
-          </AppText>
-          <AppText style={styles.memoryType}>
-            {memoryTypeLabel(selected.memory_type)}
-          </AppText>
-          {selected.supersedes_id ? (
-            <AppText style={styles.replacementNotice}>
-              {strings.memory.replacementNotice}
-            </AppText>
-          ) : null}
-          {editing ? (
-            <TextInput
-              accessibilityLabel={strings.memory.contentLabel}
-              multiline
-              onChangeText={setDraft}
-              style={[
-                styles.input,
-                styles.multilineInput,
-                { color: colors.text, borderColor: colors.border },
-              ]}
-              testID="memory-edit-input"
-              value={draft}
-            />
-          ) : (
-            <AppText style={styles.memoryContent}>{selected.content}</AppText>
-          )}
-          <View style={styles.actions}>
-            {editing ? (
-              <>
-                <ActionButton
-                  disabled={saving}
-                  label={saving ? strings.memory.saving : strings.memory.save}
-                  onPress={save}
-                  style={styles.actionHalf}
-                  testID="memory-save"
-                />
-                <ActionButton
-                  disabled={saving}
-                  label={strings.memory.cancel}
-                  onPress={() => {
-                    setDraft(selected.content);
-                    setEditing(false);
-                  }}
-                  style={styles.actionHalf}
-                  variant="secondary"
-                  testID="memory-cancel"
-                />
-              </>
-            ) : (
-              <>
-                <ActionButton
-                  label={strings.memory.edit}
-                  onPress={() => setEditing(true)}
-                  style={styles.actionHalf}
-                  variant="secondary"
-                  testID="memory-edit"
-                />
-                <ActionButton
-                  disabled={saving}
-                  label={strings.memory.delete}
-                  onPress={() => setConfirmation('delete')}
-                  style={styles.actionHalf}
-                  variant="quiet"
-                  testID="memory-delete"
-                />
-              </>
-            )}
-          </View>
-        </Card>
-      ) : null}
-
-      {confirmation ? (
-        <Card style={styles.confirmation} testID="memory-confirmation">
-          <AppText style={styles.sectionTitle}>
-            {confirmation === 'delete'
-              ? strings.memory.deleteTitle
-              : strings.memory.deleteAllTitle}
+            {strings.memory.settings}
           </AppText>
           <AppText>
-            {confirmation === 'delete'
-              ? strings.memory.deleteBody
-              : strings.memory.deleteAllBody}
+            {settings?.enabled
+              ? strings.memory.enabledDescription
+              : settings
+              ? strings.memory.disabledDescription
+              : strings.memory.loading}
           </AppText>
-          <View style={styles.actions}>
-            <ActionButton
-              disabled={saving}
-              label={strings.memory.cancel}
-              onPress={() => setConfirmation(null)}
-              style={styles.actionHalf}
-              variant="secondary"
-              testID="memory-confirm-cancel"
-            />
-            <ActionButton
-              disabled={saving}
-              label={strings.memory.confirmDelete}
-              onPress={confirmation === 'delete' ? removeSelected : removeAll}
-              style={styles.actionHalf}
-              variant="quiet"
-              testID="memory-confirm-delete"
-            />
-          </View>
+          <ActionButton
+            disabled={!settings || saving}
+            label={
+              settings?.enabled ? strings.memory.turnOff : strings.memory.turnOn
+            }
+            onPress={toggleMemory}
+            style={styles.action}
+            variant="secondary"
+            testID="memory-toggle"
+          />
         </Card>
-      ) : null}
+
+        <Card style={styles.card} testID="memory-search-card">
+          <AppText style={styles.sectionTitle}>
+            {strings.memory.searchTitle}
+          </AppText>
+          <TextInput
+            accessibilityLabel={strings.memory.searchLabel}
+            editable={Boolean(settings?.enabled) && !searching}
+            onChangeText={setQuery}
+            onSubmitEditing={runSearch}
+            placeholder={strings.memory.searchPlaceholder}
+            placeholderTextColor={colors.textMuted}
+            returnKeyType="search"
+            style={[
+              styles.input,
+              { color: colors.text, borderColor: colors.border },
+            ]}
+            testID="memory-search-input"
+            value={query}
+          />
+          <ActionButton
+            disabled={!settings?.enabled || searching}
+            label={searching ? strings.memory.searching : strings.memory.search}
+            onPress={runSearch}
+            style={styles.action}
+            testID="memory-search"
+          />
+        </Card>
+
+        <Card style={styles.card} testID="memory-create-card">
+          <AppText style={styles.sectionTitle}>
+            {strings.memory.createTitle}
+          </AppText>
+          <TextInput
+            accessibilityLabel={strings.memory.contentLabel}
+            editable={Boolean(settings?.enabled) && !saving}
+            multiline
+            onChangeText={setNewContent}
+            placeholder={strings.memory.createPlaceholder}
+            placeholderTextColor={colors.textMuted}
+            style={[
+              styles.input,
+              styles.multilineInput,
+              { color: colors.text, borderColor: colors.border },
+            ]}
+            testID="memory-create-input"
+            value={newContent}
+          />
+          <ActionButton
+            disabled={!settings?.enabled || saving || !newContent.trim()}
+            label={saving ? strings.memory.creating : strings.memory.create}
+            onPress={saveNewMemory}
+            style={styles.action}
+            testID="memory-create"
+          />
+        </Card>
+
+        {sessionId ? (
+          <Card style={styles.card} testID="memory-session-card">
+            <AppText style={styles.sectionTitle}>
+              {strings.memory.sessionTitle}
+            </AppText>
+            <AppText>{strings.memory.sessionBody}</AppText>
+            <ActionButton
+              disabled={excluding}
+              label={
+                sessionExcluded
+                  ? strings.memory.includeSession
+                  : strings.memory.excludeSession
+              }
+              onPress={toggleSessionExclusion}
+              style={styles.action}
+              variant="secondary"
+              testID="memory-session-exclusion"
+            />
+          </Card>
+        ) : null}
+
+        <View style={styles.listHeader}>
+          <AppText style={styles.sectionTitle}>
+            {strings.memory.listTitle}
+          </AppText>
+          <ActionButton
+            disabled={saving || memories.length === 0}
+            label={strings.memory.deleteAll}
+            onPress={() => setConfirmation('delete-all')}
+            variant="quiet"
+            testID="memory-delete-all"
+          />
+        </View>
+
+        {visibleState === 'loading' ? (
+          <AppText>{strings.memory.loading}</AppText>
+        ) : null}
+        {visibleState === 'empty' ? (
+          <Card style={styles.card} testID="memory-empty">
+            <AppText>{strings.memory.empty}</AppText>
+          </Card>
+        ) : null}
+        {memories.map(memory => (
+          <Card key={memory.id} style={styles.card} testID="memory-item">
+            <AppText style={styles.memoryType}>
+              {memoryTypeLabel(memory.memory_type)}
+            </AppText>
+            {memory.supersedes_id ? (
+              <AppText style={styles.replacementNotice}>
+                {strings.memory.replacementNotice}
+              </AppText>
+            ) : null}
+            <AppText
+              accessibilityLabel={`${strings.memory.itemLabel}: ${memory.content}`}
+              style={styles.memoryContent}
+              testID="memory-item-content"
+            >
+              {memory.content}
+            </AppText>
+            <ActionButton
+              label={strings.memory.view}
+              onPress={() => selectMemory(memory)}
+              style={styles.action}
+              variant="secondary"
+              testID="memory-view"
+            />
+          </Card>
+        ))}
+
+        {selected ? (
+          <Card style={styles.card} testID="memory-detail">
+            <AppText style={styles.sectionTitle}>
+              {strings.memory.detailTitle}
+            </AppText>
+            <AppText style={styles.memoryType}>
+              {memoryTypeLabel(selected.memory_type)}
+            </AppText>
+            {selected.supersedes_id ? (
+              <AppText style={styles.replacementNotice}>
+                {strings.memory.replacementNotice}
+              </AppText>
+            ) : null}
+            {editing ? (
+              <TextInput
+                accessibilityLabel={strings.memory.contentLabel}
+                multiline
+                onChangeText={setDraft}
+                style={[
+                  styles.input,
+                  styles.multilineInput,
+                  { color: colors.text, borderColor: colors.border },
+                ]}
+                testID="memory-edit-input"
+                value={draft}
+              />
+            ) : (
+              <AppText style={styles.memoryContent}>{selected.content}</AppText>
+            )}
+            <View style={styles.actions}>
+              {editing ? (
+                <>
+                  <ActionButton
+                    disabled={saving}
+                    label={saving ? strings.memory.saving : strings.memory.save}
+                    onPress={save}
+                    style={styles.actionHalf}
+                    testID="memory-save"
+                  />
+                  <ActionButton
+                    disabled={saving}
+                    label={strings.memory.cancel}
+                    onPress={() => {
+                      setDraft(selected.content);
+                      setEditing(false);
+                    }}
+                    style={styles.actionHalf}
+                    variant="secondary"
+                    testID="memory-cancel"
+                  />
+                </>
+              ) : (
+                <>
+                  <ActionButton
+                    label={strings.memory.edit}
+                    onPress={() => setEditing(true)}
+                    style={styles.actionHalf}
+                    variant="secondary"
+                    testID="memory-edit"
+                  />
+                  <ActionButton
+                    disabled={saving}
+                    label={strings.memory.delete}
+                    onPress={() => setConfirmation('delete')}
+                    style={styles.actionHalf}
+                    variant="quiet"
+                    testID="memory-delete"
+                  />
+                </>
+              )}
+            </View>
+          </Card>
+        ) : null}
+
+        {confirmation ? (
+          <Card style={styles.confirmation} testID="memory-confirmation">
+            <AppText style={styles.sectionTitle}>
+              {confirmation === 'delete'
+                ? strings.memory.deleteTitle
+                : strings.memory.deleteAllTitle}
+            </AppText>
+            <AppText>
+              {confirmation === 'delete'
+                ? strings.memory.deleteBody
+                : strings.memory.deleteAllBody}
+            </AppText>
+            <View style={styles.actions}>
+              <ActionButton
+                disabled={saving}
+                label={strings.memory.cancel}
+                onPress={() => setConfirmation(null)}
+                style={styles.actionHalf}
+                variant="secondary"
+                testID="memory-confirm-cancel"
+              />
+              <ActionButton
+                disabled={saving}
+                label={strings.memory.confirmDelete}
+                onPress={confirmation === 'delete' ? removeSelected : removeAll}
+                style={styles.actionHalf}
+                variant="quiet"
+                testID="memory-confirm-delete"
+              />
+            </View>
+          </Card>
+        ) : null}
+      </ScrollView>
     </Screen>
   );
 }
@@ -566,6 +570,7 @@ function memoryTypeLabel(type: MemoryItem['memory_type']): string {
 }
 
 const styles = StyleSheet.create({
+  content: { paddingBottom: spacing.xl },
   body: { marginTop: spacing.sm },
   card: { marginTop: spacing.md },
   sectionTitle: { fontWeight: '700' },

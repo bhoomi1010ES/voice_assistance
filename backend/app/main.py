@@ -10,6 +10,7 @@ from app.core.logging import RequestLoggingMiddleware, configure_logging
 from app.llm.service import LLMService
 from app.memory.providers import RemoteEmbeddingProvider, RemoteReranker
 from app.memory.retrieval import MemoryRetrievalService
+from app.memory.worker_service import MemoryWorkerService
 from app.services.infrastructure import Infrastructure
 from app.stt.service import STTService
 
@@ -30,6 +31,7 @@ def create_app(
         active_llm_service = llm_service or LLMService(app_settings)
         embedding_provider = None
         reranker = None
+        memory_worker = None
         if app_settings.memory_retrieval_mode != "off" or app_settings.memory_write_enabled:
             embedding_provider = RemoteEmbeddingProvider(app_settings)
             await embedding_provider.initialize()
@@ -49,6 +51,16 @@ def create_app(
             app.state.stt_service = active_stt_service
             app.state.llm_service = active_llm_service
             app.state.memory_service = memory_service
+            if app_settings.memory_write_enabled:
+                if embedding_provider is None:
+                    raise RuntimeError("memory_worker_embedding_provider_unavailable")
+                memory_worker = MemoryWorkerService(
+                    app_settings,
+                    active_infrastructure.database,
+                    embedding_provider,
+                )
+                await memory_worker.start()
+                app.state.memory_worker = memory_worker
             logging.getLogger("voice-assistance-backend").info(
                 "application started",
                 extra={"event": "service.started"},
@@ -56,18 +68,22 @@ def create_app(
             yield
         finally:
             try:
-                await active_llm_service.close()
+                if memory_worker is not None:
+                    await memory_worker.stop()
             finally:
                 try:
-                    await active_stt_service.close()
+                    await active_llm_service.close()
                 finally:
                     try:
-                        if reranker is not None:
-                            await reranker.close()
-                        if embedding_provider is not None:
-                            await embedding_provider.close()
+                        await active_stt_service.close()
                     finally:
-                        await active_infrastructure.close()
+                        try:
+                            if reranker is not None:
+                                await reranker.close()
+                            if embedding_provider is not None:
+                                await embedding_provider.close()
+                        finally:
+                            await active_infrastructure.close()
             logging.getLogger("voice-assistance-backend").info(
                 "application stopped",
                 extra={"event": "service.stopped"},

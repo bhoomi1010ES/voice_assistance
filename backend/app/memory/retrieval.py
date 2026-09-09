@@ -22,6 +22,35 @@ from .types import (
     build_memory_query_plan,
 )
 
+_QUERY_STOPWORDS = frozenset(
+    {
+        "a",
+        "about",
+        "and",
+        "are",
+        "did",
+        "do",
+        "for",
+        "how",
+        "i",
+        "is",
+        "it",
+        "me",
+        "my",
+        "of",
+        "on",
+        "the",
+        "to",
+        "use",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+    }
+)
+
 
 def _base_memory_query(user_id: uuid.UUID, plan: MemoryQueryPlan) -> Select:
     query = select(MemoryItem).where(
@@ -90,26 +119,60 @@ async def fts_retrieve(
     plan: MemoryQueryPlan,
     limit: int,
 ) -> list[MemoryCandidate]:
-    tsquery = func.websearch_to_tsquery("simple", plan.normalized_query)
+    # Use a phrase over meaningful terms. This avoids treating generic words
+    # such as "favorite" as sufficient evidence while retaining exact lexical
+    # matches such as "saved instructions" and "work remotely".
+    terms = tuple(
+        term
+        for term in plan.search_terms
+        if len(term) >= 3 and term.casefold() not in _QUERY_STOPWORDS
+    )
+    if not terms:
+        return []
+    tsquery = func.websearch_to_tsquery("simple", f'"{" ".join(terms)}"')
     query = _base_memory_query(user_id, plan).where(MemoryItem.search_tsv.op("@@")(tsquery))
     rank = func.ts_rank_cd(MemoryItem.search_tsv, tsquery)
     rows = list(
-        (await session.scalars(query.order_by(rank.desc(), MemoryItem.id.asc()).limit(limit))).all()
+        (
+            await session.execute(
+                query.with_only_columns(MemoryItem, rank.label("rank_score"))
+                .order_by(rank.desc(), MemoryItem.id.asc())
+                .limit(limit)
+            )
+        ).all()
     )
     return [
         MemoryCandidate(
-            memory_id=row.id,
-            user_id=row.user_id,
-            content=row.content,
+            memory_id=row[0].id,
+            user_id=row[0].user_id,
+            content=row[0].content,
             source="fts",
             source_rank=index,
-            score=0.0,
-            created_at=row.created_at,
-            memory_type=MemoryType(row.memory_type),
-            subject=row.subject,
+            score=float(row[1] or 0.0),
+            created_at=row[0].created_at,
+            memory_type=MemoryType(row[0].memory_type),
+            subject=row[0].subject,
         )
         for index, row in enumerate(rows, start=1)
     ]
+
+
+def should_run_structured_retrieval(plan: MemoryQueryPlan) -> bool:
+    """Run structured ordering only when the query expresses a structured need.
+
+    A broad structured query is an ordered list of all active memories, not a
+    relevance-ranked candidate source. Feeding that list into RRF makes recent
+    or salient distractors compete with genuine semantic/lexical matches.
+    """
+
+    return bool(
+        plan.intent not in {MemoryIntent.GENERAL, MemoryIntent.FACT}
+        or plan.memory_types
+        or plan.subject
+        or plan.predicate
+        or plan.start_at is not None
+        or plan.end_at is not None
+    )
 
 
 async def dense_retrieve(
@@ -221,6 +284,27 @@ async def rerank_fused(
     )
 
 
+def apply_relevance_boundary(
+    memories: Sequence[FusedMemory],
+    *,
+    minimum_score: float,
+    trusted_memory_ids: set[uuid.UUID] | frozenset[uuid.UUID] = frozenset(),
+) -> tuple[FusedMemory, ...]:
+    """Keep reranked evidence that clears the floor or has exact evidence.
+
+    A reranker score is calibrated over the submitted candidate set. A direct
+    lexical hit or a bounded temporal predicate is therefore allowed through
+    even when the provider's normalized score is small; ungrounded nearest
+    neighbors still have to clear the confidence floor.
+    """
+
+    return tuple(
+        memory
+        for memory in memories
+        if memory.score >= minimum_score or memory.memory_id in trusted_memory_ids
+    )
+
+
 class MemoryRetrievalService:
     def __init__(
         self,
@@ -277,19 +361,23 @@ class MemoryRetrievalService:
         # An AsyncSession is intentionally not used concurrently. This keeps
         # the retrieval boundary safe for the gateway's request transaction;
         # providers can still run independently when they are enabled.
-        structured = await structured_retrieve(
-            session,
-            user_id=user_id,
-            plan=plan,
-            limit=self.settings.memory_candidate_count,
-        )
+        structured: list[MemoryCandidate] = []
+        if should_run_structured_retrieval(plan):
+            structured = await structured_retrieve(
+                session,
+                user_id=user_id,
+                plan=plan,
+                limit=self.settings.memory_candidate_count,
+            )
         fts = await fts_retrieve(
             session,
             user_id=user_id,
             plan=plan,
             limit=self.settings.memory_candidate_count,
         )
-        sources: list[Sequence[MemoryCandidate]] = [structured, fts]
+        sources: list[Sequence[MemoryCandidate]] = [fts]
+        if structured:
+            sources.insert(0, structured)
         provider_error: str | None = None
         if self.embedding_provider is not None:
             try:
@@ -316,6 +404,16 @@ class MemoryRetrievalService:
                     query=plan.normalized_query,
                     provider=self.reranker,
                     limit=self.settings.memory_final_context_count,
+                )
+                fused = apply_relevance_boundary(
+                    fused,
+                    minimum_score=self.settings.memory_min_rerank_score,
+                    trusted_memory_ids={candidate.memory_id for candidate in fts}
+                    | (
+                        {candidate.memory_id for candidate in structured}
+                        if plan.intent == MemoryIntent.TIME_RANGE
+                        else set()
+                    ),
                 )
             except MemoryProviderError as error:
                 provider_error = provider_error or error.code

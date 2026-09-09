@@ -18,7 +18,13 @@ from app.memory.providers import (
     RemoteEmbeddingProvider,
     RemoteReranker,
 )
-from app.memory.retrieval import dense_retrieve, fuse_candidates, rerank_fused
+from app.memory.retrieval import (
+    apply_relevance_boundary,
+    dense_retrieve,
+    fuse_candidates,
+    rerank_fused,
+    should_run_structured_retrieval,
+)
 from app.memory.tool_tools import build_explicit_memory_save_call, register_memory_tools
 from app.memory.types import (
     FusedMemory,
@@ -269,6 +275,30 @@ def test_query_plan_and_policy_are_deterministic_and_grounded() -> None:
         )
 
 
+def test_automatic_extraction_handles_durable_forms_and_rejections() -> None:
+    cases = {
+        "Actually, I prefer green tea.": MemoryType.PREFERENCE,
+        "My preference is online meetings.": MemoryType.PREFERENCE,
+        "I work at Acme on Project Atlas.": MemoryType.FACT,
+        "My home base is Pune.": MemoryType.FACT,
+        "Rahul is my colleague.": MemoryType.RELATIONSHIP,
+        "I usually run on Sunday mornings.": MemoryType.ROUTINE,
+        "Every Friday I review Project Atlas.": MemoryType.ROUTINE,
+    }
+    for utterance, expected_type in cases.items():
+        candidates = extract_explicit_candidates(utterance)
+        assert len(candidates) == 1
+        assert candidates[0].memory_type == expected_type
+        assert candidates[0].content.rstrip(".") in utterance
+
+    for utterance in (
+        "I like this song today.",
+        "Don't remember that I like tea.",
+        "Save this task in my memory: call Rahul tomorrow.",
+    ):
+        assert extract_explicit_candidates(utterance) == ()
+
+
 def test_chunking_and_rrf_collapse_are_bounded_and_stable() -> None:
     chunks = chunk_text("one two three four five six seven eight", max_chars=128, overlap_chars=3)
     assert chunks
@@ -322,6 +352,37 @@ def test_chunking_and_rrf_collapse_are_bounded_and_stable() -> None:
     assert fused[0].memory_id == first_id
     assert fused[0].sources == ("dense", "fts")
     assert second.content == "second"
+
+
+def test_structured_retrieval_is_reserved_for_structured_intents() -> None:
+    assert not should_run_structured_retrieval(build_memory_query_plan("Where do I work?"))
+    assert should_run_structured_retrieval(build_memory_query_plan("What happened yesterday?"))
+    assert should_run_structured_retrieval(build_memory_query_plan("What drink do I prefer?"))
+
+
+def test_relevance_boundary_rejects_ungrounded_neighbors_but_keeps_exact_evidence() -> None:
+    created = datetime.now(UTC)
+    weak_id = uuid.uuid4()
+    exact_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    weak = FusedMemory(
+        memory_id=weak_id,
+        user_id=user_id,
+        content="unrelated",
+        rank=1,
+        score=0.00001,
+        created_at=created,
+        memory_type=MemoryType.FACT,
+    )
+    exact = weak.model_copy(
+        update={"memory_id": exact_id, "content": "exact lexical evidence", "rank": 2}
+    )
+    accepted = apply_relevance_boundary(
+        (weak, exact),
+        minimum_score=0.00005,
+        trusted_memory_ids={exact_id},
+    )
+    assert tuple(item.memory_id for item in accepted) == (exact_id,)
 
 
 @pytest.mark.asyncio

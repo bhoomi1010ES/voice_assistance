@@ -100,6 +100,7 @@ backend/htmlcov/
 /backend/.pytest_tmp/
 /backend/physical_uvicorn.*.log
 /backend/uvicorn.log
+/backend/server_*.log
 /backend/windows_stt/bin/
 /backend/windows_stt/obj/
 /backend/windows_stt.Tests/bin/

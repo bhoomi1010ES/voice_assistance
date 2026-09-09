@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
@@ -15,6 +17,8 @@ from .policy import validate_candidate
 from .providers import RemoteEmbeddingProvider
 from .types import MemorySourceKind
 from .writer import MemoryWriter
+
+LOGGER = logging.getLogger("voice-assistance-backend")
 
 
 class MemoryJobHandler(Protocol):
@@ -87,6 +91,22 @@ class MemoryJobWorker:
         job = await self.repository.claim_next(session)
         if job is None:
             return False
+        started = time.perf_counter()
+        job_uuid = job.id
+        job_id = _short_id(job.id)
+        user_id = _short_id(job.user_id)
+        job_type = job.job_type
+        attempted_count = job.attempts
+        LOGGER.info(
+            "memory worker job received",
+            extra={
+                "event": "memory.worker.job_received",
+                "job_id": job_id,
+                "user_id": user_id,
+                "job_type": job_type,
+                "attempt": attempted_count,
+            },
+        )
         try:
             if job.job_type == "extract_turn":
                 await self._extract_turn(session, job)
@@ -98,20 +118,40 @@ class MemoryJobWorker:
                 raise ValueError("memory_job_type_unsupported")
             await self.repository.complete(session, job)
             await session.commit()
+            LOGGER.info(
+                "memory worker job completed",
+                extra={
+                    "event": "memory.worker.job_completed",
+                    "job_id": job_id,
+                    "user_id": user_id,
+                    "job_type": job_type,
+                    "attempt": attempted_count,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+                },
+            )
         except asyncio.CancelledError:
             await session.rollback()
+            LOGGER.info(
+                "memory worker job cancelled",
+                extra={
+                    "event": "memory.worker.job_cancelled",
+                    "job_id": job_id,
+                    "user_id": user_id,
+                    "job_type": job_type,
+                    "attempt": attempted_count,
+                },
+            )
             raise
         except Exception as error:  # noqa: BLE001 - bounded retry/dead-letter boundary
             await session.rollback()
             # The rollback expires the claimed object, so reload it by ID before updating.
-            attempted_count = job.attempts
             current = datetime.now(UTC)
             status = (
                 "dead" if attempted_count >= self.settings.memory_job_max_attempts else "retry_wait"
             )
             await session.execute(
                 update(MemoryJob)
-                .where(MemoryJob.id == job.id)
+                .where(MemoryJob.id == job_uuid)
                 .values(
                     status=status,
                     attempts=attempted_count,
@@ -125,6 +165,19 @@ class MemoryJobWorker:
                 )
             )
             await session.commit()
+            LOGGER.error(
+                "memory worker job failed",
+                extra={
+                    "event": "memory.worker.job_failed",
+                    "job_id": job_id,
+                    "user_id": user_id,
+                    "job_type": job_type,
+                    "attempt": attempted_count,
+                    "status": status,
+                    "error_code": _error_code(error),
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+                },
+            )
         return True
 
     async def _extract_turn(self, session: AsyncSession, job: MemoryJob) -> None:
@@ -185,12 +238,34 @@ class MemoryJobWorker:
         )
         if not chunks:
             raise ValueError("memory_chunks_missing")
+        started = time.perf_counter()
+        LOGGER.info(
+            "memory embedding started",
+            extra={
+                "event": "memory.worker.embedding_started",
+                "job_id": _short_id(job.id),
+                "memory_id": _short_id(job.memory_id),
+                "user_id": _short_id(job.user_id),
+                "chunk_count": len(chunks),
+            },
+        )
         response = await self.embedding_provider.embed(tuple(chunk.content for chunk in chunks))
         now = datetime.now(UTC)
         for chunk, vector in zip(chunks, response.vectors, strict=True):
             chunk.embedding = list(vector)
             chunk.embedding_model = response.model
             chunk.embedded_at = now
+        LOGGER.info(
+            "memory embedding completed",
+            extra={
+                "event": "memory.worker.embedding_completed",
+                "job_id": _short_id(job.id),
+                "memory_id": _short_id(job.memory_id),
+                "user_id": _short_id(job.user_id),
+                "embedding_dimension": self.settings.memory_embedding_dimension,
+                "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+            },
+        )
 
     async def _purge_session(self, session: AsyncSession, job: MemoryJob) -> None:
         if job.source_session_id is None:
@@ -205,3 +280,7 @@ class MemoryJobWorker:
 
 def _error_code(error: Exception) -> str:
     return str(getattr(error, "code", "memory_job_failed"))[:128]
+
+
+def _short_id(value: object) -> str:
+    return str(value).replace("-", "")[:12]

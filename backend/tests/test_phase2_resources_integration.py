@@ -158,10 +158,18 @@ def test_memory_task_and_session_ownership_matrix(resource_client) -> None:
     assert client.get("/memories?user_id=" + tokens_b["user"]["id"], headers=headers_a).json() == [
         memory_a.json()
     ]
-    assert (
-        client.get("/memories/search", params={"query": "User B private"}, headers=headers_a).json()
-        == []
+    search_as_a = client.get(
+        "/memories/search",
+        params={"query": "User B private"},
+        headers=headers_a,
     )
+    assert search_as_a.status_code == 200
+    search_ids_as_a = {item["id"] for item in search_as_a.json()}
+    # Hybrid semantic retrieval may legitimately match A's similarly worded
+    # memory. The security invariant is that B's memory never crosses the
+    # authenticated ownership boundary.
+    assert search_ids_as_a <= {memory_a_id}
+    assert memory_b_id not in search_ids_as_a
     assert (
         client.post(
             "/memories",

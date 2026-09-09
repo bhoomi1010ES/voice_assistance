@@ -27,10 +27,24 @@ export function VoiceSocketProvider({
   socket?: VoiceSocket;
   options?: VoiceSocketOptions;
 }) {
-  const { status } = useAuth();
+  const { status, controller } = useAuth();
+  const connectionOptions = useMemo<VoiceSocketOptions>(() => {
+    if (options?.prepareConnection) {
+      return options;
+    }
+    return {
+      ...options,
+      // A harmless GET when the access token is valid; AuthController's
+      // existing 401 path refreshes the token and updates secure storage
+      // before the native WebSocket reads it.
+      prepareConnection: async () => {
+        await controller.request('/auth/me');
+      },
+    };
+  }, [controller, options]);
   const activeSocket = useMemo(
-    () => socket ?? new VoiceSocket(options),
-    [options, socket],
+    () => socket ?? new VoiceSocket(connectionOptions),
+    [connectionOptions, socket],
   );
   const [snapshot, setSnapshot] = useState(activeSocket.getSnapshot());
 

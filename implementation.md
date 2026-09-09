@@ -2124,6 +2124,18 @@ This decision allows repository, backend, authentication, WebSocket, STT, LLM, a
 
 ### Gate
 
+### Phase 6 worker acceptance clarification (2026-09-09)
+
+The production memory-worker gate is now **PASS**. The worker is wired through
+`app.main:create_app` when memory writes are enabled and can also run through
+`app.memory.worker_main`. Live worker evidence is recorded in
+`docs/evidence/phase6/phase6_worker_summary.json` and
+`docs/20260909T200159Z_phase6_worker_validation.md`. The remaining external
+acceptance items are the live NVIDIA grounded-memory run, broader physical
+Android Phase 3–5 flows, TalkBack/large-font/privacy checks, shadow/canary
+rollout, target-hardware performance, and the separate Phase 4/5 cancellation
+regression.
+
 **Status: NOT PASSED / PARTIALLY IMPLEMENTED.**
 
 Core capture and inference infrastructure is stable enough for conditional downstream development with manual activation and effects disabled. Do not approve the full voice-product gate until wake word + VAD + capture + AEC/NS behavior works reliably on representative Android hardware and the remaining measurements above are recorded.
@@ -3076,7 +3088,7 @@ evaluation evidence before production use.
 
 ### Steps
 
-> **Implementation status (2026-09-08):** Core Phase 6 persistence, strict model-service clients, deterministic planning/retrieval/fusion, explicit extraction/jobs, ownership APIs/tools, provider-neutral voice context hooks, and the mobile memory controls are implemented. `MEMORY_RETRIEVAL_MODE=off` and `MEMORY_WRITE_ENABLED=false` remain the safe defaults. The Phase 6 gate is **ACCEPTANCE PENDING** until the configured embedding/reranker deployments, retrieval evaluation, production-like LLM evidence, and physical/privacy validation are recorded.
+> **Implementation status (2026-09-09):** Core Phase 6 persistence, strict model-service clients, deterministic planning/retrieval/fusion, explicit extraction/jobs, ownership APIs/tools, provider-neutral voice context hooks, and the mobile memory controls are implemented. Code defaults remain `MEMORY_RETRIEVAL_MODE=off` and `MEMORY_WRITE_ENABLED=false`; the local physical-test environment has explicitly enabled them. Retrieval, automatic-extraction, production memory-worker, and live NVIDIA grounded-memory evaluations now pass; the overall Phase 6 gate remains **ACCEPTANCE PENDING** until broader physical/privacy validation and rollout evidence are recorded.
 
 - [x] Create memory tables.
 - [x] Create the BGE-M3-compatible embedding client with strict response validation.
@@ -3086,7 +3098,7 @@ evaluation evidence before production use.
 - [x] Implement semantic retrieval.
 - [x] Implement keyword retrieval.
 - [x] Implement RRF/hybrid merge.
-- [ ] Deploy `bge-reranker-v2-m3`.
+- [x] Validate the configured `bge-reranker-v2-m3` deployment contract.
 - [x] Add strict reranking client and bounded reranking.
 - [x] Implement deterministic explicit memory extraction and durable jobs.
 - [x] Implement memory deduplication.
@@ -3096,14 +3108,21 @@ evaluation evidence before production use.
 - [x] Add `memory_forget` tool with owner scope, confirmation, and hard-delete semantics.
 - [x] Add bounded lease/retry/dead-letter worker lifecycle.
 
-### Phase 6 verification status (2026-09-08)
+### Phase 6 verification status (2026-09-09)
 
-- Automated implementation checks: **PASS** — backend standard suite `176 passed, 25 skipped`; full suite with integration enabled `201 passed`; Ruff check/format, compile/import validation, and Alembic check pass.
-- Cleanup regression: **PASS** — cancelled slow-STT WebSocket teardown no longer leaves a pooled PostgreSQL connection; promoted SQLAlchemy and unraisable-connection warnings pass.
+- Automated implementation checks: **PARTIAL** — the current backend standard suite is `190 passed, 25 skipped`; focused Phase 6 tests are `13 passed, 2 skipped`; Python compilation passes and Alembic reports head/current `0007_phase6_memory_foundation`. The full integration run with `RUN_INTEGRATION_TESTS=1` completed `25 passed`; the cancellation regression was also run three consecutive times and passed each time. Full backend Ruff still reports four existing `UP038` errors in `app/memory/providers.py` and `app/services/audit.py`; the validation script itself passes Ruff. Frontend counts remain historical and were not rerun in this task.
+- Cleanup regression: **NOT REPRODUCED in current validation** — the previously observed cancellation `PendingRollbackError` did not recur in the full integration run or three repeated focused runs; no code change was made to reclassify or suppress it.
 - Safe rollout defaults: **PASS** — retrieval remains `off` and memory writes remain disabled unless explicitly configured.
-- Acceptance manifest/evaluator: **PASS** — versioned 20-case corpus and zero-tolerance security gates are present; the evaluator correctly reports `BLOCKED` when no production observations are supplied (`docs/evidence/phase6_retrieval_eval_20260908.json`).
+- Acceptance manifest/evaluator: **PASS (retrieval acceptance)** — the unchanged 25-case live run records hybrid Recall@5 `1.000`, final MRR `0.875`, nDCG@5 `0.895`, top-1 accuracy `0.800`, no-result irrelevant injection `0`, cross-user leakage `0`, and deleted-memory retrieval `0`. The before/after record and stage-level failure analysis are in `docs/evidence/phase6/phase6_hybrid_fusion_before_after.json` and `docs/evidence/phase6/phase6_retrieval_failure_analysis.json`; authoritative results are in `docs/evidence/phase6/phase6_retrieval_metrics.json` and `docs/20260909T192034Z_phase6_retrieval_evaluation.md`.
+- Automatic extraction evaluation: **PASS** — the unchanged 66-case labeled corpus records TP `30`, TN `36`, FP `0`, FN `0`, precision `1.000`, recall `1.000`, F1 `1.000`, memory-type accuracy `1.000`, normalization accuracy `1.000`, explicit opt-out/forget/tool/sensitive/duplicate errors `0`, and P50/P95/P99 latency `0.012/0.038/0.085 ms`. Baseline-to-final metrics and failures are preserved in `docs/evidence/phase6/phase6_extraction_before_after.json`; authoritative results are in `docs/evidence/phase6/phase6_extraction_metrics.json` and `docs/20260909T194213Z_phase6_extraction_evaluation.md`.
+- Production memory worker evaluation: **PASS** — the real `MemoryJobWorker` and lifecycle service processed the normal extraction-to-embedding path with a live BAAI/bge-m3 endpoint, persisted 1,024-dimensional vectors, passed retrieval, retried temporary failure, dead-lettered permanent failure, recovered stale leases, rejected duplicate delivery, completed 10 concurrent jobs across two users, and recorded zero lost jobs, cross-user leakage, or duplicate durable writes. Evidence: `docs/evidence/phase6/phase6_worker_summary.json` and `docs/20260909T200920Z_phase6_worker_validation.md`.
+- Phase 6 worker acceptance clarification (2026-09-09): **PASS**. The production worker is wired through `app.main:create_app` when memory writes are enabled and can also run through `app.memory.worker_main`. Remaining Phase 6 acceptance items are broader physical Android Phase 3–5 flows, TalkBack/large-font/privacy checks, shadow/canary rollout, and target-hardware performance.
+- Live NVIDIA grounded-memory validation: **PASS** — eight live cases used the configured NVIDIA provider and the production retrieval/context/request/tool-loop boundaries. Grounded retrieval and answer passed; no-result injection and fabricated personal-memory answer were zero; all five adversarial retrieved-memory cases remained inert; unauthorized mutating tool executions and cross-user leakage were both zero. P50/P95/P99 latency was `6744.233/11687.777/13113.670 ms`. Evidence: `docs/evidence/phase6/phase6_nvidia_summary.json` and `docs/20260909T202557Z_phase6_nvidia_live_validation.md`.
+- HNSW planner validation: **PASS (isolated large corpus)** — a deterministic 5,000-row, 1,024-dimensional temporary corpus selected the HNSW index under normal planning and returned the expected nearest row. Evidence: `docs/evidence/phase6/phase6_hnsw_plan_validation.json`. The small production-shaped evaluation corpus still uses a sequential plan, which is expected planner behavior and is not the HNSW acceptance proof.
 - Mobile memory UI implementation: **PASS** — authenticated list/search/detail/edit/delete/delete-all/settings/session-exclusion controls are wired to owner-scoped APIs and covered by Jest component tests.
-- External acceptance: **PENDING/BLOCKED** — `.env` has no embedding/reranker endpoints, so live provider/NVIDIA Hybrid-RAG evidence cannot run; physical Android Phase 3–6 validation, manual accessibility/privacy checks, production worker operation, and performance measurements still require evidence. Android `adb`/Gradle is blocked by the local Windows Android/Gradle runtime environment.
+- Live memory providers: **PASS (contract probe)** — the configured remote embedding endpoint returned model `BAAI/bge-m3` with one finite 1024-dimensional vector, and the configured reranker ranked the relevant document first with bounded scores. Evidence: `docs/evidence/phase6_provider_contract_20260909.json`.
+- Confirmation regression: **PASS (automated)** — confirmation payload UUIDs are JSON-safe, and approved tool execution receives the Phase 6 memory dependencies. The prior physical `memory_save` failure was traced to the missing approval-turn memory context and fixed at the shared gateway boundary.
+- External acceptance: **PENDING** — retrieval, automatic extraction, production worker, and live NVIDIA grounded-memory acceptance now pass. Broader physical Android Phase 3–5 flows, TalkBack/large-font/privacy checks, shadow/canary rollout, and target-hardware performance measurements still require evidence. The user-confirmed physical `memory_save`, memory search/forget, and `create_task` gates remain PASS and were not repeated or modified. Full backend Ruff still needs the four existing `UP038` cleanups before the repository quality gate is green.
 
 ### Gate
 

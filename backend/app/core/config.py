@@ -127,8 +127,14 @@ class Settings(BaseSettings):
     memory_policy_version: str = "phase6-explicit-v1"
     memory_min_confidence: float = Field(default=0.80, ge=0, le=1)
     memory_min_salience: float = Field(default=0.20, ge=0, le=1)
+    # The configured BGE reranker returns a bounded confidence score. Values
+    # below this floor are retained in diagnostics but are not injected into
+    # an assistant context as if they were relevant evidence.
+    memory_min_rerank_score: float = Field(default=0.00005, ge=0, le=1)
     memory_job_lease_seconds: int = Field(default=120, ge=10, le=3_600)
     memory_job_max_attempts: int = Field(default=5, ge=1, le=20)
+    memory_worker_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
+    memory_worker_shutdown_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     memory_chunk_max_chars: int = Field(default=1_600, ge=128, le=16_384)
     memory_chunk_overlap_chars: int = Field(default=160, ge=0, le=8_192)
 

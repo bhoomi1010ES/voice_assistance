@@ -146,12 +146,17 @@ async def _gateway(*, pending: PendingConfirmation | None = None):
     [
         ("yes", "APPROVED"),
         ("YES, please!", "APPROVED"),
+        ("Yes, approve 10 AM.", "APPROVED"),
+        ("yes please approve that time", "APPROVED"),
+        ("I approve the new time", "APPROVED"),
         ("go ahead", "APPROVED"),
         ("no", "REJECTED"),
         ("No thanks.", "REJECTED"),
         ("nevermind", "REJECTED"),
+        ("No, do not approve 10 AM", "REJECTED"),
         ("maybe", "AMBIGUOUS"),
         ("I don't know", "AMBIGUOUS"),
+        ("I do not approve that", "REJECTED"),
     ],
 )
 def test_confirmation_resolver_is_deterministic(spoken: str, expected: str) -> None:

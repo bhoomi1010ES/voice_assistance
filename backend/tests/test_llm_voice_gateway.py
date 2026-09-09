@@ -58,6 +58,9 @@ class FakeDatabase:
     def __init__(self) -> None:
         self.commits = 0
 
+    async def scalar(self, _statement):
+        return SimpleNamespace(memory_enabled=False)
+
     async def commit(self) -> None:
         self.commits += 1
 
@@ -100,7 +103,7 @@ def _gateway(event_factory):
     gateway.cancel_guard = CancellationGuard()
     gateway.persistence = FakePersistence()
     gateway.db = FakeDatabase()
-    gateway.principal = object()
+    gateway.principal = SimpleNamespace(user_id=uuid.uuid4())
     gateway._session_id = None
     gateway.state = SimpleNamespace(session_id=None)
     outbound: list[dict] = []

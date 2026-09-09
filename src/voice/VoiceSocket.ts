@@ -170,6 +170,11 @@ export type VoiceSocketAdapter = {
 export type VoiceSocketOptions = {
   adapter?: VoiceSocketAdapter;
   url?: string;
+  /**
+   * Refreshes/validates the authenticated HTTP session before opening a
+   * socket. The callback must not expose or return credentials.
+   */
+  prepareConnection?: () => Promise<void>;
   appState?: VoiceAppStateSource;
   now?: () => number;
   connectTimeoutMs?: number;
@@ -362,6 +367,7 @@ export function normalizeVoiceGatewayEvent(
 export class VoiceSocket {
   private readonly adapter: VoiceSocketAdapter;
   private readonly url: string;
+  private readonly prepareConnection?: () => Promise<void>;
   private readonly appState: VoiceAppStateSource;
   private readonly now: () => number;
   private readonly connectTimeoutMs: number;
@@ -398,6 +404,7 @@ export class VoiceSocket {
   constructor(options: VoiceSocketOptions = {}) {
     this.adapter = options.adapter ?? nativeVoiceSocketAdapter;
     this.url = options.url ?? VOICE_GATEWAY_URL;
+    this.prepareConnection = options.prepareConnection;
     this.appState = (options.appState ?? AppState) as VoiceAppStateSource;
     this.now = options.now ?? (() => Date.now());
     this.connectTimeoutMs =
@@ -874,6 +881,10 @@ export class VoiceSocket {
 
   private async openTransport(isReconnect: boolean): Promise<void> {
     try {
+      // The native transport reads its bearer token from secure storage. Keep
+      // that token current before every new socket so reconnects cannot loop
+      // on an expired access token after the HTTP session has been refreshed.
+      await this.prepareConnection?.();
       const status = await this.adapter.connect(this.url);
       this.handleStatus(status);
       await this.waitForConnected();

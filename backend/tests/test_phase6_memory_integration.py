@@ -198,7 +198,10 @@ async def _run_extraction_job(settings: Settings, email: str) -> None:
             source_session_id=voice_session.id,
             idempotency_key=f"extract-test:{message.id}",
             status="pending",
-            available_at=now,
+            # This integration database can contain legitimate queued work
+            # from physical validation. Make the isolated fixture oldest so
+            # one worker iteration deterministically claims this exact job.
+            available_at=now - timedelta(days=3650),
             policy_version="phase6-explicit-v1",
         )
         session.add(user)

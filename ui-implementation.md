@@ -1203,19 +1203,20 @@ The UI must always describe the capability the system actually has. A feature th
 
 ## Phase 6 UI status
 
-**IMPLEMENTED — ACCEPTANCE PENDING.**
+**IMPLEMENTED — ACCEPTANCE PENDING (revalidated 2026-09-09).**
 
 `MemoryScreen` and its typed API client provide authenticated memory list/search/detail,
 content editing, single/delete-all confirmation, memory on/off settings, and exclusion of
-the active voice session. The backend rollout remains disabled by default. Physical
-large-font/TalkBack, reconnect/lifecycle, privacy, and provider-enabled acceptance still
-need to be observed and recorded. Pagination/date/type filters, server-confirmed
+the active voice session. Backend code defaults remain disabled, while the local test
+environment explicitly enables injection and writes. The live embedding and reranker
+contracts pass; physical large-font/TalkBack, reconnect/lifecycle, privacy, and
+provider-enabled end-to-end acceptance still need to be observed and recorded. Pagination/date/type filters, server-confirmed
 “used memory” response indicators, and production conflict-history presentation remain
 acceptance gaps rather than being simulated locally.
 
-## Current verified UI status (2026-09-08)
+## Current verified UI status (2026-09-09)
 
-- Automated frontend gates: **PASS** — TypeScript, Prettier, UI secret scan, and Jest `44/44`; ESLint has `0` errors and `17` warnings.
+- Automated frontend gates: **PASS** — TypeScript, Prettier, UI secret scan, and Jest `47/47`; ESLint has `0` errors and `17` warnings.
 - UI Phase 1: **ACCEPTANCE PENDING** — large-font and accessibility physical evidence is not recorded.
 - UI Phase 2: **PASS**.
 - UI Phase 3: **ACCEPTANCE PENDING** — physical reconnect/recovery evidence needs a refreshed disposable authentication run.
