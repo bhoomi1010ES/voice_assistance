@@ -88,3 +88,18 @@ starlette.websockets.WebSocketDisconnect
 INFO:     192.168.1.9:43314 - "WebSocket /v1/voice" [accepted]
 INFO:     connection open
 {"timestamp":"2026-09-08T18:07:09.474686+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.opened","message":"Voice WebSocket connection opened","taskName":"Task-24","backend_pid":21200,"monotonic_ms":590894328.0}
+{"timestamp":"2026-09-08T18:11:29.624628+00:00","level":"INFO","service":"voice-assistance-backend","event":"voice.connection.closed","message":"Voice WebSocket connection closed","taskName":"Task-28","session_id":null,"close_code":1008,"close_reason":"client_disconnect","backend_pid":21200,"monotonic_ms":591154484.0}
+INFO:     192.168.1.9:45746 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     192.168.1.9:45752 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     192.168.1.9:45766 - "WebSocket /v1/voice" 403
+INFO:     connection rejected (403 Forbidden)
+{"timestamp":"2026-09-08T23:12:21.991560+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"9f935fa1-0fb6-41e8-9d95-296a90bb7f0c","method":"GET","path":"/health","status_code":200,"duration_ms":8.376,"taskName":"Task-60"}
+{"timestamp":"2026-09-08T23:12:22.021894+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"9d8ffb18-0186-4129-9daf-a85acd5a3a87","method":"GET","path":"/v1/embeddings","status_code":404,"duration_ms":2.826,"taskName":"Task-61"}
+{"timestamp":"2026-09-08T23:12:22.052651+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"aeee9eb2-b63e-4c65-9d86-2662e6f04bb7","method":"GET","path":"/v1/rerank","status_code":404,"duration_ms":1.038,"taskName":"Task-62"}
+{"timestamp":"2026-09-08T23:12:44.052962+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"b165b8e7-e18f-4a3b-bbe0-58fe06caaa72","method":"GET","path":"/health","status_code":200,"duration_ms":5.647,"taskName":"Task-65"}
+{"timestamp":"2026-09-08T23:19:26.298719+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"2a22f3b2-771b-4c1c-b892-dbd7370d9f2b","method":"GET","path":"/v1/embeddings","status_code":404,"duration_ms":0.779,"taskName":"Task-70"}
+{"timestamp":"2026-09-08T23:19:26.321631+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"026504b4-de8d-4743-bd37-338e05fd44bf","method":"GET","path":"/v1/rerank","status_code":404,"duration_ms":0.614,"taskName":"Task-71"}
+{"timestamp":"2026-09-08T23:19:43.338973+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"cfe08e58-981e-4993-b3af-3932ab743a55","method":"GET","path":"/health","status_code":200,"duration_ms":0.495,"taskName":"Task-73"}
+{"timestamp":"2026-09-08T23:19:47.630635+00:00","level":"INFO","service":"voice-assistance-backend","event":"request.completed","message":"request completed","request_id":"88cc532b-3b72-4467-a74c-c9260780b54a","method":"GET","path":"/ready","status_code":503,"duration_ms":26351.961,"taskName":"Task-67"}

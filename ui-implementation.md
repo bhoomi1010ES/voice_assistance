@@ -30,12 +30,13 @@ At the current Phase 5 position, implement the complete UI foundation and the fi
 | System phase | Current status | UI consequence |
 |---|---|---|
 | Phase 0 | Partially implemented; gate not passed | Retain manual microphone controls and diagnostic status. Do not present hands-free/background listening as reliable. |
-| Phase 1 | PASS | UI project foundation and automated checks can be standardized now. |
+| Phase 1 | Implemented; acceptance pending | UI project foundation and automated checks pass; large-font/accessibility physical evidence is still required. |
 | Phase 2 | PASS | Login, secure session restoration, logout, and device/session UI can be completed now. |
-| Phase 3 | PASS | The assistant UI can use the authenticated voice WebSocket and correlated session/turn/response IDs. |
+| Phase 3 | Implemented; physical revalidation pending | The assistant UI uses the authenticated voice WebSocket and correlated session/turn/response IDs. |
 | Phase 4 | Implemented; acceptance pending | Transcript UX can be built, but final UI acceptance needs the revised remote-STT physical test. |
-| Phase 5 | In progress | Build the product shell and streaming conversation UI now; tool-action UI remains pending until the server-owned tool loop passes. |
-| Phases 6–12 | Not started | Add feature UI progressively behind capability checks or disabled navigation until each backend contract is ready. |
+| Phase 5 | Implemented; physical acceptance pending | Product shell, streaming conversation, cancellation, retry, and safe error handling are implemented; real Android STT-to-LLM evidence is still required. |
+| Phase 6 | Implemented; UI acceptance pending | Backend memory persistence/retrieval foundations and the authenticated mobile memory controls are implemented, but provider, physical, privacy, accessibility, and performance acceptance are not complete. |
+| Phases 7–12 | Not started | Add feature UI progressively behind capability checks or disabled navigation until each backend contract is ready. |
 
 ---
 
@@ -1199,3 +1200,25 @@ repeated-turn soak shows no unbounded UI resource growth
 ```
 
 The UI must always describe the capability the system actually has. A feature that is unavailable, degraded, final-only, awaiting confirmation, cancelled, or failed must never be presented as live, successful, or complete.
+
+## Phase 6 UI status
+
+**IMPLEMENTED — ACCEPTANCE PENDING.**
+
+`MemoryScreen` and its typed API client provide authenticated memory list/search/detail,
+content editing, single/delete-all confirmation, memory on/off settings, and exclusion of
+the active voice session. The backend rollout remains disabled by default. Physical
+large-font/TalkBack, reconnect/lifecycle, privacy, and provider-enabled acceptance still
+need to be observed and recorded. Pagination/date/type filters, server-confirmed
+“used memory” response indicators, and production conflict-history presentation remain
+acceptance gaps rather than being simulated locally.
+
+## Current verified UI status (2026-09-08)
+
+- Automated frontend gates: **PASS** — TypeScript, Prettier, UI secret scan, and Jest `44/44`; ESLint has `0` errors and `17` warnings.
+- UI Phase 1: **ACCEPTANCE PENDING** — large-font and accessibility physical evidence is not recorded.
+- UI Phase 2: **PASS**.
+- UI Phase 3: **ACCEPTANCE PENDING** — physical reconnect/recovery evidence needs a refreshed disposable authentication run.
+- UI Phase 4: **ACCEPTANCE PENDING** — the revised remote-STT ten-turn physical run is not recorded.
+- UI Phase 5: **ACCEPTANCE PENDING** — real Android STT-final-to-LLM streaming, cancellation, retry, lifecycle, and tool-status evidence is not recorded.
+- UI Phase 6: **IMPLEMENTED — ACCEPTANCE PENDING** — memory controls and automated component coverage are present; provider-enabled physical, accessibility, privacy, lifecycle, and performance evidence is not recorded.

@@ -140,6 +140,7 @@ test('overflow menu opens settings, profile, and sign out actions', async () => 
   });
 
   expect(renderer.root.findByProps({ testID: 'main-menu' })).toBeTruthy();
+  expect(renderer.root.findByProps({ testID: 'menu-memory' })).toBeTruthy();
   expect(renderer.root.findByProps({ testID: 'menu-settings' })).toBeTruthy();
   expect(renderer.root.findByProps({ testID: 'menu-profile' })).toBeTruthy();
   expect(renderer.root.findByProps({ testID: 'menu-sign-out' })).toBeTruthy();

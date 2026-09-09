@@ -4,7 +4,16 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKeyConstraint, Index, String, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,6 +32,10 @@ class User(Base):
     name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(512), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    memory_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    locale: Mapped[str] = mapped_column(String(16), nullable=False, default="en")
+    memory_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
@@ -33,6 +46,7 @@ class User(Base):
     __table_args__ = (
         Index("ix_users_email_unique", "email", unique=True),
         Index("ix_users_status", "status"),
+        CheckConstraint("status IN ('active', 'disabled')", name="ck_users_status"),
     )
 
 
@@ -89,6 +103,7 @@ class AuthSession(Base):
         Index("ix_auth_sessions_device_id", "device_id"),
         Index("ix_auth_sessions_refresh_token_hash_unique", "refresh_token_hash", unique=True),
         Index("ix_auth_sessions_expires_at", "expires_at"),
+        UniqueConstraint("id", "user_id", name="uq_auth_sessions_id_user_id"),
     )
 
 
@@ -114,4 +129,5 @@ class AuditLog(Base):
         Index("ix_audit_logs_device_id", "device_id"),
         Index("ix_audit_logs_event_type", "event_type"),
         Index("ix_audit_logs_created_at", "created_at"),
+        CheckConstraint("length(trim(event_type)) > 0", name="ck_audit_logs_event_type"),
     )

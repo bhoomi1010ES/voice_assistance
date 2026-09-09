@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -12,7 +13,7 @@ from app.websocket.binary import (
     encode_pcm_frame,
 )
 from app.websocket.cancellation import CancellationGuard
-from app.websocket.protocol import ProtocolError, parse_control_message
+from app.websocket.protocol import ProtocolError, parse_control_message, server_event
 from app.websocket.state import (
     SequenceError,
     StateTransitionError,
@@ -115,3 +116,21 @@ def test_cancellation_guard_blocks_stale_response() -> None:
     assert not guard.can_emit(response_a)
     assert guard.can_emit(response_b)
     assert not guard.cancel(response_a)
+
+
+def test_server_event_payload_is_json_safe_for_confirmation_ids() -> None:
+    confirmation_id = uuid.uuid4()
+    nested_id = uuid.uuid4()
+
+    event = server_event(
+        "confirmation.required",
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=uuid.uuid4(),
+        confirmation_id=confirmation_id,
+        validated_arguments={"memory_id": nested_id},
+    )
+
+    assert event["confirmation_id"] == str(confirmation_id)
+    assert event["validated_arguments"] == {"memory_id": str(nested_id)}
+    assert json.loads(json.dumps(event))["confirmation_id"] == str(confirmation_id)

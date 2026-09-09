@@ -13,10 +13,12 @@ export function SettingsScreen({
   onOpenDiagnostics,
   onOpenAccount,
   onOpenSessions,
+  onOpenMemory,
 }: {
   onOpenDiagnostics: () => void;
   onOpenAccount: () => void;
   onOpenSessions: () => void;
+  onOpenMemory: () => void;
 }) {
   return (
     <Screen testID="settings-screen">
@@ -35,6 +37,13 @@ export function SettingsScreen({
         onPress={onOpenSessions}
         style={styles.card}
         variant="secondary"
+      />
+      <ActionButton
+        label={strings.settings.memory}
+        onPress={onOpenMemory}
+        style={styles.card}
+        variant="secondary"
+        testID="settings-memory"
       />
       {__DEV__ ? (
         <ActionButton

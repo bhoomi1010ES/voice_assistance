@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.api.dependencies import DatabaseSessionDependency, get_current_principal
 from app.models import VoiceSession
-from app.schemas import SessionUpdateRequest, VoiceSessionResponse
+from app.schemas import MemoryExclusionRequest, SessionUpdateRequest, VoiceSessionResponse
 from app.services.auth import AuthPrincipal
 from app.services.ownership import get_owned_voice_session, record_ownership_denial
 
@@ -89,6 +89,37 @@ async def update_session(
         raise not_found()
     if payload.client_metadata is not None:
         voice_session.client_metadata = payload.client_metadata
+    await session.commit()
+    await session.refresh(voice_session)
+    return voice_session
+
+
+@router.put("/{session_id}/memory-exclusion", response_model=VoiceSessionResponse)
+async def set_memory_exclusion(
+    session_id: uuid.UUID,
+    payload: MemoryExclusionRequest,
+    request: Request,
+    session: DatabaseSessionDependency,
+    principal: Annotated[AuthPrincipal, Depends(get_current_principal)],
+) -> VoiceSession:
+    voice_session = await get_owned_voice_session(
+        session,
+        user_id=principal.user_id,
+        session_id=session_id,
+    )
+    if voice_session is None:
+        await record_ownership_denial(
+            session,
+            request,
+            user_id=principal.user_id,
+            device_id=principal.device_id,
+            resource="voice_session",
+            resource_id=session_id,
+        )
+        raise not_found()
+    metadata = dict(voice_session.client_metadata or {})
+    metadata["memory_excluded"] = payload.excluded
+    voice_session.client_metadata = metadata
     await session.commit()
     await session.refresh(voice_session)
     return voice_session

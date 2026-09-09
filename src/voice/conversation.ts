@@ -142,7 +142,16 @@ export type ConversationState = {
 export const MAX_CONVERSATION_MESSAGES = 120;
 export const TOOL_UI_ENABLED = true;
 
-const SUPPORTED_TOOL_NAMES = new Set(['get_current_time', 'create_task']);
+const MUTATING_TOOL_NAMES = new Set([
+  'create_task',
+  'memory_save',
+  'memory_forget',
+]);
+const READ_ONLY_TOOL_NAMES = new Set(['get_current_time', 'memory_search']);
+const SUPPORTED_TOOL_NAMES = new Set([
+  ...MUTATING_TOOL_NAMES,
+  ...READ_ONLY_TOOL_NAMES,
+]);
 const TOOL_STATUS_TRANSITIONS: Record<
   ConversationToolStatus,
   ReadonlySet<ConversationToolStatus>
@@ -685,10 +694,10 @@ function applyToolEvent(
     existing &&
     (existing.name !== event.name ||
       !TOOL_STATUS_TRANSITIONS[existing.status].has(event.status) ||
-      (existing.name === 'create_task' &&
+      (MUTATING_TOOL_NAMES.has(existing.name) &&
         existing.status === 'understanding' &&
         event.status === 'executing') ||
-      (existing.name === 'get_current_time' &&
+      (READ_ONLY_TOOL_NAMES.has(existing.name) &&
         ['confirmation_required', 'approved'].includes(event.status)))
   ) {
     return { state, accepted: false };

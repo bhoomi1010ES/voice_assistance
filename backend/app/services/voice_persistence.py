@@ -7,7 +7,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ConversationTurn, VoiceSession
+from app.memory.repository import MemoryRepository
+from app.models import ConversationTurn, Message, VoiceSession
 from app.services.auth import AuthPrincipal
 
 
@@ -277,3 +278,28 @@ class VoicePersistence:
             return None
         turn.metadata_json = {**(turn.metadata_json or {}), **metadata}
         return turn
+
+    async def persist_final_message(
+        self,
+        db: AsyncSession,
+        principal: AuthPrincipal,
+        *,
+        turn_id: uuid.UUID,
+        role: str,
+        content: str,
+        sequence_no: int = 0,
+        content_json: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> tuple[Message, bool]:
+        """Persist one final message through the Phase 6 ownership boundary."""
+
+        return await MemoryRepository().persist_final_message(
+            db,
+            principal,
+            turn_id=turn_id,
+            role=role,
+            content=content,
+            sequence_no=sequence_no,
+            content_json=content_json,
+            model=model,
+        )

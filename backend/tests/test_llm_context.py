@@ -12,6 +12,7 @@ from app.llm.context import (
 )
 from app.llm.tool_loop import create_default_tool_registry
 from app.llm.types import LLMMessage, LLMNamedToolChoice, LLMRequest, LLMRole
+from app.memory.tool_tools import register_memory_tools
 
 
 def _settings() -> Settings:
@@ -67,6 +68,37 @@ def test_routing_requires_registered_create_task_tool() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Remember that I prefer online morning meetings.",
+        "Please remember I live in Mumbai.",
+        "Save this in my memory: I prefer jasmine tea.",
+    ],
+)
+def test_explicit_memory_intent_selects_registered_memory_save(prompt: str) -> None:
+    registry = create_default_tool_registry()
+    register_memory_tools(registry, allow_write=True)
+
+    choice = classify_voice_tool_choice(prompt, registry.definitions())
+
+    assert isinstance(choice, LLMNamedToolChoice)
+    assert choice.function.name == "memory_save"
+
+
+def test_memory_routing_requires_registered_write_tool() -> None:
+    registry = create_default_tool_registry()
+    register_memory_tools(registry, allow_write=False)
+
+    assert (
+        classify_voice_tool_choice(
+            "Remember that I prefer online morning meetings.",
+            registry.definitions(),
+        )
+        == "auto"
+    )
+
+
 def test_named_tool_choice_cannot_reference_an_unregistered_tool() -> None:
     with pytest.raises(ValidationError, match="allowed registered tool"):
         LLMRequest(
@@ -93,4 +125,5 @@ def test_voice_request_contains_server_owned_routing_and_confirmation_policy() -
     assert isinstance(request.tool_choice, LLMNamedToolChoice)
     assert "MUST first call the registered" in request.system_instructions
     assert "create_task tool" in request.system_instructions
+    assert "memory_save tool" in request.system_instructions
     assert "server owns confirmation and execution" in request.system_instructions

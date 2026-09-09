@@ -1,0 +1,36 @@
+{
+  "corpus_id": "phase6-memory-corpus-v1",
+  "policy_version": "phase6-explicit-v1",
+  "description": "Sanitized deterministic acceptance corpus; no production user content.",
+  "records": [
+    {
+      "id": "fact-001",
+      "content": "I work remotely from Mumbai.",
+      "memory_type": "fact",
+      "subject": "user",
+      "predicate": "work_location",
+      "object": {"city": "Mumbai", "country": "India"}
+    },
+    {
+      "id": "preference-001",
+      "content": "I prefer green tea.",
+      "memory_type": "preference",
+      "subject": "user",
+      "predicate": "beverage",
+      "object": {"value": "green tea"}
+    },
+    {
+      "id": "relationship-001",
+      "content": "Rahul is my colleague.",
+      "memory_type": "relationship",
+      "subject": "Rahul",
+      "predicate": "relationship",
+      "object": {"value": "colleague"}
+    }
+  ],
+  "queries": [
+    {"id": "q-latest", "query": "What is my latest preference?", "expected_type": "preference"},
+    {"id": "q-location", "query": "What do you know about where I work?", "expected_id": "fact-001"},
+    {"id": "q-relationship", "query": "What is my relationship with Rahul?", "expected_id": "relationship-001"}
+  ]
+}

@@ -1,14 +1,26 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, WebSocket
+import asyncio
+import contextlib
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import extract_bearer_token
+from app.core.async_utils import await_cleanup
 from app.services.audit import record_audit
 from app.services.auth import AuthConfigurationError, AuthenticationError, AuthService
 from app.websocket.gateway import VoiceGateway
 
 router = APIRouter(tags=["voice"])
+
+
+async def _close_session(session: AsyncSession) -> None:
+    try:
+        await session.rollback()
+    finally:
+        await session.close()
 
 
 async def _reject_handshake(
@@ -21,22 +33,25 @@ async def _reject_handshake(
 ) -> None:
     session_factory = websocket.app.state.infrastructure.database.session_factory
     if session_factory is not None:
+        db = session_factory()
         try:
-            async with session_factory() as db:
-                record_audit(
-                    db,
-                    event_type,
-                    user_id=user_id,
-                    device_id=device_id,
-                    metadata={"reason": reason, "path": websocket.url.path},
-                    request=websocket,
-                )
-                await db.commit()
+            record_audit(
+                db,
+                event_type,
+                user_id=user_id,
+                device_id=device_id,
+                metadata={"reason": reason, "path": websocket.url.path},
+                request=websocket,
+            )
+            await db.commit()
         except Exception:  # noqa: BLE001 - rejection must not leak internals
-            pass
+            await db.rollback()
+        finally:
+            with contextlib.suppress(asyncio.CancelledError):
+                await await_cleanup(_close_session(db))
     try:
         await websocket.close(code=1008, reason="Authentication failed")
-    except RuntimeError:
+    except (RuntimeError, WebSocketDisconnect):
         pass
 
 
@@ -53,11 +68,15 @@ async def voice_gateway(websocket: WebSocket) -> None:
         return
 
     try:
-        async with session_factory() as auth_db:
+        auth_db = session_factory()
+        try:
             principal = await AuthService(websocket.app.state.settings).resolve_access_token(
                 auth_db,
                 access_token,
             )
+        finally:
+            with contextlib.suppress(asyncio.CancelledError):
+                await await_cleanup(_close_session(auth_db))
     except (AuthenticationError, AuthConfigurationError):
         await _reject_handshake(websocket, reason="invalid_or_revoked_token")
         return
@@ -66,7 +85,8 @@ async def voice_gateway(websocket: WebSocket) -> None:
         return
 
     await websocket.accept()
-    async with session_factory() as db:
+    db = session_factory()
+    try:
         gateway = VoiceGateway(
             websocket,
             db=db,
@@ -78,3 +98,6 @@ async def voice_gateway(websocket: WebSocket) -> None:
             llm_service=websocket.app.state.llm_service,
         )
         await gateway.run()
+    finally:
+        with contextlib.suppress(asyncio.CancelledError):
+            await await_cleanup(_close_session(db))

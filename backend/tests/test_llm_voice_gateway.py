@@ -101,6 +101,8 @@ def _gateway(event_factory):
     gateway.persistence = FakePersistence()
     gateway.db = FakeDatabase()
     gateway.principal = object()
+    gateway._session_id = None
+    gateway.state = SimpleNamespace(session_id=None)
     outbound: list[dict] = []
 
     async def send(event: dict) -> None:
@@ -108,6 +110,22 @@ def _gateway(event_factory):
 
     gateway._send = send
     return gateway, outbound
+
+
+def test_gateway_session_identity_does_not_read_expired_orm_state() -> None:
+    gateway = object.__new__(VoiceGateway)
+    session_id = uuid.uuid4()
+
+    class ExpiredVoiceSession:
+        @property
+        def id(self):
+            raise AssertionError("expired ORM identity was accessed")
+
+    gateway._session_id = None
+    gateway.state = SimpleNamespace(session_id=session_id)
+    gateway.voice_session = ExpiredVoiceSession()
+
+    assert gateway._active_session_id() == session_id
 
 
 @pytest.mark.asyncio

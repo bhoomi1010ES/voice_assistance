@@ -93,8 +93,9 @@ async def _gateway(*, pending: PendingConfirmation | None = None):
 
         title: StrictStr
 
-    async def handler(_context, arguments):
+    async def handler(context, arguments):
         nonlocal execution_count
+        assert context.memory_settings is gateway.settings
         execution_count += 1
         return {"task_id": "task-1", "title": arguments.title}
 
@@ -118,6 +119,7 @@ async def _gateway(*, pending: PendingConfirmation | None = None):
     )
     gateway.principal = principal
     gateway.voice_session = SimpleNamespace(id=session_id)
+    gateway._session_id = session_id
     gateway.confirmation_store = store
     gateway.persistence = _FakePersistence()
     gateway.db = db

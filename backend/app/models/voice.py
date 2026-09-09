@@ -4,7 +4,15 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKeyConstraint, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -60,6 +68,10 @@ class VoiceSession(Base):
         Index("ix_voice_sessions_user_started", "user_id", "started_at"),
         Index("ix_voice_sessions_device_started", "device_id", "started_at"),
         Index("ix_voice_sessions_status_activity", "status", "last_activity_at"),
+        CheckConstraint(
+            "status IN ('active', 'disconnected', 'completed', 'timed_out', 'failed')",
+            name="ck_voice_sessions_status",
+        ),
     )
 
 
@@ -98,8 +110,13 @@ class ConversationTurn(Base):
             ondelete="CASCADE",
             name="fk_conversation_turns_session_user",
         ),
+        UniqueConstraint("id", "user_id", name="uq_conversation_turns_id_user_id"),
         UniqueConstraint("session_id", "turn_number", name="uq_conversation_turns_session_number"),
         Index("ix_conversation_turns_user_started", "user_id", "started_at"),
         Index("ix_conversation_turns_session_number", "session_id", "turn_number"),
         Index("ix_conversation_turns_response_id", "response_id"),
+        CheckConstraint(
+            "status IN ('active', 'committed', 'cancelled', 'disconnected', 'timed_out', 'failed')",
+            name="ck_conversation_turns_status",
+        ),
     )

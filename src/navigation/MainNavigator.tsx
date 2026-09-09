@@ -8,6 +8,7 @@ import { SettingsScreen } from '../screens/SettingsScreen';
 import { DiagnosticScreen } from '../screens/DiagnosticScreen';
 import { AccountScreen } from '../screens/AccountScreen';
 import { SessionsScreen } from '../screens/SessionsScreen';
+import { MemoryScreen } from '../screens/MemoryScreen';
 import { useAuth } from '../auth/AuthProvider';
 import { useVoiceSocket } from '../voice/VoiceSocketProvider';
 import { useAppTheme } from '../design/ThemeProvider';
@@ -18,7 +19,8 @@ type MainRoute =
   | 'settings'
   | 'diagnostics'
   | 'account'
-  | 'sessions';
+  | 'sessions'
+  | 'memory';
 
 export function MainNavigator() {
   const { controller } = useAuth();
@@ -74,11 +76,13 @@ export function MainNavigator() {
             onOpenAccount={() => navigate('account')}
             onOpenDiagnostics={() => navigate('diagnostics')}
             onOpenSessions={() => navigate('sessions')}
+            onOpenMemory={() => navigate('memory')}
           />
         ) : null}
         {route === 'diagnostics' ? <DiagnosticScreen /> : null}
         {route === 'account' ? <AccountScreen /> : null}
         {route === 'sessions' ? <SessionsScreen /> : null}
+        {route === 'memory' ? <MemoryScreen /> : null}
       </View>
 
       <Modal
@@ -107,6 +111,11 @@ export function MainNavigator() {
               label={strings.main.assistant}
               onPress={() => navigate('assistant')}
               testID="menu-assistant"
+            />
+            <MenuItem
+              label={strings.main.memory}
+              onPress={() => navigate('memory')}
+              testID="menu-memory"
             />
             <MenuItem
               label={strings.main.settings}

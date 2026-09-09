@@ -3076,22 +3076,34 @@ evaluation evidence before production use.
 
 ### Steps
 
-- [ ] Create memory tables.
-- [ ] Create BGE-M3 embedding service.
-- [ ] Add HNSW pgvector index.
-- [ ] Add PostgreSQL FTS.
-- [ ] Implement structured memory queries.
-- [ ] Implement semantic retrieval.
-- [ ] Implement keyword retrieval.
-- [ ] Implement RRF/hybrid merge.
+> **Implementation status (2026-09-08):** Core Phase 6 persistence, strict model-service clients, deterministic planning/retrieval/fusion, explicit extraction/jobs, ownership APIs/tools, provider-neutral voice context hooks, and the mobile memory controls are implemented. `MEMORY_RETRIEVAL_MODE=off` and `MEMORY_WRITE_ENABLED=false` remain the safe defaults. The Phase 6 gate is **ACCEPTANCE PENDING** until the configured embedding/reranker deployments, retrieval evaluation, production-like LLM evidence, and physical/privacy validation are recorded.
+
+- [x] Create memory tables.
+- [x] Create the BGE-M3-compatible embedding client with strict response validation.
+- [x] Add HNSW pgvector index.
+- [x] Add PostgreSQL FTS.
+- [x] Implement structured memory queries.
+- [x] Implement semantic retrieval.
+- [x] Implement keyword retrieval.
+- [x] Implement RRF/hybrid merge.
 - [ ] Deploy `bge-reranker-v2-m3`.
-- [ ] Add reranking.
-- [ ] Implement memory extraction.
-- [ ] Implement memory deduplication.
-- [ ] Implement superseding/conflict logic.
-- [ ] Add memory view/edit/delete APIs.
-- [ ] Add “forget” tool.
-- [ ] Add memory-disabled mode.
+- [x] Add strict reranking client and bounded reranking.
+- [x] Implement deterministic explicit memory extraction and durable jobs.
+- [x] Implement memory deduplication.
+- [x] Implement superseding/conflict logic and entity links.
+- [x] Add memory view/edit/delete/settings APIs.
+- [x] Add memory-disabled mode and conversation exclusion.
+- [x] Add `memory_forget` tool with owner scope, confirmation, and hard-delete semantics.
+- [x] Add bounded lease/retry/dead-letter worker lifecycle.
+
+### Phase 6 verification status (2026-09-08)
+
+- Automated implementation checks: **PASS** — backend standard suite `176 passed, 25 skipped`; full suite with integration enabled `201 passed`; Ruff check/format, compile/import validation, and Alembic check pass.
+- Cleanup regression: **PASS** — cancelled slow-STT WebSocket teardown no longer leaves a pooled PostgreSQL connection; promoted SQLAlchemy and unraisable-connection warnings pass.
+- Safe rollout defaults: **PASS** — retrieval remains `off` and memory writes remain disabled unless explicitly configured.
+- Acceptance manifest/evaluator: **PASS** — versioned 20-case corpus and zero-tolerance security gates are present; the evaluator correctly reports `BLOCKED` when no production observations are supplied (`docs/evidence/phase6_retrieval_eval_20260908.json`).
+- Mobile memory UI implementation: **PASS** — authenticated list/search/detail/edit/delete/delete-all/settings/session-exclusion controls are wired to owner-scoped APIs and covered by Jest component tests.
+- External acceptance: **PENDING/BLOCKED** — `.env` has no embedding/reranker endpoints, so live provider/NVIDIA Hybrid-RAG evidence cannot run; physical Android Phase 3–6 validation, manual accessibility/privacy checks, production worker operation, and performance measurements still require evidence. Android `adb`/Gradle is blocked by the local Windows Android/Gradle runtime environment.
 
 ### Gate
 

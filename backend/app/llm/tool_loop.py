@@ -58,6 +58,8 @@ class ToolExecutionContext:
     cancellation_check: Callable[[], bool] | None = None
     tool_execution_started: Callable[[LLMToolCall, float], Awaitable[None] | None] | None = None
     tool_execution_finished: Callable[[LLMToolCall, float], Awaitable[None] | None] | None = None
+    memory_settings: Settings | None = None
+    memory_service: Any | None = None
 
 
 @dataclass(frozen=True)

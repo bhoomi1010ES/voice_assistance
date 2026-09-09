@@ -27,6 +27,7 @@ from app.websocket.binary import encode_pcm_frame
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.filterwarnings("error::sqlalchemy.exc.SAWarning"),
+    pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning"),
 ]
 
 

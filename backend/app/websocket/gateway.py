@@ -13,9 +13,11 @@ from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.async_utils import await_cleanup
 from app.core.clock import Clock, SystemClock
 from app.core.config import Settings
 from app.llm.context import VOICE_SYSTEM_PROMPT_VERSION, build_voice_llm_request
@@ -29,7 +31,11 @@ from app.llm.tool_loop import (
     create_default_tool_registry,
 )
 from app.llm.types import LLMEvent, LLMUsage
-from app.models import ConversationTurn, VoiceSession
+from app.memory.context import assemble_context
+from app.memory.providers import MemoryProviderError
+from app.memory.repository import MemoryRepository
+from app.memory.tool_tools import build_explicit_memory_save_call
+from app.models import ConversationTurn, User, VoiceSession
 from app.services.audit import record_audit
 from app.services.auth import (
     AuthConfigurationError,
@@ -131,6 +137,12 @@ class VoiceGateway:
         self.stt_service = stt_service
         self.llm_service = llm_service
         self.tool_registry = tool_registry or create_default_tool_registry()
+        if tool_registry is None and (
+            settings.memory_retrieval_mode != "off" or settings.memory_write_enabled
+        ):
+            from app.memory.tool_tools import register_memory_tools
+
+            register_memory_tools(self.tool_registry, allow_write=settings.memory_write_enabled)
         self.tool_loop = LLMToolLoop(
             settings,
             llm_service,
@@ -171,6 +183,14 @@ class VoiceGateway:
         self._stt_finalize_cancel_requested = False
         self._stt_enabled = False
         self._stt_language: str | None = None
+        # Keep session identity and counters as scalar gateway state. ORM
+        # attributes can be expired by rollback, and reading an expired
+        # attribute from an async task would attempt implicit IO and raise
+        # MissingGreenlet.
+        self._session_id: uuid.UUID | None = None
+        self._session_total_frames = 0
+        self._session_total_bytes = 0
+        self._session_client_metadata: dict[str, Any] | None = None
         self._last_response_id: uuid.UUID | None = None
         self._response_turn_id: uuid.UUID | None = None
         self._connection_started = time.monotonic()
@@ -219,14 +239,20 @@ class VoiceGateway:
             for task in pending:
                 task.cancel()
         finally:
-            await self.shutdown()
             try:
-                await self.websocket.close(
-                    code=self._close_code or 1000,
-                    reason=(self._close_reason or "connection_closed")[:120],
-                )
-            except RuntimeError:
-                pass
+                with contextlib.suppress(asyncio.CancelledError):
+                    await await_cleanup(self.shutdown())
+            finally:
+                try:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await await_cleanup(
+                            self.websocket.close(
+                                code=self._close_code or 1000,
+                                reason=(self._close_reason or "connection_closed")[:120],
+                            )
+                        )
+                except (RuntimeError, WebSocketDisconnect):
+                    pass
 
     async def _receive_loop(self) -> None:
         while not self._closing.is_set():
@@ -402,6 +428,10 @@ class VoiceGateway:
             return
 
         self.voice_session = voice_session
+        self._session_id = voice_session.id
+        self._session_total_frames = voice_session.total_frames
+        self._session_total_bytes = voice_session.total_bytes
+        self._session_client_metadata = voice_session.client_metadata
         self._stt_enabled = bool(message.stt and message.stt.enabled)
         self._stt_language = message.stt.language if message.stt else None
         LOGGER.info(
@@ -496,7 +526,7 @@ class VoiceGateway:
             client_turn_id=message.client_turn_id,
         )
         self.state.start_turn(turn.id, response_id)
-        await self.registry.set_turn(self.owner, self.voice_session.id, turn.id, response_id)
+        await self.registry.set_turn(self.owner, self._active_session_id(), turn.id, response_id)
         self.active_turn = turn
         self._last_response_id = response_id
         self._turn_started = time.monotonic()
@@ -505,7 +535,7 @@ class VoiceGateway:
             "Voice turn started",
             extra={
                 "event": "voice.turn.started",
-                "session_id": str(self.voice_session.id),
+                "session_id": str(self._active_session_id()),
                 "turn_id": str(turn.id),
                 "response_id": str(response_id),
                 "turn_number": turn.turn_number,
@@ -516,7 +546,7 @@ class VoiceGateway:
         if self._stt_enabled:
             try:
                 self.stt_turn = await self.stt_service.start_turn(
-                    session_id=self.voice_session.id,
+                    session_id=self._active_session_id(),
                     turn_id=turn.id,
                     response_id=response_id,
                     language=self._stt_language,
@@ -532,7 +562,7 @@ class VoiceGateway:
         await self._send(
             server_event(
                 "server.turn.ready",
-                session_id=self.voice_session.id,
+                session_id=self._active_session_id(),
                 turn_id=turn.id,
                 response_id=response_id,
                 turn_number=turn.turn_number,
@@ -554,7 +584,7 @@ class VoiceGateway:
                 "Voice PCM frame accepted",
                 extra={
                     "event": "voice.pcm.accepted",
-                    "session_id": str(self.voice_session.id),
+                    "session_id": str(self._active_session_id()),
                     "turn_id": str(self.active_turn.id) if self.active_turn else None,
                     "sequence_no": frame.sequence_no,
                     "payload_bytes": frame.payload_length,
@@ -576,7 +606,7 @@ class VoiceGateway:
             "Voice audio commit received",
             extra={
                 "event": "voice.audio.commit.received",
-                "session_id": str(self.voice_session.id),
+                "session_id": str(self._active_session_id()),
                 "turn_id": str(self.active_turn.id),
                 "response_id": str(self.active_turn.response_id),
                 "last_sequence_no": message.last_sequence_no,
@@ -606,12 +636,13 @@ class VoiceGateway:
     ) -> None:
         stt_result: STTTranscriptResult | None = None
         stt_error: STTError | None = None
+        persisted_user_message = None
         try:
             LOGGER.info(
                 "Voice turn finalization started",
                 extra={
                     "event": "voice.turn.finalization.started",
-                    "session_id": str(self.voice_session.id),
+                    "session_id": str(self._active_session_id()),
                     "turn_id": str(self.active_turn.id) if self.active_turn else None,
                     "response_id": str(self.active_turn.response_id) if self.active_turn else None,
                     "timestamp_ms": int(time.time() * 1000),
@@ -657,14 +688,36 @@ class VoiceGateway:
                 observed_duration_ms=observed_duration_ms,
                 metadata=metadata,
             )
-            self.voice_session.total_frames += counters.frame_count
-            self.voice_session.total_bytes += counters.byte_count
+            if stt_result is not None:
+                persisted_user_message = await self._persist_final_message_if_supported(
+                    turn_id=counters.turn_id,
+                    role="user",
+                    content=stt_result.event.text,
+                    content_json={
+                        "language": stt_result.event.language,
+                        "stt": stt_result.metrics,
+                    },
+                )
+                if persisted_user_message is not None and await self._memory_user_enabled():
+                    if (
+                        self.settings.memory_write_enabled
+                        and not self._memory_excluded_for_session()
+                    ):
+                        await MemoryRepository().enqueue_extract_turn(
+                            self.db,
+                            user_id=self.principal.user_id,
+                            source_message_id=persisted_user_message.id,
+                            source_turn_id=counters.turn_id,
+                            source_session_id=self._active_session_id(),
+                            policy_version=self.settings.memory_policy_version,
+                        )
+            self._add_session_totals(counters.frame_count, counters.byte_count)
             self.voice_session.last_activity_at = self._now_datetime()
             self.active_turn = None
             self._response_turn_id = counters.turn_id
             self._turn_started = None
-            await self.registry.clear_turn(self.owner, self.voice_session.id)
-            await self.registry.refresh(self.owner, self.voice_session.id)
+            await self.registry.clear_turn(self.owner, self._active_session_id())
+            await self.registry.refresh(self.owner, self._active_session_id())
             await self.db.commit()
             if stt_result is not None:
                 await self._send_transcript_event(stt_result.event)
@@ -689,7 +742,7 @@ class VoiceGateway:
                 await self._send(
                     server_event(
                         "server.turn.failed",
-                        session_id=self.voice_session.id,
+                        session_id=self._active_session_id(),
                         turn_id=counters.turn_id,
                         response_id=counters.response_id,
                         turn_number=counters.turn_number,
@@ -701,7 +754,7 @@ class VoiceGateway:
             llm_result: dict[str, Any] = {"status": "disabled"}
             if stt_result is not None:
                 confirmation_result = await self._resolve_pending_confirmation(
-                    session_id=self.voice_session.id,
+                    session_id=self._active_session_id(),
                     turn_id=counters.turn_id,
                     response_id=counters.response_id,
                     transcript=stt_result.event.text,
@@ -710,7 +763,7 @@ class VoiceGateway:
                     llm_result = confirmation_result
                 elif self.llm_service.enabled:
                     llm_result = await self._stream_llm_response(
-                        session_id=self.voice_session.id,
+                        session_id=self._active_session_id(),
                         turn_id=counters.turn_id,
                         response_id=counters.response_id,
                         transcript=stt_result.event.text,
@@ -722,7 +775,7 @@ class VoiceGateway:
             await self._send(
                 server_event(
                     "server.turn.completed",
-                    session_id=self.voice_session.id,
+                    session_id=self._active_session_id(),
                     turn_id=counters.turn_id,
                     response_id=counters.response_id,
                     turn_number=counters.turn_number,
@@ -790,23 +843,41 @@ class VoiceGateway:
 
         try:
             tool_registry = getattr(self, "tool_registry", None)
-            request = build_voice_llm_request(
-                self.settings,
-                session_id=session_id,
-                turn_id=turn_id,
-                response_id=response_id,
-                transcript=transcript,
-                allowed_tools=(tool_registry.definitions() if tool_registry else ()),
+            memory_user_enabled = await self._memory_user_enabled()
+            memory_write_allowed = (
+                self.settings.memory_write_enabled
+                and memory_user_enabled
+                and not self._memory_excluded_for_session()
             )
-            if tool_registry is None:
-                event_stream = self.llm_service.stream(request)
-            else:
-                context = ToolExecutionContext(
+            allowed_tools = (
+                tuple(
+                    tool
+                    for tool in tool_registry.definitions()
+                    if memory_write_allowed or tool.name not in {"memory_save", "memory_forget"}
+                )
+                if tool_registry
+                else ()
+            )
+            websocket_app = getattr(getattr(self, "websocket", None), "app", None)
+            memory_service = getattr(getattr(websocket_app, "state", None), "memory_service", None)
+            context = (
+                ToolExecutionContext(
                     user_id=self.principal.user_id,
                     session_id=session_id,
                     turn_id=turn_id,
                     response_id=response_id,
-                    scopes=frozenset({"tasks:write"}),
+                    scopes=frozenset(
+                        {
+                            "tasks:write",
+                            *(
+                                {"memory:read"}
+                                if self.settings.memory_retrieval_mode != "off"
+                                and memory_user_enabled
+                                else set()
+                            ),
+                            *({"memory:write"} if memory_write_allowed else set()),
+                        }
+                    ),
                     db=self.db,
                     clock=self._application_clock(),
                     user_timezone=self._user_timezone(),
@@ -814,7 +885,59 @@ class VoiceGateway:
                     confirmation_requested=self._persist_confirmation_request,
                     tool_execution_started=on_tool_execution_started,
                     tool_execution_finished=on_tool_execution_finished,
+                    memory_settings=self.settings,
+                    memory_service=memory_service,
                 )
+                if tool_registry is not None
+                else None
+            )
+            explicit_memory_call = (
+                build_explicit_memory_save_call(transcript, turn_id=turn_id)
+                if memory_write_allowed
+                else None
+            )
+            if explicit_memory_call is not None and context is not None:
+                await self._send_tool_status(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    tool_call_id=explicit_memory_call.tool_call_id,
+                    tool_name=explicit_memory_call.name,
+                    status="understanding",
+                )
+                result = await self.tool_loop.executor.execute(
+                    explicit_memory_call,
+                    context=context,
+                )
+                if result.error_code == "llm_tool_confirmation_required":
+                    return {"status": "confirmation_required"}
+                await self._send_tool_status(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    tool_call_id=explicit_memory_call.tool_call_id,
+                    tool_name=explicit_memory_call.name,
+                    status=("success" if result.success else "failed"),
+                    error_code=result.error_code,
+                )
+                return {
+                    "status": "completed" if result.success else "failed",
+                    "tool_execution_count": 1 if result.executed else 0,
+                }
+            memory_context = await self._memory_context_for_transcript(transcript)
+            request = build_voice_llm_request(
+                self.settings,
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                transcript=transcript,
+                allowed_tools=allowed_tools,
+                memory_context=memory_context,
+            )
+            if tool_registry is None:
+                event_stream = self.llm_service.stream(request)
+            else:
+                assert context is not None
                 event_stream = self.tool_loop.stream(request, context=context)
             async for event in event_stream:
                 if not self.cancel_guard.can_emit(response_id):
@@ -1022,6 +1145,16 @@ class VoiceGateway:
             self.principal,
             turn_id=turn_id,
             metadata={"llm": llm_metadata},
+        )
+        await self._persist_final_message_if_supported(
+            turn_id=turn_id,
+            role="assistant",
+            content=response_text,
+            content_json={
+                "response_id": str(response_id),
+                "finish_reason": terminal_event.finish_reason,
+            },
+            model=configured_model,
         )
         await self.db.commit()
         await self._send(
@@ -1312,7 +1445,7 @@ class VoiceGateway:
                 status="cancelled",
                 confirmation_id=pending.confirmation_id,
             )
-            text = "Okay, I won't create that reminder."
+            text = self._confirmation_rejected_text(pending)
             await self._send_confirmation_response(
                 session_id=session_id,
                 turn_id=turn_id,
@@ -1436,20 +1569,57 @@ class VoiceGateway:
             status="approved",
             confirmation_id=claimed.confirmation_id,
         )
+        websocket_app = getattr(getattr(self, "websocket", None), "app", None)
+        memory_service = getattr(getattr(websocket_app, "state", None), "memory_service", None)
         context = ToolExecutionContext(
             user_id=self.principal.user_id,
             session_id=session_id,
             turn_id=claimed.original_turn_id,
             response_id=response_id,
-            scopes=frozenset({"tasks:write"}),
+            scopes=frozenset(
+                {
+                    "tasks:write",
+                    *({"memory:read"} if self.settings.memory_retrieval_mode != "off" else set()),
+                    *({"memory:write"} if self.settings.memory_write_enabled else set()),
+                }
+            ),
             confirmed_tool_call_ids=frozenset({claimed.tool_call_id}),
             db=self.db,
             clock=self._application_clock(),
             user_timezone=claimed.user_timezone,
             cancellation_check=lambda: not self.cancel_guard.can_emit(response_id),
             tool_execution_started=on_confirmation_execution_started,
+            memory_settings=self.settings,
+            memory_service=memory_service,
         )
         result = await self.tool_loop.executor.execute(call, context=context)
+        if not result.success:
+            LOGGER.warning(
+                "Confirmed tool execution failed",
+                extra={
+                    "event": "voice.confirmation.execution.failed",
+                    "session_id": str(session_id),
+                    "turn_id": str(turn_id),
+                    "original_turn_id": str(claimed.original_turn_id),
+                    "response_id": str(response_id),
+                    "confirmation_id": str(claimed.confirmation_id),
+                    "tool_call_id": claimed.tool_call_id,
+                    "tool_name": claimed.tool_name,
+                    "error_code": result.error_code,
+                    "executed": result.executed,
+                    "replayed": result.replayed,
+                },
+            )
+        await self._persist_final_message_if_supported(
+            turn_id=claimed.original_turn_id,
+            role="tool",
+            content=result.content,
+            content_json={
+                "tool_name": claimed.tool_name,
+                "tool_call_id": claimed.tool_call_id,
+                "success": result.success,
+            },
+        )
         if result.success:
             await self.db.commit()
             final_text = self._confirmation_success_text(claimed)
@@ -1511,13 +1681,31 @@ class VoiceGateway:
         if pending.tool_name == "create_task":
             title = str(pending.validated_tool_arguments.get("title", "that reminder"))
             return f"Done. I'll remind you to {title}."
+        if pending.tool_name == "memory_save":
+            return "Done. I saved that to memory."
+        if pending.tool_name == "memory_forget":
+            return "Done. I forgot that memory."
         return f"Done. I completed {pending.tool_name.replace('_', ' ')}."
 
     @staticmethod
     def _confirmation_failure_text(pending: PendingConfirmation) -> str:
         if pending.tool_name == "create_task":
             return "I couldn't create that reminder."
+        if pending.tool_name == "memory_save":
+            return "I couldn't save that to memory."
+        if pending.tool_name == "memory_forget":
+            return "I couldn't forget that memory."
         return f"I couldn't complete {pending.tool_name.replace('_', ' ')}."
+
+    @staticmethod
+    def _confirmation_rejected_text(pending: PendingConfirmation) -> str:
+        if pending.tool_name == "create_task":
+            return "Okay, I won't create that reminder."
+        if pending.tool_name == "memory_save":
+            return "Okay, I won't save that to memory."
+        if pending.tool_name == "memory_forget":
+            return "Okay, I won't forget that memory."
+        return f"Okay, I won't complete {pending.tool_name.replace('_', ' ')}."
 
     async def _send_confirmation_response(
         self,
@@ -1529,6 +1717,16 @@ class VoiceGateway:
         confirmation_id: uuid.UUID,
         status: str,
     ) -> None:
+        await self._persist_final_message_if_supported(
+            turn_id=turn_id,
+            role="assistant",
+            content=text,
+            content_json={
+                "confirmation_id": str(confirmation_id),
+                "status": status,
+            },
+            model="confirmation-resolver",
+        )
         await self._send(
             server_event(
                 "confirmation.resolved",
@@ -1593,10 +1791,10 @@ class VoiceGateway:
         if self.voice_session is not None:
             await self.registry.clear_response(
                 self.owner,
-                self.voice_session.id,
+                self._active_session_id(),
                 response_id,
             )
-            await self.registry.refresh(self.owner, self.voice_session.id)
+            await self.registry.refresh(self.owner, self._active_session_id())
         self.cancel_guard.clear()
         self._response_turn_id = None
 
@@ -1695,25 +1893,24 @@ class VoiceGateway:
                 error_count=1,
                 metadata={"stt_error": code},
             )
-            self.voice_session.total_frames += counters.frame_count
-            self.voice_session.total_bytes += counters.byte_count
+            self._add_session_totals(counters.frame_count, counters.byte_count)
         turn_id = self.active_turn.id
         response_id = self.active_turn.response_id
         self.active_turn = None
         self._turn_started = None
         self.cancel_guard.clear()
         await self._close_stt_turn(cancel=True)
-        await self.registry.clear_turn(self.owner, self.voice_session.id)
+        await self.registry.clear_turn(self.owner, self._active_session_id())
         await self.registry.clear_response(
             self.owner,
-            self.voice_session.id,
+            self._active_session_id(),
             response_id,
         )
         await self.db.commit()
         await self._send(
             server_event(
                 "server.turn.failed",
-                session_id=self.voice_session.id,
+                session_id=self._active_session_id(),
                 turn_id=turn_id,
                 response_id=response_id,
                 code=code,
@@ -1732,7 +1929,7 @@ class VoiceGateway:
         turn = await self.persistence.get_owned_turn(
             self.db,
             self.principal,
-            session_id=self.voice_session.id,
+            session_id=self._active_session_id(),
             turn_id=message.turn_id,
         )
         metadata = turn.metadata_json if turn is not None else None
@@ -1762,12 +1959,12 @@ class VoiceGateway:
         self._last_response_id = response_id
         self._response_turn_id = turn.id
         self.cancel_guard.activate(response_id)
-        await self.registry.set_response(self.owner, self.voice_session.id, response_id)
+        await self.registry.set_response(self.owner, self._active_session_id(), response_id)
         await self.db.commit()
         await self._send(
             server_event(
                 "assistant.response.started",
-                session_id=self.voice_session.id,
+                session_id=self._active_session_id(),
                 turn_id=turn.id,
                 response_id=response_id,
                 retry=True,
@@ -1775,7 +1972,7 @@ class VoiceGateway:
         )
         self._retry_response_task = asyncio.create_task(
             self._finish_retry_response(
-                session_id=self.voice_session.id,
+                session_id=self._active_session_id(),
                 turn_id=turn.id,
                 response_id=response_id,
                 transcript=stored_transcript,
@@ -1836,7 +2033,7 @@ class VoiceGateway:
             "Voice response cancellation received",
             extra={
                 "event": "voice.response.cancel.received",
-                "session_id": str(self.voice_session.id),
+                "session_id": str(self._active_session_id()),
                 "response_id": str(message.response_id),
                 "reason": message.reason,
                 "timestamp_ms": int(time.time() * 1000),
@@ -1846,14 +2043,14 @@ class VoiceGateway:
         pending_confirmation = None
         if confirmation_store is not None and self.voice_session is not None:
             pending_confirmation = await confirmation_store.get(
-                self._confirmation_scope(self.voice_session.id)
+                self._confirmation_scope(self._active_session_id())
             )
         if pending_confirmation is not None and message.response_id in {
             pending_confirmation.original_response_id,
             self._last_response_id,
         }:
             await confirmation_store.transition(
-                self._confirmation_scope(self.voice_session.id),
+                self._confirmation_scope(self._active_session_id()),
                 pending_confirmation.confirmation_id,
                 "CANCELLED",
             )
@@ -1861,7 +2058,7 @@ class VoiceGateway:
             # guard. It still must be possible to cancel its pending mutation.
             if not self.cancel_guard.can_emit(message.response_id):
                 await self._send_tool_status(
-                    session_id=self.voice_session.id,
+                    session_id=self._active_session_id(),
                     turn_id=pending_confirmation.original_turn_id,
                     response_id=message.response_id,
                     tool_call_id=pending_confirmation.tool_call_id,
@@ -1872,7 +2069,7 @@ class VoiceGateway:
                 await self._send(
                     server_event(
                         "confirmation.resolved",
-                        session_id=self.voice_session.id,
+                        session_id=self._active_session_id(),
                         response_id=message.response_id,
                         confirmation_id=pending_confirmation.confirmation_id,
                         status="CANCELLED",
@@ -1881,7 +2078,7 @@ class VoiceGateway:
                 await self._send(
                     server_event(
                         "response.cancelled",
-                        session_id=self.voice_session.id,
+                        session_id=self._active_session_id(),
                         response_id=message.response_id,
                         reason=message.reason,
                     )
@@ -1897,7 +2094,7 @@ class VoiceGateway:
         self.stats.cancellation_count += 1
         await self.registry.cancel_response(
             self.owner,
-            self.voice_session.id,
+            self._active_session_id(),
             message.response_id,
         )
         await self.llm_service.cancel(message.response_id)
@@ -1921,11 +2118,10 @@ class VoiceGateway:
                 observed_duration_ms=self._elapsed_turn_ms(),
                 metadata={"cancel_reason": message.reason},
             )
-            self.voice_session.total_frames += counters.frame_count
-            self.voice_session.total_bytes += counters.byte_count
+            self._add_session_totals(counters.frame_count, counters.byte_count)
             self.active_turn = None
             self._turn_started = None
-            await self.registry.clear_turn(self.owner, self.voice_session.id)
+            await self.registry.clear_turn(self.owner, self._active_session_id())
         elif cancelled_turn_id is not None:
             provider_info = self.llm_service.provider_info
             await self.persistence.merge_turn_metadata(
@@ -1950,7 +2146,7 @@ class VoiceGateway:
         await self._send(
             server_event(
                 "response.cancelled",
-                session_id=self.voice_session.id,
+                session_id=self._active_session_id(),
                 turn_id=cancelled_turn_id,
                 response_id=message.response_id,
                 reason=message.reason,
@@ -1961,11 +2157,11 @@ class VoiceGateway:
         self.stats.heartbeat_count += 1
         if self.voice_session is not None:
             self.voice_session.last_activity_at = self._now_datetime()
-            await self.registry.refresh(self.owner, self.voice_session.id)
+            await self.registry.refresh(self.owner, self._active_session_id())
         await self._send(
             server_event(
                 "server.pong",
-                session_id=self.voice_session.id if self.voice_session else None,
+                session_id=self._active_session_id(),
                 client_timestamp_ms=message.client_timestamp_ms,
                 server_timestamp_ms=int(time.time() * 1000),
             )
@@ -1979,7 +2175,7 @@ class VoiceGateway:
         await self._send(
             server_event(
                 "server.session.ending",
-                session_id=self.voice_session.id,
+                session_id=self._active_session_id(),
                 reason=message.reason,
             )
         )
@@ -2035,7 +2231,10 @@ class VoiceGateway:
         self._close_reason = reason
         await self._send_error(f"voice_{reason}")
         self._closing.set()
-        await self.websocket.close(code=1000, reason=reason[:120])
+        try:
+            await self.websocket.close(code=1000, reason=reason[:120])
+        except (RuntimeError, WebSocketDisconnect):
+            pass
 
     async def _protocol_failure(self, code: str, *, close_code: int = 1002) -> None:
         if self._closing.is_set():
@@ -2048,14 +2247,14 @@ class VoiceGateway:
         self._closing.set()
         try:
             await self.websocket.close(code=close_code, reason=code[:120])
-        except RuntimeError:
+        except (RuntimeError, WebSocketDisconnect):
             pass
 
     async def _send_error(self, code: str) -> None:
         await self._send(
             server_event(
                 "server.error",
-                session_id=self.voice_session.id if self.voice_session else None,
+                session_id=self._active_session_id(),
                 code=code,
                 message="Voice gateway request rejected.",
             )
@@ -2069,7 +2268,7 @@ class VoiceGateway:
             "Voice WebSocket connection closed",
             extra={
                 "event": "voice.connection.closed",
-                "session_id": str(self.voice_session.id) if self.voice_session else None,
+                "session_id": str(self._active_session_id()) if self._active_session_id() else None,
                 "close_code": self._close_code,
                 "close_reason": self._close_reason or "connection_closed",
                 "backend_pid": os.getpid(),
@@ -2123,17 +2322,17 @@ class VoiceGateway:
             if confirmation_store is not None:
                 with contextlib.suppress(Exception):
                     await confirmation_store.cancel_scope(
-                        self._confirmation_scope(self.voice_session.id)
+                        self._confirmation_scope(self._active_session_id())
                     )
             await self.persistence.finalize_session(
                 self.db,
                 self.principal,
-                session_id=self.voice_session.id,
+                session_id=self._active_session_id(),
                 status=self._session_status,
                 close_code=self._close_code,
                 close_reason=self._close_reason,
-                total_frames=self.voice_session.total_frames,
-                total_bytes=self.voice_session.total_bytes,
+                total_frames=self._session_total_frames,
+                total_bytes=self._session_total_bytes,
                 error_count=self.stats.error_count,
             )
             record_audit(
@@ -2142,7 +2341,7 @@ class VoiceGateway:
                 user_id=self.principal.user_id,
                 device_id=self.principal.device_id,
                 metadata={
-                    "session_id": str(self.voice_session.id),
+                    "session_id": str(self._active_session_id()),
                     "status": self._session_status,
                     "frames": self.stats.frames_accepted,
                     "queue_high_water_mark": self.stats.queue_high_water_mark,
@@ -2152,7 +2351,7 @@ class VoiceGateway:
             )
             await self.db.commit()
             try:
-                await self.registry.release(self.owner, self.voice_session.id)
+                await self.registry.release(self.owner, self._active_session_id())
             except VoiceRegistryError:
                 pass
             else:
@@ -2160,7 +2359,7 @@ class VoiceGateway:
                     "Voice session registry released",
                     extra={
                         "event": "voice.session.registry.released",
-                        "session_id": str(self.voice_session.id),
+                        "session_id": str(self._active_session_id()),
                         "user_id": str(self.principal.user_id),
                         "device_id": str(self.principal.device_id),
                         "timestamp_ms": int(time.time() * 1000),
@@ -2170,7 +2369,7 @@ class VoiceGateway:
             await self._send(
                 server_event(
                     "server.session.ended",
-                    session_id=self.voice_session.id,
+                    session_id=self._active_session_id(),
                     reason=self._close_reason or "connection_closed",
                 )
             )
@@ -2198,14 +2397,36 @@ class VoiceGateway:
             gap_count=self.stats.gap_count,
             duplicate_count=self.stats.duplicate_frame_count,
         )
-        self.voice_session.total_frames += counters.frame_count
-        self.voice_session.total_bytes += counters.byte_count
+        self._add_session_totals(counters.frame_count, counters.byte_count)
         self.active_turn = None
         self._turn_started = None
 
     def _require_session(self) -> None:
         if self.voice_session is None or self.state.session_id is None:
             raise StateTransitionError("voice session is not ready")
+
+    def _active_session_id(self) -> uuid.UUID | None:
+        """Return the cached session identity without touching expired ORM state."""
+
+        session_id = getattr(self, "_session_id", None)
+        if session_id is not None:
+            return session_id
+        state = getattr(self, "state", None)
+        state_session_id = getattr(state, "session_id", None)
+        if state_session_id is not None:
+            return state_session_id
+        return None
+
+    def _add_session_totals(self, frame_count: int, byte_count: int) -> None:
+        """Update durable totals and scalar mirrors used by error/cleanup paths."""
+
+        total_frames = getattr(self, "_session_total_frames", 0)
+        total_bytes = getattr(self, "_session_total_bytes", 0)
+        self._session_total_frames = total_frames + frame_count
+        self._session_total_bytes = total_bytes + byte_count
+        if self.voice_session is not None:
+            self.voice_session.total_frames = self._session_total_frames
+            self.voice_session.total_bytes = self._session_total_bytes
 
     def _elapsed_turn_ms(self) -> int | None:
         if self._turn_started is None:
@@ -2243,9 +2464,82 @@ class VoiceGateway:
                 return timezone_name.strip()
         return self.settings.voice_default_timezone.strip()
 
+    async def _persist_final_message_if_supported(
+        self,
+        *,
+        turn_id: uuid.UUID,
+        role: str,
+        content: str,
+        content_json: dict[str, Any] | None = None,
+        model: str | None = None,
+    ):
+        persist = getattr(self.persistence, "persist_final_message", None)
+        if persist is None:
+            return None
+        message, _ = await persist(
+            self.db,
+            self.principal,
+            turn_id=turn_id,
+            role=role,
+            content=content,
+            content_json=content_json,
+            model=model,
+        )
+        return message
+
+    async def _memory_user_enabled(self) -> bool:
+        user = await self.db.scalar(select(User).where(User.id == self.principal.user_id))
+        return bool(user is not None and user.memory_enabled)
+
+    def _memory_excluded_for_session(self) -> bool:
+        if hasattr(self, "_session_client_metadata"):
+            metadata = self._session_client_metadata
+        else:
+            voice_session = getattr(self, "voice_session", None)
+            metadata = getattr(voice_session, "client_metadata", None)
+        return isinstance(metadata, dict) and metadata.get("memory_excluded") is True
+
+    async def _memory_context_for_transcript(self, transcript: str) -> str | None:
+        if self.settings.memory_retrieval_mode == "off":
+            return None
+        service = getattr(self.websocket.app.state, "memory_service", None)
+        if (
+            service is None
+            or not await self._memory_user_enabled()
+            or self._memory_excluded_for_session()
+        ):
+            return None
+        try:
+            result = await service.retrieve(
+                self.db,
+                user_id=self.principal.user_id,
+                query=transcript,
+                now=self._now_datetime(),
+            )
+        except MemoryProviderError:
+            # Memory is an enhancement; a provider outage must not prevent
+            # the committed transcript from reaching the configured LLM.
+            return None
+        if self.settings.memory_retrieval_mode == "shadow" or not result.memories:
+            return None
+        return (
+            assemble_context(
+                result.memories,
+                max_chars=self.settings.memory_context_max_chars,
+            ).text
+            or None
+        )
+
 
 def _safe_client_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"client_version", "app_build", "platform", "locale", "timezone"}
+    allowed = {
+        "client_version",
+        "app_build",
+        "platform",
+        "locale",
+        "timezone",
+        "memory_excluded",
+    }
     result: dict[str, Any] = {}
     for key, value in metadata.items():
         if key not in allowed:

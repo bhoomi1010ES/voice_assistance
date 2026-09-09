@@ -95,6 +95,43 @@ class Settings(BaseSettings):
     llm_max_retry_attempts: int = Field(default=2, ge=0, le=5)
     llm_anthropic_version: str = "2023-06-01"
 
+    # Phase 6 rollout controls. Memory remains completely disabled until the
+    # retrieval/write stages and their acceptance evidence are complete.
+    memory_retrieval_mode: Literal["off", "shadow", "inject"] = "off"
+    memory_write_enabled: bool = False
+    embedding_api_url: str | None = None
+    rerank_api_url: str | None = None
+    memory_expected_embedding_model: str = "BAAI/bge-m3"
+    memory_expected_rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    memory_embedding_dimension: int = Field(default=1024, ge=1, le=4096)
+    embedding_api_connect_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    embedding_api_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    embedding_api_max_response_bytes: int = Field(
+        default=8 * 1024 * 1024,
+        ge=1024,
+        le=64 * 1024 * 1024,
+    )
+    embedding_api_max_batch_size: int = Field(default=64, ge=1, le=64)
+    rerank_api_connect_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    rerank_api_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    rerank_api_max_response_bytes: int = Field(
+        default=2 * 1024 * 1024,
+        ge=1024,
+        le=64 * 1024 * 1024,
+    )
+    rerank_api_max_docs: int = Field(default=64, ge=1, le=64)
+    memory_candidate_count: int = Field(default=30, ge=1, le=100)
+    memory_final_context_count: int = Field(default=8, ge=1, le=32)
+    memory_rrf_k: int = Field(default=60, ge=1, le=1000)
+    memory_context_max_chars: int = Field(default=12_000, ge=512, le=100_000)
+    memory_policy_version: str = "phase6-explicit-v1"
+    memory_min_confidence: float = Field(default=0.80, ge=0, le=1)
+    memory_min_salience: float = Field(default=0.20, ge=0, le=1)
+    memory_job_lease_seconds: int = Field(default=120, ge=10, le=3_600)
+    memory_job_max_attempts: int = Field(default=5, ge=1, le=20)
+    memory_chunk_max_chars: int = Field(default=1_600, ge=128, le=16_384)
+    memory_chunk_overlap_chars: int = Field(default=160, ge=0, le=8_192)
+
     voice_protocol_version: int = 1
     voice_sample_rate_hz: int = 16_000
     voice_channels: int = 1
@@ -147,6 +184,66 @@ class Settings(BaseSettings):
         if self.llm_api_key is None or not self.llm_api_key.get_secret_value().strip():
             raise ValueError("LLM_API_KEY must not be blank")
         return self
+
+    @model_validator(mode="after")
+    def validate_memory_configuration(self) -> Self:
+        """Validate Phase 6 endpoints only when a memory capability is enabled.
+
+        The embedding and reranker services share the existing STT bearer key.
+        Keeping this conditional allows the Phase 1-5 runtime to start without
+        any Phase 6 model-service dependency while still rejecting unsafe or
+        incomplete configurations before rollout.
+        """
+
+        if self.memory_retrieval_mode == "off" and not self.memory_write_enabled:
+            return self
+
+        if self.stt_api_key is None or not self.stt_api_key.get_secret_value().strip():
+            raise ValueError(
+                "STT_API_KEY must be configured when Phase 6 memory retrieval or writes are enabled"
+            )
+        if self.memory_retrieval_mode != "off":
+            self._validate_memory_endpoint(
+                self.embedding_api_url,
+                field_name="EMBEDDING_API_URL",
+                expected_path="/v1/embeddings",
+            )
+            self._validate_memory_endpoint(
+                self.rerank_api_url,
+                field_name="RERANK_API_URL",
+                expected_path="/v1/rerank",
+            )
+        elif self.memory_write_enabled:
+            self._validate_memory_endpoint(
+                self.embedding_api_url,
+                field_name="EMBEDDING_API_URL",
+                expected_path="/v1/embeddings",
+            )
+        return self
+
+    def _validate_memory_endpoint(
+        self,
+        value: str | None,
+        *,
+        field_name: str,
+        expected_path: str,
+    ) -> str:
+        if not value or not value.strip():
+            raise ValueError(f"{field_name} is required when the Phase 6 capability is enabled")
+        parsed = urlsplit(value.strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(f"{field_name} must be an absolute HTTP(S) URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError(f"{field_name} must not contain credentials")
+        if parsed.query or parsed.fragment:
+            raise ValueError(f"{field_name} must not contain query parameters or fragments")
+        if parsed.path.rstrip("/") != expected_path:
+            raise ValueError(f"{field_name} must point to the exact {expected_path} endpoint")
+        if parsed.scheme == "http" and not self._allow_insecure_llm_host(parsed.hostname):
+            raise ValueError(
+                f"{field_name} must use HTTPS except for local/private development hosts"
+            )
+        return value.strip().rstrip("/")
 
     @property
     def database_dsn(self) -> str:

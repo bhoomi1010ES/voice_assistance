@@ -289,6 +289,74 @@ test('requires confirmation before a mutating tool can execute or succeed', () =
   });
 });
 
+test.each(['memory_save', 'memory_forget'])(
+  '%s requires confirmation before execution and reaches success once',
+  name => {
+    const understanding: VoiceEvent = {
+      ...BASE,
+      type: 'tool.status',
+      toolCallId: `tool-${name}-1`,
+      name,
+      status: 'understanding',
+      result: null,
+      confirmationId: null,
+      errorCode: null,
+    };
+    let state = reduce(createConversationState(), understanding);
+
+    expect(
+      reduceVoiceEvent(state, { ...understanding, status: 'executing' }, 2)
+        .accepted,
+    ).toBe(false);
+    expect(
+      reduceVoiceEvent(state, { ...understanding, status: 'success' }, 2)
+        .accepted,
+    ).toBe(false);
+
+    state = reduce(state, {
+      ...understanding,
+      status: 'confirmation_required',
+      confirmationId: 'memory-confirmation-1',
+    });
+    state = reduce(state, { ...understanding, status: 'approved' });
+    state = reduce(state, { ...understanding, status: 'executing' });
+    state = reduce(state, { ...understanding, status: 'success' });
+
+    expect(state.messages[state.messages.length - 1]).toMatchObject({
+      role: 'tool',
+      name,
+      status: 'success',
+      confirmationId: 'memory-confirmation-1',
+    });
+  },
+);
+
+test('memory search remains read-only and cannot enter confirmation states', () => {
+  const understanding: VoiceEvent = {
+    ...BASE,
+    type: 'tool.status',
+    toolCallId: 'tool-memory-search-1',
+    name: 'memory_search',
+    status: 'understanding',
+    result: null,
+    confirmationId: null,
+    errorCode: null,
+  };
+  const state = reduce(createConversationState(), understanding);
+
+  expect(
+    reduceVoiceEvent(
+      state,
+      { ...understanding, status: 'confirmation_required' },
+      2,
+    ).accepted,
+  ).toBe(false);
+  expect(
+    reduceVoiceEvent(state, { ...understanding, status: 'executing' }, 2)
+      .accepted,
+  ).toBe(true);
+});
+
 test('normalizes server-owned tool events without accepting raw result data', () => {
   expect(
     normalizeVoiceGatewayEvent({

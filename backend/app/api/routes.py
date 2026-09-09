@@ -35,5 +35,12 @@ async def ready(request: Request) -> JSONResponse:
         result["dependencies"]["llm"] = llm_status
         if llm_status["status"] != "ready":
             result["status"] = "not_ready"
+    memory_service = getattr(request.app.state, "memory_service", None)
+    if memory_service is not None:
+        memory_status = await memory_service.readiness()
+        if memory_status["enabled"]:
+            result["dependencies"]["memory"] = memory_status
+            if memory_status["status"] != "ready":
+                result["status"] = "not_ready"
     status_code = 200 if result["status"] == "ready" else 503
     return JSONResponse(status_code=status_code, content=result)

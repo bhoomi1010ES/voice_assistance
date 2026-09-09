@@ -58,6 +58,14 @@ export function toClientError(
 }
 
 export function safeUserMessage(error: ClientError): string {
+  if (error.code === 'MEMORY_DISABLED') {
+    return 'Memory is turned off. Turn it on in Memory settings to search or save items.';
+  }
+
+  if (error.code === 'RESOURCE_NOT_FOUND') {
+    return 'That item is no longer available. Refresh and try again.';
+  }
+
   if (error.kind === 'configuration') {
     return 'The app is not configured for this environment.';
   }
