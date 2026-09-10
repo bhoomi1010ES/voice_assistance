@@ -57,7 +57,10 @@ installed English Windows recognizer plus the built worker executable.
 ## Repository structure
 
 ```text
-android/                 Existing React Native Android project
+frontend/                React Native application and JavaScript tooling
+frontend/android/        React Native Android project
+frontend/ios/            React Native iOS project
+frontend/src/            React Native TypeScript code
 backend/app/             FastAPI application, auth, ownership, and infrastructure clients
 backend/app/stt/         STT abstraction, Windows adapter, legacy Whisper adapter, and WER utility
 backend/windows_stt/     Isolated System.Speech.Recognition C# worker
@@ -66,7 +69,6 @@ backend/tests/           Backend unit, integration, and isolation tests
 docker/                  Backend image and PostgreSQL initialization
 docker-compose.yml       PostgreSQL, Redis, and backend services
 scripts/bootstrap.ps1    Windows developer bootstrap
-src/                     Existing React Native TypeScript code
 docs/                    Project records and phase reports
 ```
 
@@ -117,7 +119,7 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 # Edit .env with the local PostgreSQL password, service URLs, and a unique JWT secret.
 Set-Location backend
 ..\.venv\Scripts\python.exe -m alembic upgrade head
-..\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir . --reload
+..\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir . --host 0.0.0.0 --port 8000
 ```
 
 In a separate PowerShell window, verify the endpoints:
@@ -227,9 +229,11 @@ Integration tests require native PostgreSQL with pgvector and Redis, plus
 `$env:RUN_INTEGRATION_TESTS = "1"`. If the services are unavailable, the
 integration tests skip without reporting a false success.
 
-Existing React Native commands:
+React Native commands (run from the dedicated frontend project):
 
 ```powershell
+Set-Location frontend
+npm.cmd ci
 npm.cmd run typecheck
 npm.cmd run lint
 npm.cmd run format:check
@@ -242,13 +246,14 @@ capture. The existing Android development flow still uses Metro. Android unit
 tests, including secure token-storage tests, run with:
 
 ```powershell
-Set-Location android
+Set-Location frontend\android
 .\gradlew.bat testDebugUnitTest --no-daemon
 ```
 
 The existing Android development flow still uses Metro:
 
 ```powershell
+Set-Location frontend
 npm.cmd start
 npm.cmd run android
 ```

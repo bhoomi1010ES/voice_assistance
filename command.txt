@@ -1,0 +1,41 @@
+
+Normal manual startup
+-----Terminal 1 — backend:
+cd C:\Users\lenovo\Desktop\voice_assistance\backend
+
+..\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir . --host 0.0.0.0 --port 8000
+
+
+------Terminal 2 — Metro:
+cd C:\Users\lenovo\Desktop\voice_assistance\frontend
+
+adb devices -l
+adb reverse tcp:8081 tcp:8081
+npm.cmd start
+
+
+------Terminal 3 — build, install, and launch:
+cd C:\Users\lenovo\Desktop\voice_assistance\frontend
+
+npm.cmd run android
+
+######Relaunch without rebuilding
+adb shell am force-stop com.voiceaipoc
+adb shell monkey -p com.voiceaipoc -c android.intent.category.LAUNCHER 1
+
+##########Build and install APK manually
+cd C:\Users\lenovo\Desktop\voice_assistance\frontend\android
+
+.\gradlew.bat assembleDebug
+
+cd C:\Users\lenovo\Desktop\voice_assistance
+
+adb install -r .\frontend\android\app\build\outputs\apk\debug\app-debug.apk
+adb reverse tcp:8081 tcp:8081
+adb shell monkey -p com.voiceaipoc -c android.intent.category.LAUNCHER 1
+
+#########If “Unable to load script” appears, keep USB debugging connected and run:
+adb reverse tcp:8081 tcp:8081
+
+cd C:\Users\lenovo\Desktop\voice_assistance\frontend
+npm.cmd start -- --reset-cache

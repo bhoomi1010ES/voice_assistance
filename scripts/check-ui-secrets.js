@@ -3,8 +3,8 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const sourceDirectories = [
-  path.join(root, 'src'),
-  path.join(root, '__tests__'),
+  path.join(root, 'frontend', 'src'),
+  path.join(root, 'frontend', '__tests__'),
 ];
 const allowedExtensions = new Set(['.js', '.jsx', '.ts', '.tsx']);
 const secretPatterns = [

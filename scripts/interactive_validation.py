@@ -582,7 +582,17 @@ class InteractiveValidationRunner:
         return self.preflight
 
     def _install_and_launch_apk(self) -> bool:
-        apk_path = WORKSPACE_ROOT / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
+        apk_path = (
+            WORKSPACE_ROOT
+            / "frontend"
+            / "android"
+            / "app"
+            / "build"
+            / "outputs"
+            / "apk"
+            / "debug"
+            / "app-debug.apk"
+        )
         if not apk_path.is_file():
             self.log(f"APK missing: {apk_path}")
             return False

@@ -67,7 +67,7 @@ yarn-error.log
 .metro-health-check*
 
 # testing
-/coverage
+/frontend/coverage
 
 # Local work records
 /docs/*
@@ -96,7 +96,7 @@ backend/htmlcov/
 
 # Local Phase 4 validation/build artifacts; regenerate when needed.
 /.dotnet-phase4-final2/
-/android/.gradle-phase4-validation/
+/frontend/android/.gradle-phase4-validation/
 /backend/.pytest_tmp/
 /backend/physical_uvicorn.*.log
 /backend/uvicorn.log

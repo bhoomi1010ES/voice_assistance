@@ -8,10 +8,10 @@
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest",
-    "security:ui": "node scripts/check-ui-secrets.js",
+    "security:ui": "node ../scripts/check-ui-secrets.js",
     "typecheck": "tsc --noEmit",
-    "format": "prettier --write package.json App.tsx src __tests__ scripts/check-ui-secrets.js .github/workflows/ci.yml",
-    "format:check": "prettier --check package.json App.tsx src __tests__ scripts/check-ui-secrets.js .github/workflows/ci.yml",
+    "format": "prettier --config .prettierrc.js --write package.json App.tsx src __tests__ ../scripts/check-ui-secrets.js ../.github/workflows/ci.yml",
+    "format:check": "prettier --config .prettierrc.js --check package.json App.tsx src __tests__ ../scripts/check-ui-secrets.js ../.github/workflows/ci.yml",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run security:ui && npm test -- --runInBand"
   },
   "dependencies": {
