@@ -144,10 +144,20 @@ export const TOOL_UI_ENABLED = true;
 
 const MUTATING_TOOL_NAMES = new Set([
   'create_task',
+  'update_task',
+  'complete_task',
+  'create_reminder',
+  'update_reminder',
+  'delete_reminder',
   'memory_save',
   'memory_forget',
 ]);
-const READ_ONLY_TOOL_NAMES = new Set(['get_current_time', 'memory_search']);
+const READ_ONLY_TOOL_NAMES = new Set([
+  'get_current_time',
+  'memory_search',
+  'list_tasks',
+  'list_reminders',
+]);
 const SUPPORTED_TOOL_NAMES = new Set([
   ...MUTATING_TOOL_NAMES,
   ...READ_ONLY_TOOL_NAMES,

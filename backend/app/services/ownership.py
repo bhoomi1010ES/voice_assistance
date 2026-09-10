@@ -6,7 +6,7 @@ from fastapi import Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AuthSession, Device, MemoryItem, Task, VoiceSession
+from app.models import AuthSession, Device, MemoryItem, Reminder, Task, VoiceSession
 from app.services.audit import record_audit
 
 
@@ -65,6 +65,19 @@ async def get_owned_task(
     """Return a task only when it belongs to the authenticated user."""
 
     return await session.scalar(select(Task).where(Task.id == task_id, Task.user_id == user_id))
+
+
+async def get_owned_reminder(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    reminder_id: uuid.UUID,
+) -> Reminder | None:
+    """Return a reminder only when it belongs to the authenticated user."""
+
+    return await session.scalar(
+        select(Reminder).where(Reminder.id == reminder_id, Reminder.user_id == user_id)
+    )
 
 
 async def get_owned_voice_session(

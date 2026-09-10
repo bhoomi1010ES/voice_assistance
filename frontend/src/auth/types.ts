@@ -12,6 +12,7 @@ export type UserProfile = {
   status: string;
   created_at: string;
   updated_at: string;
+  timezone?: string | null;
 };
 
 export type AuthSession = {

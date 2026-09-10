@@ -339,23 +339,104 @@ class Task(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, default="normal")
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    source_turn_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
     )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["source_turn_id", "user_id"],
+            ["conversation_turns.id", "conversation_turns.user_id"],
+            ondelete="SET NULL",
+            name="fk_tasks_source_turn_user",
+        ),
+        UniqueConstraint("id", "user_id", name="uq_tasks_id_user_id"),
         Index("ix_tasks_user_created", "user_id", "created_at"),
         Index("ix_tasks_user_status", "user_id", "status"),
         Index("ix_tasks_user_due", "user_id", "due_at"),
+        Index("ix_tasks_user_status_due", "user_id", "status", "due_at"),
         CheckConstraint(
             "status IN ('pending', 'in_progress', 'completed', 'cancelled')",
             name="ck_tasks_status",
         ),
+        CheckConstraint(
+            "priority IN ('low', 'normal', 'high', 'urgent')",
+            name="ck_tasks_priority",
+        ),
+    )
+
+
+class Reminder(Base):
+    """Durable one-shot or recurring reminder delivery state."""
+
+    __tablename__ = "reminders"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trigger_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    recurrence_rule: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="scheduled")
+    delivery_channel: Mapped[str] = mapped_column(String(32), nullable=False, default="push")
+    delivery_id: Mapped[str] = mapped_column(
+        String(255), nullable=False, default=lambda: str(uuid.uuid4())
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failure_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    locked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    dead_lettered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["task_id", "user_id"],
+            ["tasks.id", "tasks.user_id"],
+            ondelete="SET NULL",
+            name="fk_reminders_task_user",
+        ),
+        UniqueConstraint("id", "user_id", name="uq_reminders_id_user_id"),
+        UniqueConstraint("delivery_id", name="uq_reminders_delivery_id"),
+        Index("ix_reminders_user_created", "user_id", "created_at"),
+        Index("ix_reminders_user_status_trigger", "user_id", "status", "trigger_at"),
+        Index("ix_reminders_claim", "status", "trigger_at", "next_attempt_at"),
+        Index("ix_reminders_lease", "status", "lease_expires_at"),
+        Index("ix_reminders_user_task", "user_id", "task_id"),
+        CheckConstraint(
+            "status IN ('scheduled', 'processing', 'retry_wait', 'sent', 'failed', 'cancelled')",
+            name="ck_reminders_status",
+        ),
+        CheckConstraint("delivery_channel IN ('push')", name="ck_reminders_delivery_channel"),
+        CheckConstraint("attempt_count >= 0", name="ck_reminders_attempt_count"),
+        CheckConstraint("occurrence_count >= 0", name="ck_reminders_occurrence_count"),
     )
 
 
@@ -370,6 +451,7 @@ class ToolExecutionRecord(Base):
     tool_name: Mapped[str] = mapped_column(String(64), nullable=False)
     tool_call_id: Mapped[str] = mapped_column(String(512), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="started")
+    arguments_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     result_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now

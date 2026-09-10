@@ -376,6 +376,32 @@ class VoiceWebSocketTransport(
         return Result(true)
     }
 
+    fun resolveConfirmation(
+        confirmationId: String,
+        toolCallId: String,
+        decision: String,
+    ): Result {
+        if (confirmationId.isBlank() || toolCallId.isBlank()) {
+            return Result(false, "E_VOICE_CONFIRMATION", "A confirmation identity is required.")
+        }
+        if (decision != "approve" && decision != "deny") {
+            return Result(false, "E_VOICE_CONFIRMATION", "The confirmation decision is invalid.")
+        }
+        synchronized(stateLock) {
+            if (!status.connected || !status.sessionStarted) {
+                return Result(false, "E_VOICE_STATE", "The voice session is not ready for confirmation.")
+            }
+        }
+        postControl(
+            JSONObject()
+                .put("type", "client.confirmation.resolve")
+                .put("confirmation_id", confirmationId)
+                .put("tool_call_id", toolCallId)
+                .put("decision", decision),
+        )
+        return Result(true)
+    }
+
     fun endSession(reason: String = "client_requested"): Result {
         synchronized(stateLock) {
             if (!status.sessionStarted) {

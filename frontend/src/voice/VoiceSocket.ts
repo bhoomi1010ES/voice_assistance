@@ -7,6 +7,7 @@ import {
   endVoiceSession,
   getVoiceGatewayStatus,
   requestMicrophonePermission,
+  resolveVoiceConfirmation,
   retryVoiceResponse,
   startMicrophone,
   startVoiceSession,
@@ -155,6 +156,11 @@ export type VoiceSocketAdapter = {
     originalResponseId: string,
     transcript: string,
   ) => Promise<VoiceGatewayStatus>;
+  resolveConfirmation?: (
+    confirmationId: string,
+    toolCallId: string,
+    decision: 'approve' | 'deny',
+  ) => Promise<VoiceGatewayStatus>;
   endSession: (reason?: string | null) => Promise<VoiceGatewayStatus>;
   getStatus: () => Promise<VoiceGatewayStatus>;
   startMicrophone?: () => Promise<unknown>;
@@ -279,6 +285,7 @@ const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
   commitAudio: commitVoiceAudio,
   cancelResponse: cancelVoiceResponse,
   retryResponse: retryVoiceResponse,
+  resolveConfirmation: resolveVoiceConfirmation,
   endSession: endVoiceSession,
   getStatus: getVoiceGatewayStatus,
   startMicrophone,
@@ -712,6 +719,34 @@ export class VoiceSocket {
     } catch (error) {
       const message = safeVoiceError(error);
       this.setSnapshot({ turn: 'failed', error: message });
+      throw new Error(message);
+    }
+  }
+
+  async resolveConfirmation(
+    confirmationId: string,
+    toolCallId: string,
+    decision: 'approve' | 'deny',
+  ): Promise<void> {
+    if (!confirmationId || !toolCallId) {
+      throw new Error('This confirmation is no longer available.');
+    }
+    if (!this.adapter.resolveConfirmation) {
+      throw new Error(
+        'Confirmation controls are unavailable for this session.',
+      );
+    }
+    try {
+      this.handleStatus(
+        await this.adapter.resolveConfirmation(
+          confirmationId,
+          toolCallId,
+          decision,
+        ),
+      );
+    } catch (error) {
+      const message = safeVoiceError(error);
+      this.setSnapshot({ error: message });
       throw new Error(message);
     }
   }

@@ -11,7 +11,9 @@ from app.llm.service import LLMService
 from app.memory.providers import RemoteEmbeddingProvider, RemoteReranker
 from app.memory.retrieval import MemoryRetrievalService
 from app.memory.worker_service import MemoryWorkerService
+from app.reminders.worker_service import ReminderWorkerService
 from app.services.infrastructure import Infrastructure
+from app.services.push_delivery import UnavailablePushDeliveryProvider
 from app.stt.service import STTService
 
 
@@ -32,6 +34,7 @@ def create_app(
         embedding_provider = None
         reranker = None
         memory_worker = None
+        reminder_worker = None
         if app_settings.memory_retrieval_mode != "off" or app_settings.memory_write_enabled:
             embedding_provider = RemoteEmbeddingProvider(app_settings)
             await embedding_provider.initialize()
@@ -61,6 +64,15 @@ def create_app(
                 )
                 await memory_worker.start()
                 app.state.memory_worker = memory_worker
+            database = getattr(active_infrastructure, "database", None)
+            if app_settings.reminder_worker_enabled and getattr(database, "session_factory", None):
+                reminder_worker = ReminderWorkerService(
+                    app_settings,
+                    database,
+                    UnavailablePushDeliveryProvider(),
+                )
+                await reminder_worker.start()
+                app.state.reminder_worker = reminder_worker
             logging.getLogger("voice-assistance-backend").info(
                 "application started",
                 extra={"event": "service.started"},
@@ -68,6 +80,8 @@ def create_app(
             yield
         finally:
             try:
+                if reminder_worker is not None:
+                    await reminder_worker.stop()
                 if memory_worker is not None:
                     await memory_worker.stop()
             finally:

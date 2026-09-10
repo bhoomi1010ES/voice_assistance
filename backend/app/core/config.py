@@ -138,6 +138,16 @@ class Settings(BaseSettings):
     memory_chunk_max_chars: int = Field(default=1_600, ge=128, le=16_384)
     memory_chunk_overlap_chars: int = Field(default=160, ge=0, le=8_192)
 
+    # Phase 7 durable reminder worker. Push provider credentials are intentionally
+    # not part of this settings object until a real provider adapter is selected.
+    reminder_worker_enabled: bool = True
+    reminder_worker_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
+    reminder_worker_shutdown_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    reminder_lease_seconds: int = Field(default=120, ge=10, le=3_600)
+    reminder_max_attempts: int = Field(default=5, ge=1, le=20)
+    reminder_retry_backoff_base_seconds: float = Field(default=5.0, gt=0, le=3_600)
+    reminder_retry_backoff_max_seconds: float = Field(default=300.0, gt=0, le=86_400)
+
     voice_protocol_version: int = 1
     voice_sample_rate_hz: int = 16_000
     voice_channels: int = 1

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
   Alert,
+  Modal,
   Pressable,
   ScrollView,
   ScrollViewInstance,
@@ -57,6 +58,20 @@ export function AssistantScreen() {
     () => socketState.conversationMessages ?? EMPTY_CONVERSATION_MESSAGES,
     [socketState.conversationMessages],
   );
+  const pendingConfirmation = useMemo(
+    () =>
+      [...conversationMessages]
+        .reverse()
+        .find(
+          (message): message is ConversationToolMessage =>
+            message.role === 'tool' &&
+            message.status === 'confirmation_required' &&
+            Boolean(message.confirmationId),
+        ) ?? null,
+    [conversationMessages],
+  );
+  const [confirmationBusy, setConfirmationBusy] = useState(false);
+  const [confirmationError, setConfirmationError] = useState(false);
   const greetingName =
     profile?.name?.trim() ||
     profile?.email?.split('@')[0] ||
@@ -155,6 +170,26 @@ export function AssistantScreen() {
         setCopiedMessageId(message.id);
       }),
     [execute],
+  );
+
+  const resolveConfirmation = useCallback(
+    async (decision: 'approve' | 'deny') => {
+      if (!pendingConfirmation?.confirmationId || confirmationBusy) return;
+      setConfirmationBusy(true);
+      setConfirmationError(false);
+      try {
+        await socket.resolveConfirmation(
+          pendingConfirmation.confirmationId,
+          pendingConfirmation.toolCallId,
+          decision,
+        );
+      } catch {
+        setConfirmationError(true);
+      } finally {
+        setConfirmationBusy(false);
+      }
+    },
+    [confirmationBusy, pendingConfirmation, socket],
   );
 
   const voiceControlAction = useCallback(() => {
@@ -443,7 +478,63 @@ export function AssistantScreen() {
           </Card>
         ) : null}
       </ScrollView>
+      {pendingConfirmation ? (
+        <ToolConfirmationSheet
+          message={pendingConfirmation}
+          busy={confirmationBusy}
+          error={confirmationError}
+          onDecision={resolveConfirmation}
+        />
+      ) : null}
     </Screen>
+  );
+}
+
+function ToolConfirmationSheet({
+  message,
+  busy,
+  error,
+  onDecision,
+}: {
+  message: ConversationToolMessage;
+  busy: boolean;
+  error: boolean;
+  onDecision: (decision: 'approve' | 'deny') => void;
+}) {
+  return (
+    <Modal transparent visible animationType="slide">
+      <View style={styles.confirmationOverlay}>
+        <Card style={styles.confirmationCard}>
+          <AppText style={styles.diagnosticsTitle}>
+            {strings.assistant.toolConfirmTitle}
+          </AppText>
+          <AppText accessibilityLabel={`Action ${message.name}`}>
+            {message.name.replaceAll('_', ' ')}
+          </AppText>
+          <AppText>{strings.assistant.toolConfirmBody}</AppText>
+          {error ? (
+            <StatusBanner tone="error">
+              {strings.assistant.toolConfirmUnavailable}
+            </StatusBanner>
+          ) : null}
+          <View style={styles.confirmationActions}>
+            <ActionButton
+              label={strings.assistant.toolDeny}
+              onPress={() => onDecision('deny')}
+              disabled={busy}
+              variant="quiet"
+              testID="tool-confirm-deny"
+            />
+            <ActionButton
+              label={strings.assistant.toolApprove}
+              onPress={() => onDecision('approve')}
+              disabled={busy}
+              testID="tool-confirm-approve"
+            />
+          </View>
+        </Card>
+      </View>
+    </Modal>
   );
 }
 
@@ -849,6 +940,22 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   diagnosticLabel: { color: '#5D6875' },
+  confirmationOverlay: {
+    backgroundColor: '#00000066',
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  confirmationCard: {
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    gap: 12,
+  },
+  confirmationActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    justifyContent: 'flex-end',
+  },
 });
 
 const EMPTY_TRANSCRIPT_MESSAGES: VoiceTranscriptMessage[] = [];

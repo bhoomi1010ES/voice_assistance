@@ -66,6 +66,10 @@ export function safeUserMessage(error: ClientError): string {
     return 'That item is no longer available. Refresh and try again.';
   }
 
+  if (error.code === 'TEMPORAL_RESOLUTION_REQUIRED') {
+    return 'The date, time, or timezone needs clarification. Review it and try again.';
+  }
+
   if (error.kind === 'configuration') {
     return 'The app is not configured for this environment.';
   }

@@ -70,6 +70,7 @@ from app.websocket.cancellation import CancellationGuard
 from app.websocket.protocol import (
     AudioCommitMessage,
     ClientPingMessage,
+    ConfirmationResolveMessage,
     ControlMessageType,
     ProtocolError,
     ResponseCancelMessage,
@@ -374,6 +375,8 @@ class VoiceGateway:
             await self._handle_response_cancel(message)
         elif isinstance(message, ResponseRetryMessage):
             await self._handle_response_retry(message)
+        elif isinstance(message, ConfirmationResolveMessage):
+            await self._handle_confirmation_decision(message)
         elif isinstance(message, ClientPingMessage):
             await self._handle_ping(message)
         elif isinstance(message, SessionEndMessage):
@@ -868,7 +871,10 @@ class VoiceGateway:
                     response_id=response_id,
                     scopes=frozenset(
                         {
+                            "tasks:read",
                             "tasks:write",
+                            "reminders:read",
+                            "reminders:write",
                             *(
                                 {"memory:read"}
                                 if self.settings.memory_retrieval_mode != "off"
@@ -885,6 +891,7 @@ class VoiceGateway:
                     confirmation_requested=self._persist_confirmation_request,
                     tool_execution_started=on_tool_execution_started,
                     tool_execution_finished=on_tool_execution_finished,
+                    tool_execution_audit=self._record_tool_execution_audit,
                     memory_settings=self.settings,
                     memory_service=memory_service,
                 )
@@ -978,6 +985,11 @@ class VoiceGateway:
                     continue
                 if event.event_type.startswith("tool_execution_"):
                     if event.tool_call is not None:
+                        if event.event_type == "tool_execution_completed":
+                            # A mutating handler may have only flushed its row.
+                            # Commit before success status or resumed assistant
+                            # text can reach the client/provider.
+                            await self.db.commit()
                         status = (
                             "success"
                             if event.event_type == "tool_execution_completed"
@@ -1216,6 +1228,35 @@ class VoiceGateway:
                 confirmation_id=confirmation_id,
                 error_code=error_code,
             )
+        )
+
+    async def _record_tool_execution_audit(
+        self,
+        call,
+        tool,
+        arguments: BaseModel,
+        result,
+    ) -> None:
+        if not hasattr(self.db, "add"):
+            return
+        from app.services.audit import safe_tool_payload, safe_tool_result_content
+
+        record_audit(
+            self.db,
+            "TOOL_EXECUTION",
+            user_id=self.principal.user_id,
+            device_id=self.principal.device_id,
+            metadata={
+                "tool_name": tool.name,
+                "tool_call_id": call.tool_call_id,
+                "status": (
+                    "replayed" if result.replayed else "completed" if result.success else "failed"
+                ),
+                "executed": result.executed,
+                "error_code": result.error_code,
+                "arguments": safe_tool_payload(arguments.model_dump(mode="json")),
+                "result": safe_tool_result_content(result.content),
+            },
         )
 
     async def _persist_confirmation_request(
@@ -1578,7 +1619,10 @@ class VoiceGateway:
             response_id=response_id,
             scopes=frozenset(
                 {
+                    "tasks:read",
                     "tasks:write",
+                    "reminders:read",
+                    "reminders:write",
                     *({"memory:read"} if self.settings.memory_retrieval_mode != "off" else set()),
                     *({"memory:write"} if self.settings.memory_write_enabled else set()),
                 }
@@ -1589,6 +1633,7 @@ class VoiceGateway:
             user_timezone=claimed.user_timezone,
             cancellation_check=lambda: not self.cancel_guard.can_emit(response_id),
             tool_execution_started=on_confirmation_execution_started,
+            tool_execution_audit=self._record_tool_execution_audit,
             memory_settings=self.settings,
             memory_service=memory_service,
         )
@@ -1916,6 +1961,42 @@ class VoiceGateway:
                 code=code,
             )
         )
+
+    async def _handle_confirmation_decision(self, message: ConfirmationResolveMessage) -> None:
+        """Resolve a server-created confirmation without accepting tool input."""
+
+        self._require_session()
+        store = getattr(self, "confirmation_store", None)
+        session_id = self._active_session_id()
+        if store is None or session_id is None:
+            await self._send_error("confirmation_unavailable")
+            return
+        scope = self._confirmation_scope(session_id)
+        pending = await store.get(scope)
+        if (
+            pending is None
+            or pending.confirmation_id != message.confirmation_id
+            or pending.tool_call_id != message.tool_call_id
+        ):
+            await self._send_error("confirmation_not_available")
+            return
+
+        # The normal spoken path already owns all validation, authorization,
+        # confirmation transitions, idempotency, auditing, and database commit
+        # ordering. Reuse it with a bounded server-side yes/no token instead of
+        # adding a second execution implementation for UI clients.
+        self.cancel_guard.activate(pending.original_response_id)
+        self._response_turn_id = pending.original_turn_id
+        try:
+            await self._resolve_pending_confirmation(
+                session_id=session_id,
+                turn_id=pending.original_turn_id,
+                response_id=pending.original_response_id,
+                transcript="yes" if message.decision == "approve" else "no",
+            )
+        finally:
+            self.cancel_guard.clear()
+            self._response_turn_id = None
 
     async def _handle_response_retry(self, message: ResponseRetryMessage) -> None:
         self._require_session()

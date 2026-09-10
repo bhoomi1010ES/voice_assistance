@@ -3145,25 +3145,38 @@ no-result query
 
 ## Phase 7 — Tool engine + reminders/tasks
 
-### Steps
+Phase 7 backend acceptance is complete for the PostgreSQL-backed implementation. Phase 5/6 foundations are explicitly called out below; they were inspected and reused rather than duplicated.
 
-- [ ] Build Tool Registry.
-- [ ] Define strict Pydantic schemas.
-- [ ] Implement permission checks.
-- [ ] Implement idempotency.
-- [ ] Add tool execution audit.
-- [ ] Create tasks/reminders tables.
-- [ ] Implement reminder tools.
-- [ ] Implement task tools.
-- [ ] Build durable reminder worker.
-- [ ] Add timezone handling.
-- [ ] Add recurrence handling only after one-shot reminders are correct.
-- [ ] Add mobile push delivery.
-- [ ] Add retry/dead-letter/failure strategy.
+Evidence: [Phase 7 backend acceptance report](docs/20260910_111955_phase7_backend_acceptance.md) and [machine-readable evidence](docs/evidence/phase7/).
+
+### Verified inherited foundations
+
+- [x] Server-owned Tool Registry — inherited `ToolRegistry`, `RegisteredTool`, and `create_default_tool_registry` in `backend/app/llm/tool_loop.py`; registry regression tests confirm task, reminder, and time tools are server supplied.
+- [x] Strict Pydantic tool schemas — inherited executor validation plus strict task/reminder argument models with `extra="forbid"`.
+- [x] Authorization, scopes, confirmation, rate limiting, and authenticated ownership — inherited executor/gateway controls, extended with task/reminder scopes; REST ownership queries use authenticated server identity.
+- [x] PostgreSQL idempotency and unique execution boundary — inherited `PostgresToolIdempotencyStore`, reused for reminder/task mutations and replay results.
+- [x] Durable tool execution audit — inherited `AuditLog` and `ToolExecutionRecord` were extended with sanitized arguments/results; redaction tests cover token/key fields.
+- [x] Durable success before assistant acknowledgement — existing gateway commit ordering was preserved and verified during the Phase 7 audit.
+- [x] `get_current_time`, memory tools, voice confirmation, and deterministic task/reminder routing — existing Phase 5/6 paths remain registered and were not reimplemented.
+
+### Phase 7 implementation and acceptance
+
+- [x] Tasks schema/API — `backend/app/models/resources.py`, migration `0008_phase7_tasks_reminders.py`, and owner-scoped task APIs now cover the required contract, indexes, completion route, validation, and safe cross-user 404 behavior.
+- [x] Task tools — `create_task`, `update_task`, `complete_task`, and `list_tasks` are registered in the existing executor and use authenticated ownership, confirmation, idempotency, audit, and transaction-safe writes.
+- [x] Reminders schema/API — durable reminder state, leases, retry fields, delivery identity, recurrence metadata, indexes, owner-scoped CRUD, filtering, and safe public failure responses are implemented.
+- [x] Reminder tools — `create_reminder`, `update_reminder`, `delete_reminder`, and `list_reminders` use the existing registry/executor and server-owned timezone/ownership context.
+- [x] Timezone handling — IANA zones, UTC instants, relative-date resolution, past-time rejection, DST ambiguity/nonexistence rejection, and deterministic frozen-clock tests are covered.
+- [x] One-shot durable worker — PostgreSQL `FOR UPDATE SKIP LOCKED` claiming, durable claim commit, delivery, restart persistence, stale lease recovery, and graceful/standalone worker lifecycle are covered.
+- [x] Retry/dead-letter/failure strategy — bounded exponential backoff, retryable/permanent classification, sanitized failure state, and durable dead-letter terminal state are covered.
+- [x] Push backend — provider-neutral `PushDeliveryProvider`, deterministic fake provider, active/revoked device-token lookup, deduplicated delivery identity, and safe unavailable-provider behavior are implemented.
+- [x] Recurrence — enabled only after one-shot acceptance; bounded daily/weekly RRULE subset, timezone/DST evaluation, durable occurrence identity, restart/replay safety, update/cancel behavior, and malformed-rule rejection are covered.
+- [x] Phase 7 durability gate — repeated sequential/concurrent confirmed `create_reminder` calls create exactly one row, two workers produce one delivery, and a reminder survives worker/service restart in PostgreSQL.
+- [ ] Live NVIDIA/voice end-to-end tool invocation — implemented path is preserved, but live external-provider evidence is pending because normal automated tests intentionally do not use NVIDIA, STT, network, or physical devices.
+- [ ] Live physical Android push delivery — blocked by external/physical dependency; backend contract is PASS and no FCM credentials or physical token were used.
 
 ### Gate
 
-Repeated/replayed tool calls cannot create duplicate reminders, and a service restart does not lose scheduled reminders.
+- [x] Repeated/replayed tool calls cannot create duplicate reminders, and a service restart does not lose scheduled reminders. PostgreSQL acceptance evidence is in `docs/evidence/phase7/phase7_idempotency.json` and `phase7_worker_restart.json`.
 
 ---
 

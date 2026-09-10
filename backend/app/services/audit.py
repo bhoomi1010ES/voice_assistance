@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Mapping
 from typing import Any
@@ -9,7 +10,43 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AuditLog
 
-SENSITIVE_KEY_PARTS = ("password", "token", "authorization", "secret", "credential", "hash")
+SENSITIVE_KEY_PARTS = (
+    "password",
+    "token",
+    "authorization",
+    "secret",
+    "credential",
+    "api_key",
+    "private_key",
+    "client_key",
+    "hash",
+)
+
+
+def safe_tool_payload(value: Any) -> Any:
+    """Redact credential-like tool fields before durable audit storage."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): "[REDACTED]"
+            if any(part in str(key).lower() for part in SENSITIVE_KEY_PARTS)
+            else safe_tool_payload(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [safe_tool_payload(item) for item in value]
+    if isinstance(value, str):
+        return value[:10_000]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def safe_tool_result_content(content: str) -> dict[str, Any] | str:
+    try:
+        return safe_tool_payload(json.loads(content))
+    except (TypeError, ValueError):
+        return safe_tool_payload(content)
 
 
 def _safe_metadata_value(value: Any) -> Any:

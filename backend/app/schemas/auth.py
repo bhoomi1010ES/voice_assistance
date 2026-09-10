@@ -84,6 +84,18 @@ class DeviceRegisterRequest(StrictSchema):
         return value
 
 
+class PushTokenUpdateRequest(StrictSchema):
+    token: str | None = Field(default=None, max_length=4096)
+
+    @field_validator("token")
+    @classmethod
+    def normalize_token(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
 class DeviceResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

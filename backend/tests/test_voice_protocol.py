@@ -70,6 +70,31 @@ def test_control_messages_forbid_client_identity_override() -> None:
         parse_control_message(raw, max_bytes=16 * 1024)
 
 
+def test_confirmation_resolution_accepts_only_correlated_decision_fields() -> None:
+    confirmation_id = uuid.uuid4()
+    raw = json.dumps(
+        {
+            "type": "client.confirmation.resolve",
+            "confirmation_id": str(confirmation_id),
+            "tool_call_id": "call-1",
+            "decision": "approve",
+        }
+    )
+
+    parsed = parse_control_message(raw, max_bytes=16 * 1024)
+
+    assert parsed.type == "client.confirmation.resolve"
+    assert parsed.confirmation_id == confirmation_id
+    assert parsed.tool_call_id == "call-1"
+    assert parsed.decision == "approve"
+
+    with pytest.raises(ProtocolError, match="invalid_control_message"):
+        parse_control_message(
+            raw.replace('"decision": "approve"', '"decision": "approve", "arguments": {}'),
+            max_bytes=16 * 1024,
+        )
+
+
 def test_voice_state_accepts_one_turn_and_rejects_invalid_sequence() -> None:
     state = VoiceConnectionState()
     session_id = uuid.uuid4()

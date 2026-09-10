@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -193,6 +193,7 @@ def test_memory_task_and_session_ownership_matrix(resource_client) -> None:
     assert task_b.status_code == 201
     task_a_id = task_a.json()["id"]
     task_b_id = task_b.json()["id"]
+    assert {item["id"] for item in client.get("/tasks", headers=headers_a).json()} == {task_a_id}
     assert client.get(f"/tasks/{task_a_id}", headers=headers_a).status_code == 200
     assert client.get(f"/tasks/{task_b_id}", headers=headers_a).status_code == 404
     assert client.get(f"/tasks/{task_a_id}", headers=headers_b).status_code == 404
@@ -202,6 +203,7 @@ def test_memory_task_and_session_ownership_matrix(resource_client) -> None:
         ).status_code
         == 404
     )
+    assert client.post(f"/tasks/{task_b_id}/complete", headers=headers_a).status_code == 404
     assert client.delete(f"/tasks/{task_b_id}", headers=headers_a).status_code == 404
     assert (
         client.patch(
@@ -215,6 +217,58 @@ def test_memory_task_and_session_ownership_matrix(resource_client) -> None:
             "/tasks",
             headers=headers_a,
             json={"title": "forged owner", "user_id": tokens_b["user"]["id"]},
+        ).status_code
+        == 422
+    )
+
+    reminder_a = client.post(
+        "/reminders",
+        headers=headers_a,
+        json={
+            "title": "User A reminder",
+            "body": "private",
+            "trigger_at": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+            "timezone": "UTC",
+        },
+    )
+    reminder_b = client.post(
+        "/reminders",
+        headers=headers_b,
+        json={
+            "title": "User B reminder",
+            "body": "private",
+            "trigger_at": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+            "timezone": "UTC",
+        },
+    )
+    assert reminder_a.status_code == 201
+    assert reminder_b.status_code == 201
+    reminder_a_id = reminder_a.json()["id"]
+    reminder_b_id = reminder_b.json()["id"]
+    assert {item["id"] for item in client.get("/reminders", headers=headers_a).json()} == {
+        reminder_a_id
+    }
+    assert client.get(f"/reminders/{reminder_b_id}", headers=headers_a).status_code == 404
+    assert client.get(f"/reminders/{reminder_a_id}", headers=headers_b).status_code == 404
+    assert (
+        client.patch(
+            f"/reminders/{reminder_b_id}",
+            headers=headers_a,
+            json={"title": "attempted overwrite"},
+        ).status_code
+        == 404
+    )
+    assert client.delete(f"/reminders/{reminder_b_id}", headers=headers_a).status_code == 404
+    assert (
+        client.post(
+            "/reminders",
+            headers=headers_a,
+            json={
+                "title": "forged owner",
+                "trigger_at": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+                "timezone": "UTC",
+                "user_id": tokens_b["user"]["id"],
+            },
         ).status_code
         == 422
     )

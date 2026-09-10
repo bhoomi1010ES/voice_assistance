@@ -648,6 +648,11 @@ type NativeVoiceModule = {
     originalResponseId: string,
     transcript: string,
   ) => Promise<VoiceGatewayStatus>;
+  resolveVoiceConfirmation: (
+    confirmationId: string,
+    toolCallId: string,
+    decision: 'approve' | 'deny',
+  ) => Promise<VoiceGatewayStatus>;
   endVoiceSession: (reason?: string | null) => Promise<VoiceGatewayStatus>;
   getVoiceGatewayStatus: () => Promise<VoiceGatewayStatus>;
   copyTextToClipboard: (text: string) => Promise<boolean>;
@@ -830,6 +835,18 @@ export async function retryVoiceResponse(
     turnId,
     originalResponseId,
     transcript,
+  );
+}
+
+export async function resolveVoiceConfirmation(
+  confirmationId: string,
+  toolCallId: string,
+  decision: 'approve' | 'deny',
+): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().resolveVoiceConfirmation(
+    confirmationId,
+    toolCallId,
+    decision,
   );
 }
 

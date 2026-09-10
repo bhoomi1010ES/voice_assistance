@@ -59,6 +59,10 @@ class Device(Base):
     platform: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     device_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB, nullable=True)
+    push_token: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    push_token_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
@@ -71,6 +75,12 @@ class Device(Base):
         ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         Index("ix_devices_user_id", "user_id"),
         Index("ix_devices_device_identifier_unique", "device_identifier", unique=True),
+        Index(
+            "ix_devices_push_token_active",
+            "push_token",
+            unique=True,
+            postgresql_where=(push_token.is_not(None)) & (push_token_revoked_at.is_(None)),
+        ),
         UniqueConstraint("id", "user_id", name="uq_devices_id_user_id"),
     )
 

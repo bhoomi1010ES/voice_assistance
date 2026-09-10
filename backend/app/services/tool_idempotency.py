@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 
 from sqlalchemy import delete, select
@@ -60,7 +61,22 @@ class PostgresToolIdempotencyStore(ToolIdempotencyStore):
         if record is None:
             raise RuntimeError("Tool idempotency record was not claimed")
         record.status = "completed"
-        record.result_content = content
+        from app.services.audit import safe_tool_result_content
+
+        record.result_content = json.dumps(
+            safe_tool_result_content(content),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        await self.session.flush()
+
+    async def record_arguments(self, key: IdempotencyKey, arguments: dict) -> None:
+        record = await self._record(key)
+        if record is None:
+            raise RuntimeError("Tool idempotency record was not claimed")
+        from app.services.audit import safe_tool_payload
+
+        record.arguments_json = safe_tool_payload(arguments)
         await self.session.flush()
 
     async def release(self, key: IdempotencyKey) -> None:

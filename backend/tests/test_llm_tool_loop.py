@@ -167,7 +167,17 @@ class FakeDatabase:
 async def test_default_registry_is_server_owned_and_schema_backed() -> None:
     registry = create_default_tool_registry()
 
-    assert registry.names() == ("create_task", "get_current_time")
+    assert {
+        "create_task",
+        "update_task",
+        "complete_task",
+        "list_tasks",
+        "create_reminder",
+        "update_reminder",
+        "delete_reminder",
+        "list_reminders",
+        "get_current_time",
+    }.issubset(registry.names())
     definition = next(
         definition for definition in registry.definitions() if definition.name == "get_current_time"
     )

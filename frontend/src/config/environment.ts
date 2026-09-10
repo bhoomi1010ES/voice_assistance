@@ -9,7 +9,7 @@ type RuntimeGlobals = typeof globalThis & {
 
 // The development APK is tested on the physical device over the local Wi-Fi
 // network. Keep the backend bound to 0.0.0.0 when using this address.
-const DEVELOPMENT_HTTP_URL = 'http://192.168.1.6:8000';
+const DEVELOPMENT_HTTP_URL = 'http://192.168.1.9:8000';
 const PRODUCTION_HTTP_URL = 'https://api.invalid';
 
 function isDevelopment(): boolean {

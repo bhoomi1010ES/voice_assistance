@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from app.api import auth, devices, memories, sessions, tasks, voice, websocket
+from app.api import auth, devices, memories, reminders, sessions, tasks, voice, websocket
 
 router = APIRouter()
 
@@ -9,6 +9,7 @@ router.include_router(auth.router)
 router.include_router(devices.router)
 router.include_router(memories.router)
 router.include_router(tasks.router)
+router.include_router(reminders.router)
 router.include_router(sessions.router)
 router.include_router(websocket.router)
 router.include_router(voice.router)

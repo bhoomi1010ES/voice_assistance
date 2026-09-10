@@ -49,6 +49,11 @@ _TIME_PATTERN = re.compile(
     r"(?::(?P<minute>\d{2}))?\s*(?P<meridiem>a\.?m\.?|p\.?m\.?)?\b",
     re.IGNORECASE,
 )
+_TIME_ONLY_PATTERN = re.compile(
+    r"\b(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*"
+    r"(?P<meridiem>a\.?m\.?|p\.?m\.?)\b",
+    re.IGNORECASE,
+)
 _MONTH_DATE_PATTERN = re.compile(
     r"\b(?P<month>january|february|march|april|may|june|july|august|september|"
     r"october|november|december)\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?"
@@ -72,6 +77,8 @@ class TaskDueDateResolutionError(ValueError):
 
 def has_temporal_expression(value: str) -> bool:
     normalized = _normalize(value)
+    if _TIME_PATTERN.search(normalized) or _TIME_ONLY_PATTERN.search(normalized):
+        return True
     if _RELATIVE_DURATION_PATTERN.search(normalized):
         return True
     if _MONTH_DATE_PATTERN.search(normalized) or _ISO_DATE_PATTERN.search(normalized):
@@ -100,6 +107,7 @@ def resolve_task_due_at(
     now = _require_aware_utc(now_utc, "clock timestamp")
     transcript = (source_transcript or "").strip()
     model_expression = (due_expression or "").strip()
+    _load_timezone(timezone_name)
     expression = transcript if has_temporal_expression(transcript) else model_expression
 
     if expression:
@@ -123,6 +131,26 @@ def format_local_due_at(due_at: datetime, timezone_name: str) -> str:
     return _require_aware_utc(due_at, "task due_at").astimezone(zone).isoformat()
 
 
+def normalize_absolute_due_at(
+    value: datetime,
+    *,
+    now_utc: datetime,
+    timezone_name: str,
+    label: str = "due date",
+) -> datetime:
+    """Normalize an API datetime using the authenticated user's IANA zone."""
+
+    now = _require_aware_utc(now_utc, "clock timestamp")
+    zone = _load_timezone(timezone_name)
+    if value.tzinfo is None or value.utcoffset() is None:
+        resolved = _localize_strict(value, zone, label=label)
+    else:
+        resolved = value.astimezone(UTC)
+    if resolved <= now:
+        raise TaskDueDateResolutionError(f"{label} must be in the future")
+    return resolved
+
+
 def _parse_expression(expression: str, now_utc: datetime, timezone_name: str) -> datetime:
     normalized = _normalize(expression)
     zone = _load_timezone(timezone_name)
@@ -138,14 +166,21 @@ def _parse_expression(expression: str, now_utc: datetime, timezone_name: str) ->
         return (now_utc + delta).astimezone(UTC)
 
     local_date = _resolve_calendar_date(normalized, local_now.date())
+    local_time = _parse_clock_time(normalized)
+    if local_date is None and local_time is not None:
+        local_date = local_now.date()
+        candidate = _localize_strict(
+            datetime.combine(local_date, local_time), zone, label="task due date"
+        )
+        if candidate <= now_utc:
+            local_date += timedelta(days=1)
     if local_date is None:
         raise TaskDueDateResolutionError("task due date expression is not supported")
-    local_time = _parse_clock_time(normalized)
     if local_time is None:
         raise TaskDueDateResolutionError(
             "a clock time is required for a calendar-relative task due date"
         )
-    return datetime.combine(local_date, local_time, tzinfo=zone).astimezone(UTC)
+    return _localize_strict(datetime.combine(local_date, local_time), zone, label="task due date")
 
 
 def _resolve_calendar_date(value: str, local_today: date) -> date | None:
@@ -184,7 +219,7 @@ def _resolve_calendar_date(value: str, local_today: date) -> date | None:
 
 
 def _parse_clock_time(value: str) -> time | None:
-    match = _TIME_PATTERN.search(value)
+    match = _TIME_PATTERN.search(value) or _TIME_ONLY_PATTERN.search(value)
     if match is None:
         return None
     hour = int(match.group("hour"))
@@ -231,3 +266,22 @@ def _require_aware_utc(value: datetime, label: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise TaskDueDateResolutionError(f"{label} must be timezone-aware")
     return value.astimezone(UTC)
+
+
+def _localize_strict(value: datetime, zone: ZoneInfo, *, label: str) -> datetime:
+    """Convert a local wall time while rejecting DST gaps and folds."""
+
+    naive = value.replace(tzinfo=None)
+    candidates: list[datetime] = []
+    for fold in (0, 1):
+        candidate = naive.replace(tzinfo=zone, fold=fold)
+        round_tripped = candidate.astimezone(UTC).astimezone(zone).replace(tzinfo=None)
+        if round_tripped == naive and all(
+            candidate.utcoffset() != item.utcoffset() for item in candidates
+        ):
+            candidates.append(candidate)
+    if not candidates:
+        raise TaskDueDateResolutionError(f"{label} falls in a nonexistent local time")
+    if len(candidates) > 1:
+        raise TaskDueDateResolutionError(f"{label} is ambiguous in the selected timezone")
+    return candidates[0].astimezone(UTC)

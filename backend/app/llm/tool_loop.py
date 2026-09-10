@@ -58,6 +58,12 @@ class ToolExecutionContext:
     cancellation_check: Callable[[], bool] | None = None
     tool_execution_started: Callable[[LLMToolCall, float], Awaitable[None] | None] | None = None
     tool_execution_finished: Callable[[LLMToolCall, float], Awaitable[None] | None] | None = None
+    tool_execution_audit: (
+        Callable[
+            [LLMToolCall, RegisteredTool, BaseModel, ToolExecutionResult], Awaitable[None] | None
+        ]
+        | None
+    ) = None
     memory_settings: Settings | None = None
     memory_service: Any | None = None
 
@@ -273,7 +279,9 @@ class ToolExecutor:
         if tool.read_only:
             if not await self._within_turn_rate_limit(tool, context):
                 return self._failure(call, "llm_tool_rate_limited")
-            return await self._invoke(tool, call, context, validated_arguments)
+            result = await self._invoke(tool, call, context, validated_arguments)
+            await self._audit(context, call, tool, validated_arguments, result)
+            return result
         if self.idempotency_store is None:
             return self._failure(call, "llm_tool_idempotency_unavailable")
 
@@ -281,7 +289,7 @@ class ToolExecutor:
         async with lock:
             claim = await self._claim_idempotency(key)
             if claim.cached_content is not None:
-                return ToolExecutionResult(
+                result = ToolExecutionResult(
                     tool_call_id=call.tool_call_id,
                     name=call.name,
                     content=claim.cached_content,
@@ -289,12 +297,16 @@ class ToolExecutor:
                     executed=False,
                     replayed=True,
                 )
+                await self._audit(context, call, tool, validated_arguments, result)
+                return result
             if not claim.acquired:
                 return self._failure(call, "llm_tool_in_progress")
             if not await self._within_turn_rate_limit(tool, context):
                 await self._release_idempotency(key)
                 return self._failure(call, "llm_tool_rate_limited")
+            await self._record_arguments(key, validated_arguments)
             result = await self._invoke(tool, call, context, validated_arguments)
+            await self._audit(context, call, tool, validated_arguments, result)
             if result.success:
                 await self.idempotency_store.put(key, result.content)
             else:
@@ -312,6 +324,27 @@ class ToolExecutor:
         release_method = getattr(self.idempotency_store, "release", None)
         if release_method is not None:
             await release_method(key)
+
+    async def _record_arguments(self, key: IdempotencyKey, arguments: BaseModel) -> None:
+        method = getattr(self.idempotency_store, "record_arguments", None)
+        if method is not None:
+            result = method(key, arguments.model_dump(mode="json"))
+            if inspect.isawaitable(result):
+                await result
+
+    async def _audit(
+        self,
+        context: ToolExecutionContext,
+        call: LLMToolCall,
+        tool: RegisteredTool,
+        arguments: BaseModel,
+        result: ToolExecutionResult,
+    ) -> None:
+        if context.tool_execution_audit is None:
+            return
+        callback_result = context.tool_execution_audit(call, tool, arguments, result)
+        if inspect.isawaitable(callback_result):
+            await callback_result
 
     async def _within_turn_rate_limit(
         self,
@@ -545,7 +578,7 @@ async def _current_time(_context: ToolExecutionContext, _arguments: BaseModel) -
 
 
 def create_default_tool_registry() -> ToolRegistry:
-    """Return the server-owned diagnostic and confirmed task tool set."""
+    """Return the server-owned Phase 5/7 tool set."""
 
     registry = ToolRegistry()
     registry.register(
@@ -555,7 +588,9 @@ def create_default_tool_registry() -> ToolRegistry:
         handler=_current_time,
         read_only=True,
     )
+    from app.llm.reminder_tools import register_reminder_tools
     from app.llm.task_tools import register_task_tools
 
     register_task_tools(registry)
+    register_reminder_tools(registry)
     return registry

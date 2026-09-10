@@ -8,6 +8,7 @@ from app.models.resources import (
     MemoryItem,
     MemoryJob,
     Message,
+    Reminder,
     Task,
     ToolExecutionRecord,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "MemoryItem",
     "MemoryJob",
     "Message",
+    "Reminder",
     "Task",
     "ToolExecutionRecord",
     "User",

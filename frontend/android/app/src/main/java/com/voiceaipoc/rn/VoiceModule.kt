@@ -316,6 +316,19 @@ class VoiceModule(
     }
 
     @ReactMethod
+    fun resolveVoiceConfirmation(
+        confirmationId: String,
+        toolCallId: String,
+        decision: String,
+        promise: Promise,
+    ) {
+        resolveVoiceResult(
+            voiceGateway.resolveConfirmation(confirmationId, toolCallId, decision),
+            promise,
+        )
+    }
+
+    @ReactMethod
     fun endVoiceSession(reason: String?, promise: Promise) {
         resolveVoiceResult(voiceGateway.endSession(reason ?: "client_requested"), promise)
     }

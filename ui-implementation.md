@@ -1223,3 +1223,38 @@ acceptance gaps rather than being simulated locally.
 - UI Phase 4: **ACCEPTANCE PENDING** — the revised remote-STT ten-turn physical run is not recorded.
 - UI Phase 5: **ACCEPTANCE PENDING** — real Android STT-final-to-LLM streaming, cancellation, retry, lifecycle, and tool-status evidence is not recorded.
 - UI Phase 6: **IMPLEMENTED — ACCEPTANCE PENDING** — memory controls and automated component coverage are present; provider-enabled physical, accessibility, privacy, lifecycle, and performance evidence is not recorded.
+
+## Phase 7 UI status
+
+**IMPLEMENTED — ACCEPTANCE PENDING (2026-09-10).**
+
+The existing authenticated client and Phase 5 conversation state were reused. The new
+Tasks destination provides owner-scoped task/reminder CRUD, upcoming/all/completed and
+scheduled/sent/failed views, explicit local date/time/IANA timezone previews, server
+temporal-error clarification, bounded DAILY/WEEKLY recurrence controls, push-permission
+fallback messaging, and duplicate-tap suppression. Durable results are applied to the
+visible list only after the API request resolves successfully.
+
+The existing server-owned confirmation lifecycle was extended with a strict websocket
+decision message carrying only `confirmation_id`, `tool_call_id`, and `approve`/`deny`.
+The Assistant confirmation sheet uses those server identities and never accepts tool
+schemas or arguments from model/client text. Tool status rows continue to be driven by
+the existing server event reducer.
+
+### Phase 7 UI checklist
+
+- [x] Tasks navigation and upcoming/all/completed views implemented and component-tested.
+- [x] Task create/edit/complete/delete flows use owner-scoped REST contracts.
+- [x] Reminder create/edit/cancel/list flows use owner-scoped REST contracts.
+- [x] Date/time previews always show an explicit IANA timezone; server temporal errors remain clarification states.
+- [x] UI action keys prevent repeated taps from issuing duplicate mutations; success is rendered after durable response only.
+- [x] Confirmation sheet sends only correlated server-issued identities; approve/deny protocol parsing is strict-tested.
+- [x] Tool statuses remain awaiting/running/succeeded/failed/cancelled through existing conversation state.
+- [x] Recurrence controls are bounded to backend-accepted DAILY/WEEKLY rules; no local recurrence simulation is used.
+- [x] Push permission denied state preserves the durable reminder and explains notification limitations.
+- [x] Automated UI evidence: Jest `52/52`, TypeScript, Prettier, and UI secret scan pass.
+- [x] Android debug APK rebuilt with the existing RN 0.87.0/AGP 9.2.1/Kotlin 2.2.0/Gradle 9.4.1/JDK 17 toolchain, installed on the authorized connected device, and relaunched with Metro over ADB reverse.
+- [ ] Physical task/reminder CRUD persistence, TalkBack/large-font walkthrough, and live voice confirmation approval/denial still require a controlled manual/device run; navigation, filters, explicit timezone forms, and recurrence controls were inspected on-device.
+- [ ] Live push delivery remains pending because no physical notification receipt was verified; the backend push contract remains automated-test PASS.
+
+Evidence: `docs/20260910_122330_phase7_ui_tasks_reminders.md` and `docs/20260910_131500_phase7_physical_acceptance.md`.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -11,8 +12,16 @@ from app.api.dependencies import (
     DatabaseSessionDependency,
     get_current_principal,
 )
-from app.schemas import DeviceRegisterRequest, DeviceResponse, LogoutResponse
+from app.models import Device
+from app.schemas import (
+    DeviceRegisterRequest,
+    DeviceResponse,
+    LogoutResponse,
+    PushTokenUpdateRequest,
+)
+from app.services.audit import record_audit
 from app.services.auth import AuthenticationError, AuthPrincipal
+from app.services.ownership import get_owned_device
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
@@ -82,3 +91,33 @@ async def revoke_device(
             detail={"code": "RESOURCE_NOT_FOUND", "message": "Resource not found."},
         )
     return LogoutResponse(status="device_revoked")
+
+
+@router.patch("/{device_id}/push-token", response_model=DeviceResponse)
+async def update_push_token(
+    device_id: uuid.UUID,
+    payload: PushTokenUpdateRequest,
+    request: Request,
+    principal: Annotated[AuthPrincipal, Depends(get_current_principal)],
+    session: DatabaseSessionDependency,
+) -> Device:
+    device = await get_owned_device(session, user_id=principal.user_id, device_id=device_id)
+    if device is None:
+        record_audit(
+            session,
+            "UNAUTHORIZED_ACCESS",
+            user_id=principal.user_id,
+            device_id=principal.device_id,
+            metadata={"reason": "device_not_owned", "resource": "device"},
+            request=request,
+        )
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "RESOURCE_NOT_FOUND", "message": "Resource not found."},
+        )
+    device.push_token = payload.token
+    device.push_token_revoked_at = None if payload.token else datetime.now(UTC)
+    await session.commit()
+    await session.refresh(device)
+    return device

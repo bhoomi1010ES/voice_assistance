@@ -72,6 +72,13 @@ class ResponseRetryMessage(ControlMessage):
     transcript: str = Field(min_length=1, max_length=16_384)
 
 
+class ConfirmationResolveMessage(ControlMessage):
+    type: Literal["client.confirmation.resolve"]
+    confirmation_id: uuid.UUID
+    tool_call_id: str = Field(min_length=1, max_length=128)
+    decision: Literal["approve", "deny"]
+
+
 class ClientPingMessage(ControlMessage):
     type: Literal["client.ping"]
     client_timestamp_ms: int = Field(ge=0)
@@ -88,6 +95,7 @@ ControlMessageType = Annotated[
     | AudioCommitMessage
     | ResponseCancelMessage
     | ResponseRetryMessage
+    | ConfirmationResolveMessage
     | ClientPingMessage
     | SessionEndMessage,
     Field(discriminator="type"),
