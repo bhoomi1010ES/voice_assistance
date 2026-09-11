@@ -42,6 +42,7 @@ async def register_device(
             platform=payload.platform,
             name=payload.name,
             device_metadata=payload.metadata,
+            device_kind=payload.device_kind,
             request=request,
         )
     except AuthenticationError as error:

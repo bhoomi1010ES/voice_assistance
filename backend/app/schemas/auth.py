@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -32,6 +32,7 @@ class LoginRequest(StrictSchema):
     platform: str = Field(min_length=1, max_length=32)
     device_name: str | None = Field(default=None, max_length=255)
     device_metadata: dict[str, Any] | None = None
+    device_kind: Literal["physical", "synthetic"] = "synthetic"
 
     @field_validator("device_identifier", "platform")
     @classmethod
@@ -74,6 +75,7 @@ class DeviceRegisterRequest(StrictSchema):
     platform: str = Field(min_length=1, max_length=32)
     name: str | None = Field(default=None, max_length=255)
     metadata: dict[str, Any] | None = None
+    device_kind: Literal["physical", "synthetic"] = "synthetic"
 
     @field_validator("device_identifier", "platform")
     @classmethod
@@ -102,6 +104,7 @@ class DeviceResponse(BaseModel):
     id: uuid.UUID
     device_identifier: str
     platform: str
+    device_kind: Literal["physical", "synthetic"]
     name: str | None
     metadata: dict[str, Any] | None = Field(validation_alias="device_metadata")
     created_at: datetime

@@ -28,6 +28,7 @@ export type Device = {
   id: string;
   device_identifier: string;
   platform: string;
+  device_kind: 'physical' | 'synthetic';
   name: string | null;
   metadata: Record<string, unknown> | null;
   created_at: string;

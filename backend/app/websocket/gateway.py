@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import os
+import struct
 import time
 import uuid
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ from app.services.auth import (
     AuthPrincipal,
     AuthService,
 )
+from app.services.conversation_logging import ConversationLogger
 from app.services.task_due_dates import format_local_due_at
 from app.services.tool_idempotency import PostgresToolIdempotencyStore
 from app.services.voice_confirmation import (
@@ -65,6 +67,9 @@ from app.stt.service import (
     STTTranscriptResult,
     STTTurn,
 )
+from app.tts.base import TTSCancelledError, TTSError
+from app.tts.segmentation import SentenceSegmenter
+from app.tts.service import TTSService
 from app.websocket.binary import BinaryPcmFrame, BinaryProtocolError, decode_pcm_frame
 from app.websocket.cancellation import CancellationGuard
 from app.websocket.protocol import (
@@ -89,6 +94,10 @@ from app.websocket.state import (
 )
 
 LOGGER = logging.getLogger("voice-assistance-backend")
+TTS_FRAME_MAGIC = b"VTT1"
+TTS_FRAME_VERSION = 1
+TTS_FRAME_START = 1
+TTS_FRAME_END = 2
 
 
 @dataclass
@@ -122,6 +131,7 @@ class VoiceGateway:
         access_token: str,
         stt_service: STTService,
         llm_service: LLMService,
+        tts_service: TTSService | None = None,
         tool_registry: ToolRegistry | None = None,
         tool_idempotency_store: ToolIdempotencyStore | None = None,
         confirmation_store: VoiceConfirmationStore | None = None,
@@ -137,6 +147,7 @@ class VoiceGateway:
         self.auth_service = AuthService(settings)
         self.stt_service = stt_service
         self.llm_service = llm_service
+        self.tts_service = tts_service
         self.tool_registry = tool_registry or create_default_tool_registry()
         if tool_registry is None and (
             settings.memory_retrieval_mode != "off" or settings.memory_write_enabled
@@ -151,6 +162,7 @@ class VoiceGateway:
             idempotency_store=tool_idempotency_store or PostgresToolIdempotencyStore(db),
         )
         self.persistence = VoicePersistence()
+        self.conversation_logger = ConversationLogger(root_dir=settings.conversation_log_dir)
         self.registry = VoiceRegistry(
             websocket.app.state.infrastructure.redis,
             ttl_seconds=settings.voice_max_session_seconds + settings.voice_reconnect_grace_seconds,
@@ -181,6 +193,7 @@ class VoiceGateway:
         self._stt_event_task: asyncio.Task[None] | None = None
         self._stt_finalize_task: asyncio.Task[None] | None = None
         self._retry_response_task: asyncio.Task[None] | None = None
+        self._tts_tasks: dict[uuid.UUID, asyncio.Task[None]] = {}
         self._stt_finalize_cancel_requested = False
         self._stt_enabled = False
         self._stt_language: str | None = None
@@ -741,6 +754,10 @@ class VoiceGateway:
                 )
             await self._close_stt_turn()
             if stt_error is not None:
+                await self._persist_conversation_log(
+                    counters.turn_id,
+                    status="failed",
+                )
                 await self._complete_response_state(counters.response_id)
                 await self._send(
                     server_event(
@@ -772,7 +789,16 @@ class VoiceGateway:
                         transcript=stt_result.event.text,
                     )
                 if llm_result["status"] == "cancelled":
+                    await self._persist_conversation_log(
+                        counters.turn_id,
+                        status="cancelled",
+                    )
                     return
+
+            await self._persist_conversation_log(
+                counters.turn_id,
+                status=("failed" if llm_result["status"] == "failed" else "completed"),
+            )
 
             await self._complete_response_state(counters.response_id)
             await self._send(
@@ -827,6 +853,24 @@ class VoiceGateway:
         tool_call_at: float | None = None
         tool_execution_started_at: float | None = None
         tool_execution_finished_at: float | None = None
+        tts_queue: asyncio.Queue[str | None] | None = None
+        tts_task: asyncio.Task[None] | None = None
+        tts_segmenter: SentenceSegmenter | None = None
+        tts_input_started = False
+        tts_service = getattr(self, "tts_service", None)
+        if tts_service is not None and tts_service.enabled:
+            tts_queue = asyncio.Queue(maxsize=4)
+            tts_segmenter = SentenceSegmenter(max_chars=self.settings.tts_max_sentence_chars)
+            tts_task = asyncio.create_task(
+                self._run_tts_queue(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    queue=tts_queue,
+                ),
+                name=f"tts-response-{response_id}",
+            )
+            self._tts_tasks[response_id] = tts_task
 
         async def on_tool_execution_started(call, timestamp: float) -> None:
             nonlocal tool_execution_started_at
@@ -957,6 +1001,10 @@ class VoiceGateway:
                 if event.event_type == "text_delta" and event.delta:
                     first_text_at = first_text_at or event.monotonic_seconds
                     text_parts.append(event.delta)
+                    if tts_queue is not None and tts_segmenter is not None:
+                        tts_input_started = True
+                        for sentence in tts_segmenter.push(event.delta):
+                            await tts_queue.put(sentence)
                     await self._send(
                         server_event(
                             "assistant.text.delta",
@@ -1018,9 +1066,26 @@ class VoiceGateway:
                     terminal_event = event
                     if event.text is not None:
                         text_parts = [event.text]
+                        if (
+                            not tts_input_started
+                            and tts_queue is not None
+                            and tts_segmenter is not None
+                        ):
+                            for sentence in tts_segmenter.push(event.text):
+                                await tts_queue.put(sentence)
                     break
         except LLMError as error:
             failure_code = error.code
+        finally:
+            if tts_queue is not None and tts_task is not None:
+                if not tts_task.done():
+                    pending_tts = tts_segmenter.flush() if tts_segmenter is not None else ()
+                    for sentence in pending_tts:
+                        await tts_queue.put(sentence)
+                    await tts_queue.put(None)
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await tts_task
+                self._tts_tasks.pop(response_id, None)
 
         completed_at = time.monotonic()
         provider_info = self.llm_service.provider_info
@@ -1782,6 +1847,12 @@ class VoiceGateway:
                 status=status,
             )
         )
+        await self._speak_text(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            text=text,
+        )
         await self._send(
             server_event(
                 "assistant.text.final",
@@ -1952,6 +2023,7 @@ class VoiceGateway:
             response_id,
         )
         await self.db.commit()
+        await self._persist_conversation_log(turn_id, status=status)
         await self._send(
             server_event(
                 "server.turn.failed",
@@ -2079,6 +2151,10 @@ class VoiceGateway:
             if result["status"] == "cancelled":
                 return
             await self._complete_response_state(response_id)
+            await self._persist_conversation_log(
+                turn_id,
+                status=("failed" if result["status"] == "failed" else "completed"),
+            )
             await self._send(
                 server_event(
                     "server.turn.completed",
@@ -2173,6 +2249,7 @@ class VoiceGateway:
             return
 
         self.stats.cancellation_count += 1
+        await self._cancel_tts_response(message.response_id)
         await self.registry.cancel_response(
             self.owner,
             self._active_session_id(),
@@ -2224,6 +2301,8 @@ class VoiceGateway:
         self._response_turn_id = None
         self.cancel_guard.clear()
         await self.db.commit()
+        if cancelled_turn_id is not None:
+            await self._persist_conversation_log(cancelled_turn_id, status="cancelled")
         await self._send(
             server_event(
                 "response.cancelled",
@@ -2395,6 +2474,11 @@ class VoiceGateway:
             if not retry_task.done():
                 retry_task.cancel()
             await asyncio.gather(retry_task, return_exceptions=True)
+        for response_id, tts_task in list(self._tts_tasks.items()):
+            if tts_task is not current and not tts_task.done():
+                tts_task.cancel()
+            await asyncio.gather(tts_task, return_exceptions=True)
+            self._tts_tasks.pop(response_id, None)
         if self.stt_turn is not None:
             await self._close_stt_turn(cancel=True)
         await self._finalize_active_turn()
@@ -2567,6 +2651,213 @@ class VoiceGateway:
             model=model,
         )
         return message
+
+    async def _run_tts_queue(
+        self,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        queue: asyncio.Queue[str | None],
+    ) -> None:
+        sequence = 0
+        started = False
+        try:
+            while True:
+                sentence = await queue.get()
+                if sentence is None:
+                    break
+                if not self.cancel_guard.can_emit(response_id):
+                    raise TTSCancelledError("TTS response is no longer current")
+                async for chunk in self.tts_service.stream(
+                    text=sentence,
+                    response_id=str(response_id),
+                ):
+                    if not self.cancel_guard.can_emit(response_id):
+                        raise TTSCancelledError("TTS response is no longer current")
+                    if not started:
+                        started = True
+                        await self._send_tts_event(
+                            "tts.started",
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            response_id=response_id,
+                        )
+                    await self._send_tts_audio(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        response_id=response_id,
+                        sequence=sequence,
+                        sample_rate_hz=self.settings.tts_api_sample_rate_hz,
+                        flags=TTS_FRAME_START if sequence == 0 else 0,
+                        payload=chunk,
+                    )
+                    sequence += 1
+            if started and self.cancel_guard.can_emit(response_id):
+                await self._send_tts_audio(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    sequence=sequence,
+                    sample_rate_hz=self.settings.tts_api_sample_rate_hz,
+                    flags=TTS_FRAME_END,
+                    payload=b"",
+                )
+                await self._send_tts_event(
+                    "tts.completed",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                )
+        except TTSCancelledError:
+            if started:
+                await self._send_tts_event(
+                    "tts.cancelled",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                )
+        except TTSError as error:
+            await self._send_tts_event(
+                "tts.failed",
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                code=type(error).__name__,
+            )
+        except Exception:  # noqa: BLE001 - TTS must not fail the LLM response
+            LOGGER.exception(
+                "TTS response failed",
+                extra={
+                    "event": "tts.response.failed",
+                    "session_id": str(session_id),
+                    "turn_id": str(turn_id),
+                    "response_id": str(response_id),
+                },
+            )
+            await self._send_tts_event(
+                "tts.failed",
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                code="tts_failed",
+            )
+
+    async def _speak_text(
+        self,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        text: str,
+    ) -> None:
+        tts_service = getattr(self, "tts_service", None)
+        if tts_service is None or not tts_service.enabled:
+            return
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        segmenter = SentenceSegmenter(max_chars=self.settings.tts_max_sentence_chars)
+        for sentence in segmenter.push(text) + segmenter.flush():
+            await queue.put(sentence)
+        await queue.put(None)
+        await self._run_tts_queue(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            queue=queue,
+        )
+
+    async def _send_tts_event(
+        self,
+        event_type: str,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        code: str | None = None,
+    ) -> None:
+        await self._send(
+            server_event(
+                event_type,
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                code=code,
+                sample_rate_hz=self.settings.tts_api_sample_rate_hz,
+            )
+        )
+
+    async def _send_tts_audio(
+        self,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        sequence: int,
+        sample_rate_hz: int,
+        flags: int,
+        payload: bytes,
+    ) -> None:
+        frame = (
+            struct.pack(
+                ">4sBBII16s",
+                TTS_FRAME_MAGIC,
+                TTS_FRAME_VERSION,
+                flags,
+                sample_rate_hz,
+                sequence,
+                response_id.bytes,
+            )
+            + payload
+        )
+        if self._closing.is_set():
+            return
+        async with self._send_lock:
+            try:
+                await self.websocket.send_bytes(frame)
+            except (RuntimeError, WebSocketDisconnect):
+                self._closing.set()
+
+    async def _persist_conversation_log(
+        self,
+        turn_id: uuid.UUID,
+        *,
+        status: str,
+    ) -> None:
+        """Project a committed turn without affecting the voice response path."""
+
+        session_id = self._active_session_id()
+        if session_id is None:
+            return
+        try:
+            await self.conversation_logger.persist_turn(
+                self.db,
+                user_id=self.principal.user_id,
+                device_id=self.principal.device_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                enabled=self.settings.conversation_logging_enabled,
+                status=status,
+            )
+        except Exception:  # noqa: BLE001 - logging must never break voice delivery
+            LOGGER.exception(
+                "Conversation log projection failed",
+                extra={
+                    "event": "conversation.log.failed",
+                    "user_id": str(self.principal.user_id),
+                    "device_id": str(self.principal.device_id),
+                    "session_id": str(session_id),
+                    "turn_id": str(turn_id),
+                },
+            )
+
+    async def _cancel_tts_response(self, response_id: uuid.UUID) -> None:
+        task = self._tts_tasks.get(response_id)
+        if task is None or task is asyncio.current_task():
+            return
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        self._tts_tasks.pop(response_id, None)
 
     async def _memory_user_enabled(self) -> bool:
         user = await self.db.scalar(select(User).where(User.id == self.principal.user_id))

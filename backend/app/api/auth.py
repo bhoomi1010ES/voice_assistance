@@ -100,6 +100,7 @@ async def login(
             platform=payload.platform,
             device_name=payload.device_name,
             device_metadata=payload.device_metadata,
+            device_kind=payload.device_kind,
             request=request,
         )
     except AuthenticationError as error:

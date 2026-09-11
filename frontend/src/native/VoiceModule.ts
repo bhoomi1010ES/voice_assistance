@@ -571,6 +571,7 @@ export type VoiceGatewayEvent = {
   transcriptSequence?: number | null;
   language?: string | null;
   audioDurationMs?: number | null;
+  sampleRateHz?: number | null;
   metrics?: Record<string, number | null>;
   usage?: Record<string, number | null>;
   toolCallId?: string | null;

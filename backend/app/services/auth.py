@@ -252,6 +252,7 @@ class AuthService:
         platform: str,
         device_name: str | None = None,
         device_metadata: dict | None = None,
+        device_kind: str = "synthetic",
         request=None,
     ) -> IssuedTokens:
         normalized_email = normalize_email(email)
@@ -289,6 +290,7 @@ class AuthService:
                 user_id=user.id,
                 device_identifier=device_identifier,
                 platform=platform,
+                device_kind=device_kind,
                 name=device_name,
                 device_metadata=device_metadata,
             )
@@ -304,6 +306,7 @@ class AuthService:
             )
         else:
             device.platform = platform
+            device.device_kind = device_kind
             device.name = device_name or device.name
             if device_metadata is not None:
                 device.device_metadata = device_metadata
@@ -537,6 +540,7 @@ class AuthService:
         platform: str,
         name: str | None = None,
         device_metadata: dict | None = None,
+        device_kind: str = "synthetic",
         request=None,
     ) -> tuple[Device, bool]:
         device = await session.scalar(
@@ -550,6 +554,7 @@ class AuthService:
                 user_id=principal.user_id,
                 device_identifier=device_identifier,
                 platform=platform,
+                device_kind=device_kind,
                 name=name,
                 device_metadata=device_metadata,
             )
@@ -557,6 +562,7 @@ class AuthService:
             await session.flush()
         else:
             device.platform = platform
+            device.device_kind = device_kind
             device.name = name or device.name
             device.device_metadata = (
                 device_metadata if device_metadata is not None else device.device_metadata

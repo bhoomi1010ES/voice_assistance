@@ -39,6 +39,7 @@ export function loginRequest(
       device_identifier: getDeviceIdentifier(),
       platform: 'android',
       device_name: 'Voice Assistant',
+      device_kind: 'physical',
     }),
     fetchImpl,
   });

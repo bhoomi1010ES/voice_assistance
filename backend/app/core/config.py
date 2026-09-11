@@ -41,6 +41,23 @@ class Settings(BaseSettings):
     stt_api_connect_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     stt_api_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
     stt_api_max_response_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=32 * 1024 * 1024)
+    # Phase 8 remote Kokoro-compatible speech endpoint. The local deployment
+    # uses the same provider host as STT, with no provider URL hard-coded in
+    # application code.
+    tts_api_url: str | None = None
+    tts_api_key: SecretStr | None = None
+    tts_api_model: str = "kokoro"
+    tts_api_voice: str = "af_heart"
+    tts_api_response_format: Literal["pcm", "wav", "mp3"] = "pcm"
+    tts_api_sample_rate_hz: int = Field(default=24_000, ge=8_000, le=48_000)
+    tts_api_connect_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    tts_api_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
+    tts_api_max_response_bytes: int = Field(
+        default=16 * 1024 * 1024,
+        ge=1024,
+        le=64 * 1024 * 1024,
+    )
+    tts_max_sentence_chars: int = Field(default=600, ge=80, le=4_000)
     stt_windows_worker_path: str = "backend/windows_stt/publish/WindowsSttWorker.exe"
     stt_dotnet_path: str | None = None
     stt_windows_language: str = "en-US"
@@ -147,6 +164,12 @@ class Settings(BaseSettings):
     reminder_max_attempts: int = Field(default=5, ge=1, le=20)
     reminder_retry_backoff_base_seconds: float = Field(default=5.0, gt=0, le=3_600)
     reminder_retry_backoff_max_seconds: float = Field(default=300.0, gt=0, le=86_400)
+
+    # Human-readable conversation files are opt-in. Device/session ownership
+    # and the physical-device classification remain mandatory even when this
+    # switch is enabled.
+    conversation_logging_enabled: bool = False
+    conversation_log_dir: str = str(PROJECT_ROOT / "conversation_logs")
 
     voice_protocol_version: int = 1
     voice_sample_rate_hz: int = 16_000
@@ -308,6 +331,22 @@ class Settings(BaseSettings):
             raise RuntimeError("STT_API_URL must be an absolute HTTP(S) URL")
         if parsed.query or parsed.fragment:
             raise RuntimeError("STT_API_URL must not contain query parameters or fragments")
+        return value.rstrip("/")
+
+    @property
+    def tts_api_url_resolved(self) -> str:
+        """Return the configured remote speech endpoint."""
+
+        if not self.tts_api_url or not self.tts_api_url.strip():
+            raise RuntimeError("TTS_API_URL is required when TTS is configured")
+        value = self.tts_api_url.strip()
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise RuntimeError("TTS_API_URL must be an absolute HTTP(S) URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise RuntimeError("TTS_API_URL must not contain credentials")
+        if parsed.query or parsed.fragment:
+            raise RuntimeError("TTS_API_URL must not contain query parameters or fragments")
         return value.rstrip("/")
 
     @property

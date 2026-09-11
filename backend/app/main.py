@@ -15,6 +15,7 @@ from app.reminders.worker_service import ReminderWorkerService
 from app.services.infrastructure import Infrastructure
 from app.services.push_delivery import UnavailablePushDeliveryProvider
 from app.stt.service import STTService
+from app.tts.service import TTSService
 
 
 def create_app(
@@ -22,6 +23,7 @@ def create_app(
     infrastructure: Infrastructure | None = None,
     stt_service: STTService | None = None,
     llm_service: LLMService | None = None,
+    tts_service: TTSService | None = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
 
@@ -31,6 +33,7 @@ def create_app(
         active_infrastructure = infrastructure or Infrastructure(app_settings)
         active_stt_service = stt_service or STTService(app_settings)
         active_llm_service = llm_service or LLMService(app_settings)
+        active_tts_service = tts_service or TTSService(app_settings)
         embedding_provider = None
         reranker = None
         memory_worker = None
@@ -49,10 +52,12 @@ def create_app(
         try:
             await active_stt_service.initialize()
             await active_llm_service.initialize()
+            await active_tts_service.initialize()
             app.state.settings = app_settings
             app.state.infrastructure = active_infrastructure
             app.state.stt_service = active_stt_service
             app.state.llm_service = active_llm_service
+            app.state.tts_service = active_tts_service
             app.state.memory_service = memory_service
             if app_settings.memory_write_enabled:
                 if embedding_provider is None:
@@ -92,12 +97,15 @@ def create_app(
                         await active_stt_service.close()
                     finally:
                         try:
-                            if reranker is not None:
-                                await reranker.close()
-                            if embedding_provider is not None:
-                                await embedding_provider.close()
+                            await active_tts_service.close()
                         finally:
-                            await active_infrastructure.close()
+                            try:
+                                if reranker is not None:
+                                    await reranker.close()
+                                if embedding_provider is not None:
+                                    await embedding_provider.close()
+                            finally:
+                                await active_infrastructure.close()
             logging.getLogger("voice-assistance-backend").info(
                 "application stopped",
                 extra={"event": "service.stopped"},

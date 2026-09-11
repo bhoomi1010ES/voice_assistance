@@ -3184,20 +3184,24 @@ Evidence: [Phase 7 backend acceptance report](docs/20260910_111955_phase7_backen
 
 ### Steps
 
-- [ ] Create Kokoro service.
-- [ ] Select/test target voices.
-- [ ] Implement phrase/sentence segmentation.
-- [ ] Generate first playable audio chunk quickly.
-- [ ] Stream binary audio.
-- [ ] Implement client jitter buffer.
-- [ ] Implement response-id filtering.
-- [ ] Implement TTS cancellation.
-- [ ] Prevent unconfirmed tool statements from being spoken.
-- [ ] Measure real-time factor and first-audio latency.
+- [x] Add the provider-neutral remote Kokoro-compatible service using `TTS_API_URL`, configured to `/v1/audio/speech`.
+- [x] Configure and contract-test target voice `af_heart` at 24 kHz PCM. Live voice-quality/provider acceptance remains pending.
+- [x] Implement bounded sentence segmentation before synthesis.
+- [ ] Generate and hear the first playable chunk on the physical Android device; automated stream contract is verified.
+- [x] Stream authenticated PCM binary frames over the existing voice WebSocket.
+- [ ] Implement a measured client jitter buffer; native `AudioTrack` streaming playback is implemented, but jitter/latency acceptance is pending.
+- [x] Filter native playback by server-issued `response_id` and ignore stale/malformed frames.
+- [x] Cancel server synthesis and native playback on response cancellation/disconnect.
+- [x] Synthesize only final assistant text after tool/confirmation sequencing; proposals are not sent to TTS.
+- [ ] Measure real-time factor and first-audio latency against the live provider and physical device.
 
 ### Gate
 
 The assistant can begin speaking promptly, continue smoothly, and stop essentially immediately when the user interrupts.
+
+Status: [ ] acceptance evidence pending. Backend/provider contract, segmentation, WebSocket framing, native playback, cancellation, and stale-response protection are implemented and tested; no authorized Android device was connected during this run, so physical audio and latency claims remain unverified.
+
+Evidence: `docs/20260910_171441_phase8_tts.md` and `docs/evidence/phase8/`.
 
 ---
 
@@ -4377,5 +4381,15 @@ SCALING
 If the Phase 0 mobile audio proof-of-concept and the first end-to-end voice loop pass, the rest of this architecture can be expanded without redesigning the React Native application.
 
 ---
+
+## Production conversation logging — 2026-09-10
+
+- [x] Centralized physical-device/session eligibility implemented and tested.
+- [x] Per-user/per-session JSONL projection implemented with server-owned UUID paths.
+- [x] Synthetic, revoked, cross-user, replay, multiple-session, and secret-exclusion tests pass.
+- [x] Migration `0010_conv_log_device_kind` upgrades/downgrades cleanly.
+- [ ] Physical Android acceptance: updated APK must register RMX5070 as `physical` and produce a verified `conversation_logs/<user_id>/<session_id>.jsonl` file.
+
+Evidence: `docs/20260910_162126_conversation_logging.md` and `docs/evidence/conversation_logging/`.
 
 **End of document**

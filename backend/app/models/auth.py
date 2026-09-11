@@ -57,6 +57,10 @@ class Device(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     device_identifier: Mapped[str] = mapped_column(String(255), nullable=False)
     platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    # The server-side registration flow explicitly classifies the device.
+    # Existing and backend-created devices remain synthetic until a trusted
+    # Android application registration marks them physical.
+    device_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="synthetic")
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     device_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB, nullable=True)
     push_token: Mapped[str | None] = mapped_column(String(4096), nullable=True)
@@ -74,6 +78,7 @@ class Device(Base):
     __table_args__ = (
         ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         Index("ix_devices_user_id", "user_id"),
+        Index("ix_devices_user_kind_revoked", "user_id", "device_kind", "revoked_at"),
         Index("ix_devices_device_identifier_unique", "device_identifier", unique=True),
         Index(
             "ix_devices_push_token_active",
@@ -82,6 +87,10 @@ class Device(Base):
             postgresql_where=(push_token.is_not(None)) & (push_token_revoked_at.is_(None)),
         ),
         UniqueConstraint("id", "user_id", name="uq_devices_id_user_id"),
+        CheckConstraint(
+            "device_kind IN ('physical', 'synthetic')",
+            name="ck_devices_device_kind",
+        ),
     )
 
 

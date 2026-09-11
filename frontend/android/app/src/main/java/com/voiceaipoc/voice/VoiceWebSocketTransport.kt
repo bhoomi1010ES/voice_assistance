@@ -80,6 +80,7 @@ class VoiceWebSocketTransport(
         val transcriptSequence: Long? = null,
         val language: String? = null,
         val audioDurationMs: Long? = null,
+        val sampleRateHz: Long? = null,
         val metrics: Map<String, Double?> = emptyMap(),
         val usage: Map<String, Double?> = emptyMap(),
         val toolCallId: String? = null,
@@ -131,6 +132,7 @@ class VoiceWebSocketTransport(
     private var status = Status()
     private var turnFrameCount = 0L
     private var turnByteCount = 0L
+    private val ttsAudioPlayer = TtsAudioPlayer()
 
     fun connect(url: String): Result {
         if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
@@ -213,6 +215,7 @@ class VoiceWebSocketTransport(
             status = status.copy(state = State.CLOSING, connected = false, turnActive = false)
         }
         sendQueue.clear()
+        ttsAudioPlayer.cancel()
         notifyStatus()
         socketToClose?.close(1000, "client_disconnect")
     }
@@ -459,7 +462,7 @@ class VoiceWebSocketTransport(
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
             if (!isCurrentSocket(webSocket)) return
-            recordError("E_VOICE_PROTOCOL", "Unexpected binary server message.")
+            handleTtsAudio(bytes.toByteArray())
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -470,6 +473,7 @@ class VoiceWebSocketTransport(
                     "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
             )
             stopHeartbeat()
+            ttsAudioPlayer.cancel()
             synchronized(stateLock) {
                 status = status.copy(state = State.CLOSING, connected = false, turnActive = false)
             }
@@ -489,6 +493,7 @@ class VoiceWebSocketTransport(
                 status = status.copy(state = State.DISCONNECTED, connected = false, turnActive = false)
             }
             sendQueue.clear()
+            ttsAudioPlayer.cancel()
             notifyStatus()
         }
 
@@ -500,6 +505,7 @@ class VoiceWebSocketTransport(
                     "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
             )
             stopHeartbeat()
+            ttsAudioPlayer.cancel()
             synchronized(stateLock) {
                 if (this@VoiceWebSocketTransport.webSocket === webSocket) {
                     this@VoiceWebSocketTransport.webSocket = null
@@ -606,6 +612,12 @@ class VoiceWebSocketTransport(
         if (eventType == "server.error" || eventType == "server.session.ended") {
             stopHeartbeat()
         }
+        if (eventType == "response.cancelled" || eventType == "tts.cancelled" ||
+            eventType == "tts.failed") {
+            ttsAudioPlayer.cancel(responseId?.let {
+                runCatching { java.util.UUID.fromString(it) }.getOrNull()
+            })
+        }
         synchronized(stateLock) {
             status = status.copy(
                 state = when (eventType) {
@@ -643,6 +655,23 @@ class VoiceWebSocketTransport(
         )
     }
 
+    private fun handleTtsAudio(bytes: ByteArray) {
+        val frame = TtsAudioFrame.parse(bytes)
+        if (frame == null) {
+            recordError("E_VOICE_PROTOCOL", "Voice gateway sent malformed audio.")
+            return
+        }
+        val currentResponseId = synchronized(stateLock) { status.responseId }
+        if (currentResponseId != frame.responseId.toString()) return
+        if (frame.startsResponse) {
+            ttsAudioPlayer.start(frame.responseId, frame.sampleRateHz)
+        }
+        ttsAudioPlayer.write(frame.responseId, frame.payload)
+        if (frame.endsResponse) {
+            ttsAudioPlayer.finish(frame.responseId)
+        }
+    }
+
     private fun extractServerEventPayload(
         eventType: String,
         json: JSONObject,
@@ -659,6 +688,10 @@ class VoiceWebSocketTransport(
             "assistant.text.delta",
             "assistant.text.final",
             "llm.response.completed",
+            "tts.started",
+            "tts.completed",
+            "tts.cancelled",
+            "tts.failed",
         )
         val isError = eventType == "server.error" || eventType == "server.turn.failed" ||
             eventType == "assistant.response.failed" || eventType == "llm.response.failed"
@@ -707,6 +740,11 @@ class VoiceWebSocketTransport(
             transcriptSequence = transcriptSequence,
             language = json.optStringOrNull("language")?.takeIf { it.length <= MAX_LANGUAGE_BYTES },
             audioDurationMs = audioDurationMs,
+            sampleRateHz = if (json.has("sample_rate_hz") && !json.isNull("sample_rate_hz")) {
+                json.optLong("sample_rate_hz").takeIf { it in 8_000L..48_000L }
+            } else {
+                null
+            },
             metrics = boundedMetrics(json.optJSONObject("metrics")),
             usage = boundedMetrics(json.optJSONObject("usage")),
             toolCallId = json.optStringOrNull("tool_call_id")

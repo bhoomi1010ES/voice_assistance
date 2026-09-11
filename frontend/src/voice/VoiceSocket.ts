@@ -74,6 +74,10 @@ export const VOICE_SERVER_EVENT_TYPES = [
   'assistant.response.failed',
   'llm.response.failed',
   'llm.response.completed',
+  'tts.started',
+  'tts.completed',
+  'tts.cancelled',
+  'tts.failed',
   'voice.confirmation.required',
   'confirmation.required',
   'confirmation.resolved',
@@ -235,6 +239,10 @@ const RESPONSE_SCOPED_EVENTS = new Set<VoiceServerEventType>([
   'assistant.response.failed',
   'llm.response.failed',
   'llm.response.completed',
+  'tts.started',
+  'tts.completed',
+  'tts.cancelled',
+  'tts.failed',
   'voice.confirmation.required',
   'confirmation.required',
   'confirmation.resolved',
@@ -308,6 +316,7 @@ export type NormalizedVoiceEvent = {
   errorCode?: string;
   errorMessage?: string;
   retryable?: boolean;
+  sampleRateHz?: number | null;
 };
 
 /**
@@ -353,6 +362,7 @@ export function normalizeVoiceGatewayEvent(
   const errorCode = readString(record.code ?? record.errorCode, MAX_ID_LENGTH);
   const errorMessage = readString(record.message ?? record.errorMessage, 180);
   const retryable = readBoolean(record.retryable);
+  const sampleRateHz = readNumber(record.sampleRateHz ?? record.sample_rate_hz);
   return {
     type: rawType as VoiceServerEventType,
     eventId: readString(record.eventId ?? record.event_id, MAX_ID_LENGTH),
@@ -368,6 +378,7 @@ export function normalizeVoiceGatewayEvent(
     ...(errorCode ? { errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(retryable !== null ? { retryable } : {}),
+    ...(sampleRateHz !== null ? { sampleRateHz } : {}),
   };
 }
 
@@ -1895,6 +1906,10 @@ function readTimestamp(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? value
     : null;
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function readBoolean(value: unknown): boolean | null {

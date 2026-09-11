@@ -657,6 +657,7 @@ class VoiceModule(
         val transcriptSequence = eventPayload?.transcriptSequence
         val eventLanguage = eventPayload?.language
         val audioDurationMs = eventPayload?.audioDurationMs
+        val sampleRateHz = eventPayload?.sampleRateHz
         val toolCallId = eventPayload?.toolCallId
         val toolName = eventPayload?.toolName
         val toolStatus = eventPayload?.toolStatus
@@ -688,6 +689,7 @@ class VoiceModule(
             } else {
                 putDouble("audioDurationMs", audioDurationMs.toDouble())
             }
+            if (sampleRateHz == null) putNull("sampleRateHz") else putDouble("sampleRateHz", sampleRateHz.toDouble())
             if (toolCallId == null) putNull("toolCallId") else putString("toolCallId", toolCallId)
             if (toolName == null) putNull("toolName") else putString("toolName", toolName)
             if (toolStatus == null) putNull("toolStatus") else putString("toolStatus", toolStatus)
