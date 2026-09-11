@@ -180,6 +180,10 @@ async def test_gateway_streams_correlated_text_and_persists_safe_metadata() -> N
     assert persisted["response_text"] == "Hello there"
     assert persisted["usage"] == {"input_tokens": 9, "output_tokens": 2, "total_tokens": 11}
     assert "test-placeholder-key" not in repr(persisted)
+    timing = gateway._turn_timings[turn_id].points
+    assert timing["llm_started_at"].monotonic <= timing["llm_first_token_at"].monotonic
+    assert timing["llm_first_token_at"].monotonic <= timing["llm_completed_at"].monotonic
+    assert timing["llm_first_token_at"].wall.tzinfo is not None
 
 
 @pytest.mark.asyncio

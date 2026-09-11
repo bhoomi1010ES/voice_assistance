@@ -44,7 +44,11 @@ from app.services.auth import (
     AuthPrincipal,
     AuthService,
 )
-from app.services.conversation_logging import ConversationLogger
+from app.services.conversation_logging import (
+    ConversationLogger,
+    TimingPoint,
+    build_timing_payload,
+)
 from app.services.task_due_dates import format_local_due_at
 from app.services.tool_idempotency import PostgresToolIdempotencyStore
 from app.services.voice_confirmation import (
@@ -98,6 +102,29 @@ TTS_FRAME_MAGIC = b"VTT1"
 TTS_FRAME_VERSION = 1
 TTS_FRAME_START = 1
 TTS_FRAME_END = 2
+TTS_PCM_BYTES_PER_SAMPLE = 2
+TTS_STARTUP_PREBUFFER_MS = 200
+
+
+def tts_pacing_delay_seconds(
+    *,
+    sent_pcm_bytes: int,
+    started_at: float,
+    now: float,
+    sample_rate_hz: int,
+) -> float:
+    """Return the delay needed to keep a bursty PCM stream near real time.
+
+    The first startup buffer is sent immediately. After that, frames are
+    released at their playback duration so a fast provider cannot overflow
+    the bounded Android jitter queue.
+    """
+
+    prebuffer_bytes = sample_rate_hz * TTS_PCM_BYTES_PER_SAMPLE * TTS_STARTUP_PREBUFFER_MS // 1_000
+    paced_bytes = max(0, sent_pcm_bytes - prebuffer_bytes)
+    target_elapsed = paced_bytes / (sample_rate_hz * TTS_PCM_BYTES_PER_SAMPLE)
+    elapsed = max(0.0, now - started_at)
+    return max(0.0, target_elapsed - elapsed)
 
 
 @dataclass
@@ -115,6 +142,12 @@ class VoiceGatewayStats:
     heartbeat_count: int = 0
     cancellation_count: int = 0
     reconnect: bool = False
+
+
+@dataclass
+class TurnTimingState:
+    points: dict[str, TimingPoint]
+    tts: dict[str, Any] | None = None
 
 
 class VoiceGateway:
@@ -194,6 +227,7 @@ class VoiceGateway:
         self._stt_finalize_task: asyncio.Task[None] | None = None
         self._retry_response_task: asyncio.Task[None] | None = None
         self._tts_tasks: dict[uuid.UUID, asyncio.Task[None]] = {}
+        self._turn_timings: dict[uuid.UUID, TurnTimingState] = {}
         self._stt_finalize_cancel_requested = False
         self._stt_enabled = False
         self._stt_language: str | None = None
@@ -546,6 +580,7 @@ class VoiceGateway:
         self.active_turn = turn
         self._last_response_id = response_id
         self._turn_started = time.monotonic()
+        self._capture_turn_timing(turn.id, "turn_started_at", monotonic=self._turn_started)
         self.cancel_guard.activate(response_id)
         LOGGER.info(
             "Voice turn started",
@@ -561,6 +596,7 @@ class VoiceGateway:
         )
         if self._stt_enabled:
             try:
+                self._capture_turn_timing(turn.id, "stt_started_at")
                 self.stt_turn = await self.stt_service.start_turn(
                     session_id=self._active_session_id(),
                     turn_id=turn.id,
@@ -592,6 +628,8 @@ class VoiceGateway:
             await self._send_error("turn_finalizing")
             return
         self.state.accept_frame(frame)
+        if self.active_turn is not None:
+            self._capture_turn_timing(self.active_turn.id, "speech_started_at")
         self.stats.frames_accepted += 1
         self.stats.bytes_received += frame.payload_length
         self.voice_session.last_activity_at = self._now_datetime()
@@ -618,6 +656,7 @@ class VoiceGateway:
         self._require_session()
         if self.active_turn is None:
             raise StateTransitionError("no active turn")
+        self._capture_turn_timing(self.active_turn.id, "speech_ended_at")
         LOGGER.info(
             "Voice audio commit received",
             extra={
@@ -667,15 +706,18 @@ class VoiceGateway:
             if stt_turn is not None:
                 try:
                     stt_result = await stt_turn.finalize()
+                    self._capture_turn_timing(self.active_turn.id, "stt_completed_at")
                     if not stt_result.event.text.strip():
                         raise STTEmptyTranscriptError("STT returned an empty transcript")
                 except STTCancelledError:
+                    self._capture_turn_timing(self.active_turn.id, "stt_completed_at")
                     if self._stt_finalize_cancel_requested or self._closing.is_set():
                         return
                     await self._fail_active_turn("stt_cancelled", status="cancelled")
                     return
                 except STTError as error:
                     stt_error = error
+                    self._capture_turn_timing(self.active_turn.id, "stt_completed_at")
             counters = self.state.commit(
                 last_sequence_no=message.last_sequence_no,
                 frame_count=message.frame_count,
@@ -996,10 +1038,20 @@ class VoiceGateway:
                 attempt_count = max(attempt_count, event.attempt)
                 if event.event_type == "request_started":
                     request_started_times.append(event.monotonic_seconds)
+                    self._capture_turn_timing(
+                        turn_id,
+                        "llm_started_at",
+                        monotonic=event.monotonic_seconds,
+                    )
                     continue
                 first_event_at = first_event_at or event.monotonic_seconds
                 if event.event_type == "text_delta" and event.delta:
                     first_text_at = first_text_at or event.monotonic_seconds
+                    self._capture_turn_timing(
+                        turn_id,
+                        "llm_first_token_at",
+                        monotonic=event.monotonic_seconds,
+                    )
                     text_parts.append(event.delta)
                     if tts_queue is not None and tts_segmenter is not None:
                         tts_input_started = True
@@ -1061,9 +1113,19 @@ class VoiceGateway:
                 if event.event_type == "response_failed":
                     terminal_event = event
                     failure_code = event.error_code or "llm_provider_error"
+                    self._capture_turn_timing(
+                        turn_id,
+                        "llm_completed_at",
+                        monotonic=event.monotonic_seconds,
+                    )
                     break
                 if event.event_type == "response_completed":
                     terminal_event = event
+                    self._capture_turn_timing(
+                        turn_id,
+                        "llm_completed_at",
+                        monotonic=event.monotonic_seconds,
+                    )
                     if event.text is not None:
                         text_parts = [event.text]
                         if (
@@ -1086,6 +1148,11 @@ class VoiceGateway:
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await tts_task
                 self._tts_tasks.pop(response_id, None)
+
+        # Providers should emit a terminal event. This fallback preserves a
+        # truthful boundary for an abnormal stream without borrowing a value
+        # from a different turn.
+        self._capture_turn_timing(turn_id, "llm_completed_at")
 
         completed_at = time.monotonic()
         provider_info = self.llm_service.provider_info
@@ -1920,6 +1987,57 @@ class VoiceGateway:
             return None
         return round(max(0.0, (ended - started) * 1000), 1)
 
+    def _timing_state(self, turn_id: uuid.UUID) -> TurnTimingState:
+        states = getattr(self, "_turn_timings", None)
+        if states is None:
+            states = {}
+            self._turn_timings = states
+        state = states.get(turn_id)
+        if state is None:
+            state = TurnTimingState(points={})
+            states[turn_id] = state
+        return state
+
+    def _capture_turn_timing(
+        self,
+        turn_id: uuid.UUID,
+        event_name: str,
+        *,
+        monotonic: float | None = None,
+    ) -> None:
+        state = self._timing_state(turn_id)
+        if event_name in state.points:
+            return
+        state.points[event_name] = TimingPoint(
+            wall=self._now_datetime(),
+            monotonic=time.monotonic() if monotonic is None else monotonic,
+        )
+
+    def _tts_timing_state(self, turn_id: uuid.UUID) -> TurnTimingState:
+        state = self._timing_state(turn_id)
+        if state.tts is None:
+            prebuffer_bytes = (
+                self.settings.tts_api_sample_rate_hz
+                * TTS_PCM_BYTES_PER_SAMPLE
+                * TTS_STARTUP_PREBUFFER_MS
+                // 1_000
+            )
+            state.tts = {
+                "sample_rate": self.settings.tts_api_sample_rate_hz,
+                "channels": 1,
+                "encoding": "pcm16",
+                "prebuffer_ms": TTS_STARTUP_PREBUFFER_MS,
+                "prebuffer_bytes": prebuffer_bytes,
+                # These server-side counters describe the emitted stream.
+                # Android-only stale-frame and AudioTrack counters remain null
+                # until client telemetry is propagated back to the gateway.
+                "sequence_gaps": 0,
+                "duplicate_frames": 0,
+                "stale_frames": None,
+                "underrun_delta": None,
+            }
+        return state
+
     async def _forward_stt_events(self, turn: STTTurn) -> None:
         try:
             while True:
@@ -2662,6 +2780,8 @@ class VoiceGateway:
     ) -> None:
         sequence = 0
         started = False
+        sent_pcm_bytes = 0
+        pacing_started_at: float | None = None
         try:
             while True:
                 sentence = await queue.get()
@@ -2669,6 +2789,7 @@ class VoiceGateway:
                     break
                 if not self.cancel_guard.can_emit(response_id):
                     raise TTSCancelledError("TTS response is no longer current")
+                self._capture_turn_timing(turn_id, "tts_requested_at")
                 async for chunk in self.tts_service.stream(
                     text=sentence,
                     response_id=str(response_id),
@@ -2677,12 +2798,15 @@ class VoiceGateway:
                         raise TTSCancelledError("TTS response is no longer current")
                     if not started:
                         started = True
+                        self._tts_timing_state(turn_id)
                         await self._send_tts_event(
                             "tts.started",
                             session_id=session_id,
                             turn_id=turn_id,
                             response_id=response_id,
                         )
+                    if chunk:
+                        self._capture_turn_timing(turn_id, "tts_first_audio_at")
                     await self._send_tts_audio(
                         session_id=session_id,
                         turn_id=turn_id,
@@ -2693,6 +2817,18 @@ class VoiceGateway:
                         payload=chunk,
                     )
                     sequence += 1
+                    if chunk:
+                        if pacing_started_at is None:
+                            pacing_started_at = time.monotonic()
+                        sent_pcm_bytes += len(chunk)
+                        delay = tts_pacing_delay_seconds(
+                            sent_pcm_bytes=sent_pcm_bytes,
+                            started_at=pacing_started_at,
+                            now=time.monotonic(),
+                            sample_rate_hz=self.settings.tts_api_sample_rate_hz,
+                        )
+                        if delay > 0:
+                            await asyncio.sleep(delay)
             if started and self.cancel_guard.can_emit(response_id):
                 await self._send_tts_audio(
                     session_id=session_id,
@@ -2814,6 +2950,19 @@ class VoiceGateway:
         async with self._send_lock:
             try:
                 await self.websocket.send_bytes(frame)
+                LOGGER.info(
+                    "TTS PCM frame sent",
+                    extra={
+                        "event": "tts.frame.sent",
+                        "session_id": str(session_id),
+                        "turn_id": str(turn_id),
+                        "response_id": str(response_id),
+                        "sequence": sequence,
+                        "payload_bytes": len(payload),
+                        "flags": flags,
+                        "sample_rate_hz": sample_rate_hz,
+                    },
+                )
             except (RuntimeError, WebSocketDisconnect):
                 self._closing.set()
 
@@ -2828,6 +2977,9 @@ class VoiceGateway:
         session_id = self._active_session_id()
         if session_id is None:
             return
+        self._capture_turn_timing(turn_id, "turn_completed_at")
+        timing_state = self._timing_state(turn_id)
+        timing_payload = build_timing_payload(timing_state.points, tts=timing_state.tts)
         try:
             await self.conversation_logger.persist_turn(
                 self.db,
@@ -2837,6 +2989,7 @@ class VoiceGateway:
                 turn_id=turn_id,
                 enabled=self.settings.conversation_logging_enabled,
                 status=status,
+                timing_payload=timing_payload,
             )
         except Exception:  # noqa: BLE001 - logging must never break voice delivery
             LOGGER.exception(
@@ -2849,6 +3002,11 @@ class VoiceGateway:
                     "turn_id": str(turn_id),
                 },
             )
+        finally:
+            # A terminal turn must not leave timing state available to a
+            # future turn or reconnect. The persisted JSONL record is the
+            # authoritative copy.
+            getattr(self, "_turn_timings", {}).pop(turn_id, None)
 
     async def _cancel_tts_response(self, response_id: uuid.UUID) -> None:
         task = self._tts_tasks.get(response_id)

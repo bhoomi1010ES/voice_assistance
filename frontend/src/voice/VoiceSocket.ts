@@ -9,6 +9,7 @@ import {
   requestMicrophonePermission,
   resolveVoiceConfirmation,
   retryVoiceResponse,
+  stopVoicePlayback,
   startMicrophone,
   startVoiceSession,
   startVoiceTurn,
@@ -78,6 +79,9 @@ export const VOICE_SERVER_EVENT_TYPES = [
   'tts.completed',
   'tts.cancelled',
   'tts.failed',
+  'tts.playback.started',
+  'tts.playback.completed',
+  'tts.playback.stopped',
   'voice.confirmation.required',
   'confirmation.required',
   'confirmation.resolved',
@@ -112,6 +116,14 @@ export type VoiceTurnState =
 
 export type VoiceHeartbeatState = 'unknown' | 'healthy' | 'missed';
 
+export type VoiceTtsPlaybackState =
+  | 'idle'
+  | 'buffering'
+  | 'speaking'
+  | 'stopping'
+  | 'completed'
+  | 'failed';
+
 export type VoiceSocketSnapshot = {
   connection: VoiceConnectionState;
   session: VoiceSessionState;
@@ -120,6 +132,9 @@ export type VoiceSocketSnapshot = {
   sessionId: string | null;
   turnId: string | null;
   responseId: string | null;
+  ttsPlaybackState: VoiceTtsPlaybackState;
+  ttsResponseId: string | null;
+  ttsError: string | null;
   speechDetected: boolean;
   transcriptMessages: VoiceTranscriptMessage[];
   conversationMessages: ConversationMessage[];
@@ -155,6 +170,7 @@ export type VoiceSocketAdapter = {
   startTurn: (clientTurnId?: string | null) => Promise<VoiceGatewayStatus>;
   commitAudio: (durationMs: number) => Promise<VoiceGatewayStatus>;
   cancelResponse: (reason?: string | null) => Promise<VoiceGatewayStatus>;
+  stopPlayback?: () => Promise<VoiceGatewayStatus>;
   retryResponse?: (
     turnId: string,
     originalResponseId: string,
@@ -201,6 +217,9 @@ const INITIAL_SNAPSHOT: VoiceSocketSnapshot = {
   sessionId: null,
   turnId: null,
   responseId: null,
+  ttsPlaybackState: 'idle',
+  ttsResponseId: null,
+  ttsError: null,
   speechDetected: false,
   transcriptMessages: [],
   conversationMessages: [],
@@ -243,6 +262,9 @@ const RESPONSE_SCOPED_EVENTS = new Set<VoiceServerEventType>([
   'tts.completed',
   'tts.cancelled',
   'tts.failed',
+  'tts.playback.started',
+  'tts.playback.completed',
+  'tts.playback.stopped',
   'voice.confirmation.required',
   'confirmation.required',
   'confirmation.resolved',
@@ -292,6 +314,7 @@ const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
   startTurn: startVoiceTurn,
   commitAudio: commitVoiceAudio,
   cancelResponse: cancelVoiceResponse,
+  stopPlayback: stopVoicePlayback,
   retryResponse: retryVoiceResponse,
   resolveConfirmation: resolveVoiceConfirmation,
   endSession: endVoiceSession,
@@ -568,6 +591,9 @@ export class VoiceSocket {
         turn: 'idle',
         turnId: null,
         responseId: null,
+        ttsPlaybackState: 'idle',
+        ttsResponseId: null,
+        ttsError: null,
       });
     }
     if (this.snapshot.turn !== 'idle') {
@@ -589,6 +615,9 @@ export class VoiceSocket {
       this.setSnapshot({
         turn: 'starting',
         speechDetected: false,
+        ttsPlaybackState: 'idle',
+        ttsResponseId: null,
+        ttsError: null,
         error: null,
       });
       this.handleStatus(await this.adapter.startTurn());
@@ -678,6 +707,26 @@ export class VoiceSocket {
         turnId: null,
         responseId: null,
         session: 'ready',
+      });
+    }
+  }
+
+  /** Stops only native playback. The text response and its durable state stay visible. */
+  async stopPlayback(): Promise<void> {
+    if (
+      !this.snapshot.ttsResponseId ||
+      !['buffering', 'speaking'].includes(this.snapshot.ttsPlaybackState)
+    ) {
+      return;
+    }
+    this.setSnapshot({ ttsPlaybackState: 'stopping', ttsError: null });
+    try {
+      await this.adapter.stopPlayback?.();
+      this.setSnapshot({ ttsPlaybackState: 'idle' });
+    } catch {
+      this.setSnapshot({
+        ttsPlaybackState: 'failed',
+        ttsError: 'Voice output could not be stopped.',
       });
     }
   }
@@ -1189,6 +1238,9 @@ export class VoiceSocket {
           sessionId: null,
           turnId: null,
           responseId: null,
+          ttsPlaybackState: 'idle',
+          ttsResponseId: null,
+          ttsError: null,
           speechDetected: false,
           transcriptMessages: [],
           transcriptError: null,
@@ -1242,6 +1294,43 @@ export class VoiceSocket {
       case 'assistant.text.final':
       case 'llm.response.completed':
         this.setSnapshot({ turn: 'waiting', speechDetected: false });
+        break;
+      case 'tts.started':
+        this.setSnapshot({
+          turn: 'waiting',
+          ttsPlaybackState: 'buffering',
+          ttsResponseId: event.responseId,
+          ttsError: null,
+        });
+        break;
+      case 'tts.playback.started':
+        this.setSnapshot({
+          ttsPlaybackState: 'speaking',
+          ttsResponseId: event.responseId,
+          ttsError: null,
+        });
+        break;
+      case 'tts.playback.completed':
+        this.setSnapshot({
+          ttsPlaybackState: 'completed',
+          ttsResponseId: event.responseId,
+        });
+        break;
+      case 'tts.playback.stopped':
+      case 'tts.cancelled':
+        this.setSnapshot({
+          ttsPlaybackState: 'idle',
+          ttsResponseId: event.responseId ?? this.snapshot.ttsResponseId,
+          ttsError: null,
+        });
+        break;
+      case 'tts.failed':
+        this.setSnapshot({
+          ttsPlaybackState: 'failed',
+          ttsResponseId: event.responseId,
+          ttsError:
+            event.errorMessage ?? event.errorCode ?? 'Voice output failed.',
+        });
         break;
       case 'transcript.partial':
       case 'voice.transcript.partial':
@@ -1873,6 +1962,9 @@ export class VoiceSocket {
       sessionId: null,
       turnId: null,
       responseId: null,
+      ttsPlaybackState: 'idle',
+      ttsResponseId: null,
+      ttsError: null,
       transcriptMessages: [],
       transcriptError: null,
       lastHeartbeatAtMs: null,

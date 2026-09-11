@@ -7,9 +7,10 @@ type RuntimeGlobals = typeof globalThis & {
   __VOICE_API_BASE_URL__?: unknown;
 };
 
-// The development APK is tested on the physical device over the local Wi-Fi
-// network. Keep the backend bound to 0.0.0.0 when using this address.
-const DEVELOPMENT_HTTP_URL = 'http://192.168.1.9:8000';
+// The development APK is tested on a physical device through ADB reverse.
+// The device reaches the host backend through its own localhost port, which
+// remains reliable when the host Wi-Fi address changes or is unreachable.
+const DEVELOPMENT_HTTP_URL = 'http://127.0.0.1:8000';
 const PRODUCTION_HTTP_URL = 'https://api.invalid';
 
 function isDevelopment(): boolean {

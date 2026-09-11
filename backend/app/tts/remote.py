@@ -17,6 +17,7 @@ from app.tts.base import (
     TTSNetworkError,
     TTSProviderError,
 )
+from app.tts.wav import WavPcmStreamParser
 
 
 class RemoteTTSEngine:
@@ -96,13 +97,30 @@ class RemoteTTSEngine:
                 if response.status_code >= 400:
                     await response.aread()
                     raise TTSProviderError(f"TTS provider returned HTTP {response.status_code}")
+                if self.settings.tts_api_response_format != "wav":
+                    raise TTSConfigurationError(
+                        "Kokoro TTS must be configured with response_format=wav"
+                    )
+                content_type = response.headers.get("content-type", "").lower()
+                if "audio/wav" not in content_type and "audio/x-wav" not in content_type:
+                    raise TTSProviderError("TTS provider did not return audio/wav")
+                header_rate = response.headers.get("x-sample-rate")
+                if header_rate is not None and header_rate != str(
+                    self.settings.tts_api_sample_rate_hz
+                ):
+                    raise TTSProviderError("TTS provider sample rate does not match configuration")
+                parser = WavPcmStreamParser(
+                    expected_sample_rate_hz=self.settings.tts_api_sample_rate_hz
+                )
                 async for chunk in response.aiter_bytes():
                     if not chunk:
                         continue
                     received += len(chunk)
                     if received > self.settings.tts_api_max_response_bytes:
                         raise TTSProviderError("TTS response exceeded the configured size limit")
-                    yield chunk
+                    for pcm_chunk in parser.feed(chunk):
+                        yield pcm_chunk
+                parser.finish()
         except TTSError:
             raise
         except asyncio.CancelledError as error:

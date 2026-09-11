@@ -49,4 +49,21 @@ class TtsAudioFrameTest {
             .array()
         assertNull(TtsAudioFrame.parse(bytes))
     }
+
+    @Test
+    fun rejectsMicrophoneRateAndOddPcmPayload() {
+        val responseId = UUID.randomUUID()
+        val bytes = ByteBuffer.allocate(31).order(ByteOrder.BIG_ENDIAN)
+            .put("VTT1".toByteArray(Charsets.US_ASCII))
+            .put(1)
+            .put(1)
+            .putInt(16_000)
+            .putInt(0)
+            .putLong(responseId.mostSignificantBits)
+            .putLong(responseId.leastSignificantBits)
+            .put(1)
+            .array()
+
+        assertNull(TtsAudioFrame.parse(bytes))
+    }
 }

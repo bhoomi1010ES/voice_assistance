@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     tts_api_key: SecretStr | None = None
     tts_api_model: str = "kokoro"
     tts_api_voice: str = "af_heart"
-    tts_api_response_format: Literal["pcm", "wav", "mp3"] = "pcm"
+    tts_api_response_format: Literal["pcm", "wav", "mp3"] = "wav"
     tts_api_sample_rate_hz: int = Field(default=24_000, ge=8_000, le=48_000)
     tts_api_connect_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     tts_api_timeout_seconds: float = Field(default=60.0, gt=0, le=300)

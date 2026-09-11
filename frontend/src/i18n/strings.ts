@@ -95,6 +95,20 @@ export const strings = {
     responseStopped: 'Response stopped.',
     responseFailed: 'The assistant could not finish that response.',
     stopResponse: 'Stop response',
+    stopPlayback: 'Stop voice output',
+    voiceOutput: 'Voice output',
+    voiceOutputEnabled: 'Assistant speech is enabled.',
+    voiceOutputMuted:
+      'Assistant speech is muted. Text responses remain available.',
+    muteVoiceOutput: 'Mute voice output',
+    enableVoiceOutput: 'Enable voice output',
+    serverSelectedVoice:
+      'Voice selection is controlled by the server-supported voice.',
+    voiceOutputBuffering: 'Preparing voice output…',
+    voiceOutputSpeaking: 'Speaking…',
+    voiceOutputStopping: 'Stopping voice output…',
+    voiceOutputFailed:
+      'Voice output failed. The text response remains available.',
     copy: 'Copy',
     copied: 'Copied',
     startNewConversation: 'Start new conversation',

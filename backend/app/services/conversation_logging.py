@@ -12,6 +12,8 @@ import json
 import os
 import tempfile
 import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,125 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import ConversationTurn, Device, Message, VoiceSession
 
 _LOGGER_LOCK: asyncio.Lock | None = None
+
+TIMING_FIELDS = (
+    "turn_started_at",
+    "speech_started_at",
+    "speech_ended_at",
+    "stt_started_at",
+    "stt_completed_at",
+    "llm_started_at",
+    "llm_first_token_at",
+    "llm_completed_at",
+    "tts_requested_at",
+    "tts_first_audio_at",
+    "tts_playback_started_at",
+    "tts_playback_completed_at",
+    "turn_completed_at",
+)
+
+LATENCY_FIELDS = (
+    "speech_duration",
+    "speech_end_to_stt_final",
+    "stt_duration",
+    "stt_final_to_llm_start",
+    "llm_time_to_first_token",
+    "llm_total",
+    "llm_first_token_to_tts_request",
+    "llm_complete_to_tts_request",
+    "tts_request_to_first_audio",
+    "tts_first_audio_to_playback",
+    "tts_playback_duration",
+    "speech_end_to_llm_first_token",
+    "speech_end_to_tts_first_audio",
+    "speech_end_to_tts_playback",
+    "turn_total",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class TimingPoint:
+    """A wall-clock display timestamp paired with a local monotonic instant."""
+
+    wall: datetime
+    monotonic: float
+
+
+def build_timing_payload(
+    points: Mapping[str, TimingPoint],
+    *,
+    tts: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the safe JSON timing projection from captured event boundaries.
+
+    Wall-clock values are only for display. Every latency is calculated from
+    the paired monotonic values captured at the event boundary, never by
+    subtracting serialized UTC timestamps.
+    """
+
+    timings = {
+        field: _as_utc(points[field].wall) if field in points else None for field in TIMING_FIELDS
+    }
+
+    latency_pairs = {
+        "speech_duration": ("speech_started_at", "speech_ended_at"),
+        "speech_end_to_stt_final": ("speech_ended_at", "stt_completed_at"),
+        "stt_duration": ("stt_started_at", "stt_completed_at"),
+        "stt_final_to_llm_start": ("stt_completed_at", "llm_started_at"),
+        "llm_time_to_first_token": ("llm_started_at", "llm_first_token_at"),
+        "llm_total": ("llm_started_at", "llm_completed_at"),
+        "llm_first_token_to_tts_request": (
+            "llm_first_token_at",
+            "tts_requested_at",
+        ),
+        "llm_complete_to_tts_request": ("llm_completed_at", "tts_requested_at"),
+        "tts_request_to_first_audio": ("tts_requested_at", "tts_first_audio_at"),
+        "tts_first_audio_to_playback": (
+            "tts_first_audio_at",
+            "tts_playback_started_at",
+        ),
+        "tts_playback_duration": (
+            "tts_playback_started_at",
+            "tts_playback_completed_at",
+        ),
+        "speech_end_to_llm_first_token": (
+            "speech_ended_at",
+            "llm_first_token_at",
+        ),
+        "speech_end_to_tts_first_audio": (
+            "speech_ended_at",
+            "tts_first_audio_at",
+        ),
+        "speech_end_to_tts_playback": (
+            "speech_ended_at",
+            "tts_playback_started_at",
+        ),
+        "turn_total": ("turn_started_at", "turn_completed_at"),
+    }
+    latency_ms = {
+        field: _monotonic_delta_ms(points, *pair) if field in latency_pairs else None
+        for field, pair in latency_pairs.items()
+    }
+    # Keep the public shape stable even if the metric list is extended later.
+    latency_ms = {field: latency_ms.get(field) for field in LATENCY_FIELDS}
+
+    payload: dict[str, Any] = {
+        "timings": timings,
+        "latency_ms": latency_ms,
+    }
+    if tts is not None:
+        payload["tts"] = dict(tts)
+    return payload
+
+
+def _monotonic_delta_ms(
+    points: Mapping[str, TimingPoint], start_name: str, end_name: str
+) -> float | None:
+    start = points.get(start_name)
+    end = points.get(end_name)
+    if start is None or end is None:
+        return None
+    return round(max(0.0, (end.monotonic - start.monotonic) * 1000), 3)
 
 
 def _logger_lock() -> asyncio.Lock:
@@ -80,6 +201,7 @@ class ConversationLogger:
         turn_id: uuid.UUID,
         enabled: bool,
         status: str | None = None,
+        timing_payload: Mapping[str, Any] | None = None,
     ) -> bool:
         """Write or replace one turn record after durable DB commit.
 
@@ -148,6 +270,15 @@ class ConversationLogger:
             tool_success = tool_payload.get("success")
             if isinstance(tool_success, bool):
                 record["tool_status"] = "success" if tool_success else "failed"
+        if timing_payload is not None:
+            record.update(
+                {
+                    "timings": dict(timing_payload.get("timings", {})),
+                    "latency_ms": dict(timing_payload.get("latency_ms", {})),
+                }
+            )
+            if "tts" in timing_payload and timing_payload["tts"] is not None:
+                record["tts"] = dict(timing_payload["tts"])
 
         path = self.root_dir / str(user_id) / f"{session_id}.jsonl"
         async with _logger_lock():
@@ -158,6 +289,7 @@ class ConversationLogger:
     def _upsert_record(path: Path, record: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         records: list[dict[str, Any]] = []
+        previous_record: dict[str, Any] | None = None
         if path.exists():
             with path.open("r", encoding="utf-8") as existing:
                 for line in existing:
@@ -165,8 +297,19 @@ class ConversationLogger:
                         item = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if isinstance(item, dict) and item.get("turn_id") != record["turn_id"]:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("turn_id") == record["turn_id"]:
+                        previous_record = item
+                    else:
                         records.append(item)
+        if previous_record is not None:
+            # Replays that arrive without a newer optional projection must
+            # not erase timing/diagnostic fields already captured for the
+            # same durable turn.
+            merged_record = dict(previous_record)
+            merged_record.update(record)
+            record = merged_record
         records.append(record)
 
         fd, temporary_name = tempfile.mkstemp(

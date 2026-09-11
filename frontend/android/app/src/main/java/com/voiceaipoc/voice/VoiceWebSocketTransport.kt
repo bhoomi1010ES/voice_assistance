@@ -30,6 +30,7 @@ import java.util.TimeZone
 class VoiceWebSocketTransport(
     private val tokenStorage: AuthTokenStorage,
     private val listener: Listener,
+    private val isTtsOutputEnabled: () -> Boolean = { true },
     private val client: OkHttpClient = OkHttpClient(),
     private val networkExecutor: ExecutorService = Executors.newSingleThreadExecutor {
         Thread(it, "VoiceAI-VoiceGateway")
@@ -94,6 +95,14 @@ class VoiceWebSocketTransport(
     interface Listener {
         fun onStatus(status: Status)
 
+        fun onTtsPlayback(
+            eventType: String,
+            sessionId: String?,
+            turnId: String?,
+            responseId: String?,
+            timestampMs: Long,
+        ) = Unit
+
         fun onServerEvent(
             eventType: String,
             sessionId: String?,
@@ -132,7 +141,24 @@ class VoiceWebSocketTransport(
     private var status = Status()
     private var turnFrameCount = 0L
     private var turnByteCount = 0L
-    private val ttsAudioPlayer = TtsAudioPlayer()
+    private val ttsSequenceTracker = TtsFrameSequenceTracker()
+    private val ttsAudioPlayer = TtsAudioPlayer(
+        listener = object : TtsAudioPlayer.Listener {
+            override fun onPlaybackStarted(responseId: java.util.UUID) =
+                notifyTtsPlayback("tts.playback.started", responseId)
+
+            override fun onPlaybackCompleted(responseId: java.util.UUID) =
+                notifyTtsPlayback("tts.playback.completed", responseId)
+
+            override fun onPlaybackStopped(responseId: java.util.UUID) =
+                notifyTtsPlayback("tts.playback.stopped", responseId)
+
+            override fun onPlaybackError(responseId: java.util.UUID, errorCode: String) {
+                Log.e(TAG, "TTS_PLAYBACK_ERROR response_id=$responseId code=$errorCode")
+                notifyTtsPlayback("tts.playback.stopped", responseId)
+            }
+        },
+    )
 
     fun connect(url: String): Result {
         if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
@@ -422,6 +448,10 @@ class VoiceWebSocketTransport(
         status.copyFromQueue(sendQueue.snapshot())
     }
 
+    fun stopTtsPlayback() {
+        ttsAudioPlayer.cancel()
+    }
+
     fun shutdown() {
         stopHeartbeat()
         disconnect()
@@ -429,6 +459,7 @@ class VoiceWebSocketTransport(
         heartbeatScheduler.shutdownNow()
         client.dispatcher.executorService.shutdown()
         client.connectionPool.evictAll()
+        ttsAudioPlayer.shutdown()
     }
 
     data class Result(
@@ -662,14 +693,55 @@ class VoiceWebSocketTransport(
             return
         }
         val currentResponseId = synchronized(stateLock) { status.responseId }
-        if (currentResponseId != frame.responseId.toString()) return
-        if (frame.startsResponse) {
-            ttsAudioPlayer.start(frame.responseId, frame.sampleRateHz)
+        if (currentResponseId != frame.responseId.toString()) {
+            Log.w(TAG, "TTS_STALE_FRAME response_id=${frame.responseId} sequence=${frame.sequence}")
+            return
         }
-        ttsAudioPlayer.write(frame.responseId, frame.payload)
+        when (val sequenceResult = ttsSequenceTracker.observe(frame)) {
+            TtsFrameSequenceTracker.Result.GAP -> Log.e(
+                TAG,
+                "TTS_FRAME_GAP response_id=${frame.responseId} received=${frame.sequence}",
+            )
+            TtsFrameSequenceTracker.Result.DUPLICATE_OR_OUT_OF_ORDER -> Log.e(
+                TAG,
+                "TTS_FRAME_DUPLICATE_OR_OUT_OF_ORDER response_id=${frame.responseId} " +
+                    "received=${frame.sequence}",
+            )
+            TtsFrameSequenceTracker.Result.STALE -> {
+                Log.w(TAG, "TTS_STALE_FRAME response_id=${frame.responseId} sequence=${frame.sequence}")
+                return
+            }
+            else -> Unit
+        }
+        Log.i(
+            TAG,
+            "TTS_FRAME_RECEIVED response_id=${frame.responseId} seq=${frame.sequence} " +
+                "bytes=${frame.payload.size} starts=${frame.startsResponse} ends=${frame.endsResponse}",
+        )
+        if (!isTtsOutputEnabled()) return
+        if (frame.startsResponse) {
+            if (!ttsAudioPlayer.start(frame.responseId, frame.sampleRateHz)) {
+                return
+            }
+        }
+        if (!ttsAudioPlayer.write(frame.responseId, frame.payload)) {
+            recordError("E_TTS_PLAYBACK", "TTS PCM could not be queued for playback.")
+            return
+        }
         if (frame.endsResponse) {
             ttsAudioPlayer.finish(frame.responseId)
         }
+    }
+
+    private fun notifyTtsPlayback(eventType: String, responseId: java.util.UUID) {
+        val current = synchronized(stateLock) { status }
+        listener.onTtsPlayback(
+            eventType,
+            current.sessionId,
+            current.turnId,
+            responseId.toString(),
+            System.currentTimeMillis(),
+        )
     }
 
     private fun extractServerEventPayload(

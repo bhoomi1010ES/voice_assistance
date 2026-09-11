@@ -584,6 +584,10 @@ export type VoiceGatewayEvent = {
   retryable?: boolean | null;
 };
 
+export type VoiceOutputPreferences = {
+  enabled: boolean;
+};
+
 /** Native VAD transitions used only to label the active UI turn. */
 export type VoiceVadEvent = {
   event: string;
@@ -644,6 +648,9 @@ type NativeVoiceModule = {
   startVoiceTurn: (clientTurnId?: string | null) => Promise<VoiceGatewayStatus>;
   commitVoiceAudio: (durationMs: number) => Promise<VoiceGatewayStatus>;
   cancelVoiceResponse: (reason?: string | null) => Promise<VoiceGatewayStatus>;
+  stopVoicePlayback: () => Promise<VoiceGatewayStatus>;
+  getVoiceOutputPreferences: () => Promise<VoiceOutputPreferences>;
+  setVoiceOutputEnabled: (enabled: boolean) => Promise<VoiceOutputPreferences>;
   retryVoiceResponse: (
     turnId: string,
     originalResponseId: string,
@@ -825,6 +832,21 @@ export async function cancelVoiceResponse(
   reason?: string | null,
 ): Promise<VoiceGatewayStatus> {
   return requireNativeVoiceModule().cancelVoiceResponse(reason);
+}
+
+/** Stops only local TTS playback; the committed text response remains intact. */
+export async function stopVoicePlayback(): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().stopVoicePlayback();
+}
+
+export async function getVoiceOutputPreferences(): Promise<VoiceOutputPreferences> {
+  return requireNativeVoiceModule().getVoiceOutputPreferences();
+}
+
+export async function setVoiceOutputEnabled(
+  enabled: boolean,
+): Promise<VoiceOutputPreferences> {
+  return requireNativeVoiceModule().setVoiceOutputEnabled(enabled);
 }
 
 export async function retryVoiceResponse(

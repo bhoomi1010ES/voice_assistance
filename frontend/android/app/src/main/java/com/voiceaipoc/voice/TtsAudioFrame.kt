@@ -36,16 +36,21 @@ internal data class TtsAudioFrame(
             val flags = buffer.get().toInt() and 0xff
             if (flags and ALLOWED_FLAGS.inv() != 0) return null
             val sampleRateHz = buffer.int
-            if (sampleRateHz !in 8_000..48_000) return null
+            if (sampleRateHz != TTS_SAMPLE_RATE_HZ) return null
             val sequence = buffer.int.toLong() and 0xffffffffL
             val responseId = UUID(buffer.long, buffer.long)
+            val payload = bytes.copyOfRange(HEADER_BYTES, bytes.size)
+            if (payload.size % BYTES_PER_SAMPLE != 0) return null
             return TtsAudioFrame(
                 flags = flags,
                 sampleRateHz = sampleRateHz,
                 sequence = sequence,
                 responseId = responseId,
-                payload = bytes.copyOfRange(HEADER_BYTES, bytes.size),
+                payload = payload,
             )
         }
+
+        const val TTS_SAMPLE_RATE_HZ = 24_000
+        private const val BYTES_PER_SAMPLE = 2
     }
 }

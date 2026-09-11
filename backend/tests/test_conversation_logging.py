@@ -166,6 +166,24 @@ async def test_physical_sessions_are_separate_and_replay_idempotent(tmp_path) ->
                 session_id=session_a,
                 turn_id=turn_a,
                 enabled=True,
+                timing_payload={
+                    "timings": {
+                        "turn_started_at": "2026-09-11T19:24:15.102134Z",
+                        "turn_completed_at": "2026-09-11T19:24:20.102134Z",
+                    },
+                    "latency_ms": {"turn_total": 5000.0},
+                    "tts": {
+                        "sample_rate": 24000,
+                        "channels": 1,
+                        "encoding": "pcm16",
+                        "prebuffer_ms": 200,
+                        "prebuffer_bytes": 9600,
+                        "sequence_gaps": 0,
+                        "duplicate_frames": 0,
+                        "stale_frames": None,
+                        "underrun_delta": None,
+                    },
+                },
             )
             assert await logger.persist_turn(
                 session,
@@ -179,6 +197,10 @@ async def test_physical_sessions_are_separate_and_replay_idempotent(tmp_path) ->
         path = tmp_path / str(user_id) / f"{session_a}.jsonl"
         assert path.exists()
         assert len(path.read_text(encoding="utf-8").splitlines()) == 1
+        first_record = json.loads(path.read_text(encoding="utf-8"))
+        assert first_record["timings"]["turn_started_at"].endswith("Z")
+        assert first_record["latency_ms"]["turn_total"] == 5000.0
+        assert first_record["tts"]["underrun_delta"] is None
         async with factory() as session:
             assert await logger.persist_turn(
                 session,

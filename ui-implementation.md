@@ -722,44 +722,44 @@ Add low-latency assistant speech while keeping text usable and making playback s
 
 ### UI scope
 
-- Speaking state on Assistant screen.
-- Immediate Stop playback control.
-- Text caption remains visible and selectable/copyable.
-- Mute/voice-output preference.
-- Voice selection and sample playback only for server-supported voices.
-- Playback buffering/degraded indicator shown only when delay is noticeable.
-- TTS failure fallback to completed text response.
-- Audio-route/interruption handling where exposed by the native contract.
+- [x] Speaking state on Assistant screen, driven by native playback start.
+- [x] Immediate Stop playback control that stops local audio without deleting text.
+- [x] Text caption remains visible and selectable/copyable.
+- [x] Persisted mute/voice-output preference.
+- [ ] Voice selection and sample playback pending a server-advertised supported-voice capability.
+- [x] Buffering indicator is delayed until playback startup is noticeably slow.
+- [x] TTS failure falls back to the completed text response.
+- [ ] Audio-route/interruption handling remains pending because no route/focus callback is exposed by the current native contract.
 
 ### Implementation steps
 
-1. Add binary TTS chunk handling outside the generic JSON event parser.
-2. Queue only chunks matching the current `response_id`.
-3. Keep a small bounded native jitter buffer and surface semantic playback state to React Native.
-4. Start speaking UI on actual playback start, not when TTS was merely requested.
-5. Stop local playback first when the user presses Stop.
-6. Clear queued chunks on cancel, response supersession, logout, or terminal playback error.
-7. Persist only non-sensitive voice/output preferences.
-8. Ensure unconfirmed tool statements are never queued for speech.
-9. Fall back to text without marking the reasoning/tool result failed when TTS alone fails.
+1. [x] Add binary TTS chunk handling outside the generic JSON event parser (existing native transport).
+2. [x] Queue only chunks matching the current `response_id` (existing native transport).
+3. [x] Keep a bounded native playback buffer and surface semantic playback state to React Native.
+4. [x] Start speaking UI on actual native playback start, not when TTS was merely requested.
+5. [x] Stop local playback first when the user presses Stop.
+6. [x] Clear queued chunks on cancel, response supersession, logout, or terminal playback error.
+7. [x] Persist only the non-sensitive voice-output preference.
+8. [x] Preserve the existing confirmation-safe speech sequencing; no unconfirmed tool result is spoken.
+9. [x] Fall back to text without marking the reasoning/tool result failed when TTS alone fails.
 
 ### Test cases
 
 | ID | Test | Expected result |
 |---|---|---|
-| UI-P8-01 | First audio chunk arrives | Speaking state begins only when playback actually starts. |
-| UI-P8-02 | Multiple chunks for current response | Audio plays in order without UI state flicker. |
-| UI-P8-03 | Chunk for stale response | Chunk is discarded and never played. |
-| UI-P8-04 | Stop tapped during speech | Local audio and queued chunks stop immediately. |
-| UI-P8-05 | TTS service fails after text completes | Full text remains; a non-blocking voice-output error appears. |
-| UI-P8-06 | Unconfirmed tool language received | No corresponding audio is played. |
-| UI-P8-07 | Voice preference changes | Only supported voice is stored and used on the next response. |
-| UI-P8-08 | Headphones/audio focus changes | Native and UI states reconcile without overlapping playback. |
-| UI-P8-09 | TalkBack active while TTS plays | Controls remain operable and announcements do not fight playback excessively. |
+| UI-P8-01 | First audio chunk arrives | Speaking state begins only when playback actually starts. **Automated: PASS.** |
+| UI-P8-02 | Multiple chunks for current response | Audio plays in order without UI state flicker. **Physical: pending.** |
+| UI-P8-03 | Chunk for stale response | Chunk is discarded and never played. **Automated: PASS.** |
+| UI-P8-04 | Stop tapped during speech | Local audio and queued chunks stop immediately. **Automated: PASS.** |
+| UI-P8-05 | TTS service fails after text completes | Full text remains; a non-blocking voice-output error appears. **Automated: PASS.** |
+| UI-P8-06 | Unconfirmed tool language received | No corresponding audio is played. **Backend/native contract: PASS; physical: pending.** |
+| UI-P8-07 | Voice preference changes | Only supported voice is stored and used on the next response. **Mute preference: automated PASS; voice selector pending server capability.** |
+| UI-P8-08 | Headphones/audio focus changes | Native and UI states reconcile without overlapping playback. **Pending native route callback.** |
+| UI-P8-09 | TalkBack active while TTS plays | Controls remain operable and announcements do not fight playback excessively. **Physical: pending.** |
 
 ### UI gate
 
-Assistant speech starts from correctly correlated chunks, continues smoothly, stale audio never plays, Stop clears local playback promptly, and a TTS failure leaves the completed text response intact.
+Current implementation passes the automated correlation/stop/fallback checks. The UI gate remains **ACCEPTANCE PENDING** until the physical multi-chunk playback, audio-route, and TalkBack checks are rerun on RMX5070; the earlier physical smoke run reported startup voice breakup.
 
 ---
 

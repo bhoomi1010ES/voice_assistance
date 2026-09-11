@@ -46,12 +46,37 @@ class VoiceModule(
     }
 
     private val authTokenStorage = SecureTokenStorage(reactContext.applicationContext)
+    private val voicePreferences = reactContext.applicationContext.getSharedPreferences(
+        "voice_output_preferences",
+        Context.MODE_PRIVATE,
+    )
+    @Volatile
+    private var voiceOutputEnabled = voicePreferences.getBoolean("enabled", true)
 
     private val voiceGateway = VoiceWebSocketTransport(
         tokenStorage = authTokenStorage,
+        isTtsOutputEnabled = { voiceOutputEnabled },
         listener = object : VoiceWebSocketTransport.Listener {
             override fun onStatus(status: VoiceWebSocketTransport.Status) {
                 emitVoiceGatewayStatus(status)
+            }
+
+            override fun onTtsPlayback(
+                eventType: String,
+                sessionId: String?,
+                turnId: String?,
+                responseId: String?,
+                timestampMs: Long,
+            ) {
+                emitVoiceGatewayEvent(
+                    eventType,
+                    sessionId,
+                    turnId,
+                    responseId,
+                    null,
+                    timestampMs,
+                    null,
+                )
             }
 
             override fun onServerEvent(
@@ -300,6 +325,33 @@ class VoiceModule(
     @ReactMethod
     fun cancelVoiceResponse(reason: String?, promise: Promise) {
         resolveVoiceResult(voiceGateway.cancelResponse(reason ?: "client_requested"), promise)
+    }
+
+    @ReactMethod
+    fun stopVoicePlayback(promise: Promise) {
+        voiceGateway.stopTtsPlayback()
+        promise.resolve(toWritableVoiceGatewayMap(voiceGateway.getStatus()))
+    }
+
+    @ReactMethod
+    fun getVoiceOutputPreferences(promise: Promise) {
+        promise.resolve(
+            Arguments.createMap().apply {
+                putBoolean("enabled", voiceOutputEnabled)
+            },
+        )
+    }
+
+    @ReactMethod
+    fun setVoiceOutputEnabled(enabled: Boolean, promise: Promise) {
+        voiceOutputEnabled = enabled
+        voicePreferences.edit().putBoolean("enabled", enabled).apply()
+        if (!enabled) voiceGateway.stopTtsPlayback()
+        promise.resolve(
+            Arguments.createMap().apply {
+                putBoolean("enabled", voiceOutputEnabled)
+            },
+        )
     }
 
     @ReactMethod

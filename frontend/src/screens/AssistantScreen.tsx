@@ -37,7 +37,11 @@ import {
   ConversationUserMessage,
   mapConversationError,
 } from '../voice/conversation';
-import { copyTextToClipboard } from '../native/VoiceModule';
+import {
+  copyTextToClipboard,
+  getVoiceOutputPreferences,
+  setVoiceOutputEnabled,
+} from '../native/VoiceModule';
 
 export function AssistantScreen() {
   const { profile } = useAuth();
@@ -72,6 +76,8 @@ export function AssistantScreen() {
   );
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [confirmationError, setConfirmationError] = useState(false);
+  const [voiceOutputEnabled, setVoiceOutputEnabledState] = useState(true);
+  const [showTtsBuffering, setShowTtsBuffering] = useState(false);
   const greetingName =
     profile?.name?.trim() ||
     profile?.email?.split('@')[0] ||
@@ -80,6 +86,21 @@ export function AssistantScreen() {
   useEffect(() => {
     socket.connect().catch(() => undefined);
   }, [socket]);
+
+  useEffect(() => {
+    getVoiceOutputPreferences()
+      .then(preferences => setVoiceOutputEnabledState(preferences.enabled))
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (socketState.ttsPlaybackState !== 'buffering') {
+      setShowTtsBuffering(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowTtsBuffering(true), 300);
+    return () => clearTimeout(timer);
+  }, [socketState.ttsPlaybackState]);
 
   const execute = useCallback(async (operation: () => Promise<void>) => {
     setBusy(true);
@@ -170,6 +191,18 @@ export function AssistantScreen() {
         setCopiedMessageId(message.id);
       }),
     [execute],
+  );
+
+  const toggleVoiceOutput = useCallback(
+    () =>
+      execute(async () => {
+        const preferences = await setVoiceOutputEnabled(!voiceOutputEnabled);
+        setVoiceOutputEnabledState(preferences.enabled);
+        if (!preferences.enabled) {
+          await socket.stopPlayback();
+        }
+      }),
+    [execute, socket, voiceOutputEnabled],
   );
 
   const resolveConfirmation = useCallback(
@@ -377,6 +410,57 @@ export function AssistantScreen() {
             />
           ) : null}
         </Card>
+
+        <Card style={styles.voiceOutputCard} testID="voice-output-settings">
+          <AppText style={styles.diagnosticsTitle}>
+            {strings.assistant.voiceOutput}
+          </AppText>
+          <AppText>
+            {voiceOutputEnabled
+              ? strings.assistant.voiceOutputEnabled
+              : strings.assistant.voiceOutputMuted}
+          </AppText>
+          <AppText style={styles.messageMuted}>
+            {strings.assistant.serverSelectedVoice}
+          </AppText>
+          <ActionButton
+            label={
+              voiceOutputEnabled
+                ? strings.assistant.muteVoiceOutput
+                : strings.assistant.enableVoiceOutput
+            }
+            onPress={toggleVoiceOutput}
+            disabled={busy}
+            variant="secondary"
+            testID="voice-output-toggle"
+          />
+        </Card>
+
+        {socketState.ttsPlaybackState !== 'idle' &&
+        socketState.ttsPlaybackState !== 'completed' ? (
+          socketState.ttsPlaybackState !== 'buffering' || showTtsBuffering ? (
+            <Card style={styles.voiceOutputCard} testID="tts-playback-status">
+              <AppText accessibilityLiveRegion="polite">
+                {ttsPlaybackCopy(socketState.ttsPlaybackState)}
+              </AppText>
+              {socketState.ttsPlaybackState === 'speaking' ||
+              socketState.ttsPlaybackState === 'buffering' ? (
+                <ActionButton
+                  label={strings.assistant.stopPlayback}
+                  onPress={() => execute(() => socket.stopPlayback())}
+                  disabled={busy}
+                  variant="secondary"
+                  testID="voice-stop-playback"
+                />
+              ) : null}
+              {socketState.ttsPlaybackState === 'failed' ? (
+                <AppText style={styles.transcriptError}>
+                  {socketState.ttsError ?? strings.assistant.voiceOutputFailed}
+                </AppText>
+              ) : null}
+            </Card>
+          ) : null
+        ) : null}
 
         {conversationMessages.length ? (
           <Card style={styles.conversationCard} testID="voice-transcript">
@@ -860,6 +944,16 @@ function turnCopy(turn: VoiceSocketSnapshot['turn']): string {
   return strings.assistant.ready;
 }
 
+function ttsPlaybackCopy(
+  state: VoiceSocketSnapshot['ttsPlaybackState'],
+): string {
+  if (state === 'buffering') return strings.assistant.voiceOutputBuffering;
+  if (state === 'speaking') return strings.assistant.voiceOutputSpeaking;
+  if (state === 'stopping') return strings.assistant.voiceOutputStopping;
+  if (state === 'failed') return strings.assistant.voiceOutputFailed;
+  return strings.assistant.voiceOutput;
+}
+
 function shortId(value: string | null): string {
   if (!value) return 'NONE';
   if (value.length <= 10) return value;
@@ -891,6 +985,7 @@ const styles = StyleSheet.create({
   },
   subtitle: { marginBottom: 20, marginTop: 8 },
   card: { gap: 12, marginTop: 16 },
+  voiceOutputCard: { gap: 12, marginTop: 16 },
   actionGroup: { gap: 12 },
   turnStatus: { marginBottom: 4 },
   voiceOrb: {
