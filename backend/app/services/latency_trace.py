@@ -37,7 +37,9 @@ class LatencyTracer:
     """Append one safe, correlated event without affecting voice control flow."""
 
     def __init__(self, path: str | Path | None = None) -> None:
-        configured = path or os.getenv("LATENCY_TRACE_PATH", "logs/latency_trace.jsonl")
+        configured = path or os.getenv("LATENCY_TRACE_PATH")
+        if configured is None:
+            configured = Path(__file__).resolve().parents[3] / "logs/latency_trace.jsonl"
         self.path = Path(configured)
         if not self.path.is_absolute():
             self.path = Path.cwd() / self.path

@@ -43,6 +43,12 @@ def read_log(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def read_source(path: Path) -> list[dict[str, Any]]:
+    """Read either raw JSONL or a text log containing LATENCY_TRACE records."""
+
+    return read_jsonl(path) if path.suffix.casefold() == ".jsonl" else read_log(path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", type=Path, default=Path("logs/latency_trace.jsonl"))
@@ -51,7 +57,7 @@ def main() -> None:
     args = parser.parse_args()
     records = read_jsonl(args.backend)
     for path in args.logs:
-        records.extend(read_log(path))
+        records.extend(read_source(path))
     unique: dict[tuple[Any, ...], dict[str, Any]] = {}
     for record in records:
         key = (

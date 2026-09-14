@@ -128,5 +128,6 @@ backend/htmlcov/
 
 # Phase latency tracing only
 logs/latency_trace.jsonl
+logs/live_latency_trace.jsonl
 logs/latency/
 docs/latency_runs/

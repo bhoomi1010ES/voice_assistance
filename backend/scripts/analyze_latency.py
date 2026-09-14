@@ -32,6 +32,12 @@ METRICS = (
     ("End-to-end", "end_to_end"),
 )
 
+EVENT_ALIASES = {
+    "microphone_speech_start": "speech_start",
+    "vad_end": "speech_end",
+    "client_stt_final": "stt_final",
+}
+
 
 def load_records(path: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
@@ -47,19 +53,100 @@ def load_records(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _record_key(record: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        record.get("clock_domain"),
+        record.get("event"),
+        record.get("session_id"),
+        record.get("turn_id"),
+        record.get("response_id"),
+        record.get("timestamp_ms"),
+        record.get("monotonic_ms"),
+    )
+
+
+def load_analysis_records(path: Path, backend_trace: Path | None = None) -> list[dict[str, Any]]:
+    """Load a trace and enrich live client captures with backend events."""
+
+    records = load_records(path)
+    candidates = [backend_trace] if backend_trace else []
+    if backend_trace is None and path.name == "live_latency_trace.jsonl":
+        candidates.extend(
+            (Path("logs/latency_trace.jsonl"), Path("backend/logs/latency_trace.jsonl"))
+        )
+    seen = {_record_key(record) for record in records}
+    for candidate in candidates:
+        if candidate is None or candidate.resolve() == path.resolve():
+            continue
+        for record in load_records(candidate):
+            key = _record_key(record)
+            if key not in seen:
+                records.append(record)
+                seen.add(key)
+    return records
+
+
 def _time(record: dict[str, Any]) -> float | None:
     value = record.get("monotonic_ms")
     return float(value) if isinstance(value, (int, float)) else None
 
 
+def _clock_calibration_samples(
+    records: list[dict[str, Any]],
+) -> dict[str, list[tuple[float, float]]]:
+    """Collect receive-time samples for client/native wall-clock alignment."""
+
+    samples: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for record in records:
+        if record.get("clock_domain") == "backend":
+            continue
+        received_at_ms = record.get("timestamp_ms")
+        metadata = record.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        gateway_ms = metadata.get("gateway_timestamp_ms")
+        if isinstance(gateway_ms, (int, float)) and isinstance(received_at_ms, (int, float)):
+            samples[str(record.get("clock_domain", "client"))].append(
+                (float(received_at_ms), float(gateway_ms) - float(received_at_ms))
+            )
+    return samples
+
+
+def _aligned_timestamp_ms(
+    record: dict[str, Any],
+    samples: dict[str, list[tuple[float, float]]],
+) -> float | None:
+    timestamp_ms = record.get("timestamp_ms")
+    if not isinstance(timestamp_ms, (int, float)):
+        return None
+    if record.get("clock_domain") == "backend":
+        return float(timestamp_ms)
+    domain = str(record.get("clock_domain", "client"))
+    candidates = samples.get(domain) or samples.get("client")
+    if not candidates:
+        return float(timestamp_ms)
+    _, offset = min(candidates, key=lambda item: abs(item[0] - float(timestamp_ms)))
+    return float(timestamp_ms) + offset
+
+
 def _events(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
+    priorities: dict[str, int] = {}
+    samples = _clock_calibration_samples(records)
     for record in sorted(records, key=lambda item: item.get("timestamp_ms", math.inf)):
-        event = str(record.get("event", ""))
+        raw_event = str(record.get("event", ""))
+        event = EVENT_ALIASES.get(raw_event, raw_event)
         value = _time(record)
         if value is None:
             continue
-        result.setdefault(event, record)
+        normalized = dict(record)
+        aligned_timestamp = _aligned_timestamp_ms(record, samples)
+        if aligned_timestamp is not None:
+            normalized["_aligned_timestamp_ms"] = aligned_timestamp
+        priority = 0 if raw_event == event else 1
+        if event not in result or priority < priorities[event]:
+            result[event] = normalized
+            priorities[event] = priority
     return result
 
 
@@ -72,8 +159,8 @@ def _delta(events: dict[str, dict[str, Any]], start: str, end: str) -> float | N
         first_value = _time(first)
         last_value = _time(last)
     else:
-        first_value = first.get("timestamp_ms")
-        last_value = last.get("timestamp_ms")
+        first_value = first.get("_aligned_timestamp_ms", first.get("timestamp_ms"))
+        last_value = last.get("_aligned_timestamp_ms", last.get("timestamp_ms"))
     if not isinstance(first_value, (int, float)) or not isinstance(last_value, (int, float)):
         return None
     delta = float(last_value) - float(first_value)
@@ -195,8 +282,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("path", nargs="?", type=Path, default=Path("logs/latency_trace.jsonl"))
     parser.add_argument("--turn-id", help="report one correlated turn only")
+    parser.add_argument("--backend-trace", type=Path, help="explicit backend trace to join")
     args = parser.parse_args()
-    records = load_records(args.path)
+    records = load_analysis_records(args.path, args.backend_trace)
     if args.turn_id:
         records = [record for record in records if str(record.get("turn_id")) == args.turn_id]
     print_report(records)
