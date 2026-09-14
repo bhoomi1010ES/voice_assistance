@@ -175,6 +175,10 @@ internal class TtsAudioPlayer(
         }
     }
 
+    fun isActive(responseId: UUID): Boolean = synchronized(lock) {
+        active?.responseId == responseId
+    }
+
     fun finish(responseId: UUID): Boolean {
         synchronized(lock) {
             val session = active?.takeIf { it.responseId == responseId } ?: return false

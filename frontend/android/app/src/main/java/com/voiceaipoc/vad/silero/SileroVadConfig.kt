@@ -12,8 +12,8 @@ data class SileroVadConfig(
     /** The official wrapper carries this prior-audio context inside the runtime. */
     val modelContextSamples: Int = 64,
     val speechProbabilityThreshold: Float = 0.5f,
-    /** Three 32 ms inference decisions. */
-    val speechStartConfirmationMs: Int = 96,
+    /** Five 32 ms inference decisions reduce loudspeaker echo barge-ins. */
+    val speechStartConfirmationMs: Int = 160,
     /** Ten 32 ms inference decisions. */
     val speechStopHangoverMs: Int = 320,
     /** Eight existing 20 ms frames, or 160 ms, bounds scheduling jitter. */

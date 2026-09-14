@@ -111,6 +111,12 @@ backend/htmlcov/
 /backend/windows_stt.Tests/obj/
 /scratch/pytest_temp/
 /scratch/phase4_stt_diagnostics/
+# Physical-test captures are local evidence, not commit artifacts.
+/scratch/*.log
+/scratch/*.err
+/scratch/*.png
+/scratch/*live_bundle.js
+/.pytest_tmp_phase9/
 
 # Yarn
 .yarn/*

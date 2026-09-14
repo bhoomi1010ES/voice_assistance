@@ -25,6 +25,13 @@ class VoiceRegistryOwner:
 class VoiceRegistry:
     """Redis-backed ownership and TTL registry for ephemeral voice state."""
 
+    _DELETE_IF_VALUE = """
+    if redis.call('get', KEYS[1]) == ARGV[1] then
+        return redis.call('del', KEYS[1])
+    end
+    return 0
+    """
+
     _DELETE_IF_OWNER = """
     if redis.call('get', KEYS[1]) == ARGV[1] then
         local cursor = '0'
@@ -196,9 +203,21 @@ class VoiceRegistry:
         await redis.set(self._response_key(session_id), "", ex=self.ttl_seconds)
         return True
 
-    async def clear_turn(self, owner: VoiceRegistryOwner, session_id: uuid.UUID) -> None:
+    async def clear_turn(
+        self,
+        owner: VoiceRegistryOwner,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID | None = None,
+    ) -> bool:
+        """Clear the active turn, optionally only when still owned by ``turn_id``."""
+
         redis, _ = await self._device_owned_by(owner, session_id)
-        await redis.delete(self._turn_key(session_id))
+        key = self._turn_key(session_id)
+        if turn_id is None:
+            await redis.delete(key)
+            return True
+        result = await redis.eval(self._DELETE_IF_VALUE, 1, key, str(turn_id))
+        return bool(int(result))
 
     async def clear_response(
         self,

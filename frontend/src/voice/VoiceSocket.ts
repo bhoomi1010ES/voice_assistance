@@ -46,6 +46,11 @@ import {
   reduceVoiceEvent,
   VoiceEvent,
 } from './conversation';
+import {
+  evaluatePlaybackBargeIn,
+  PLAYBACK_SPEECH_PROBABILITY_THRESHOLD,
+  PLAYBACK_START_GUARD_MS,
+} from './playbackBargeInPolicy';
 
 export const VOICE_GATEWAY_URL = `${publicApiConfig.websocketBaseUrl}/v1/voice`;
 
@@ -167,7 +172,10 @@ export type VoiceSocketAdapter = {
   startSession: (
     resumeSessionId?: string | null,
   ) => Promise<VoiceGatewayStatus>;
-  startTurn: (clientTurnId?: string | null) => Promise<VoiceGatewayStatus>;
+  startTurn: (
+    clientTurnId?: string | null,
+    includePreRoll?: boolean,
+  ) => Promise<VoiceGatewayStatus>;
   commitAudio: (durationMs: number) => Promise<VoiceGatewayStatus>;
   cancelResponse: (reason?: string | null) => Promise<VoiceGatewayStatus>;
   stopPlayback?: () => Promise<VoiceGatewayStatus>;
@@ -209,6 +217,12 @@ export type VoiceSocketOptions = {
   reconnectDelaysMs?: number[];
 };
 
+export type VoiceTurnStartOptions = {
+  preserveMicrophone?: boolean;
+  includePreRoll?: boolean;
+  autoCommitOnSpeechEnd?: boolean;
+};
+
 const INITIAL_SNAPSHOT: VoiceSocketSnapshot = {
   connection: 'disconnected',
   session: 'idle',
@@ -243,7 +257,6 @@ const DEFAULT_RECONNECT_DELAYS_MS = [500, 1_000, 2_000];
 const MAX_TRACKED_EVENT_IDS = 128;
 const MAX_EVENT_BYTES = 16 * 1024;
 const MAX_ID_LENGTH = 128;
-
 const RESPONSE_SCOPED_EVENTS = new Set<VoiceServerEventType>([
   'transcript.partial',
   'transcript.final',
@@ -441,6 +454,17 @@ export class VoiceSocket {
   private vadUnsubscribe: (() => void) | null = null;
   private appStateSubscription: { remove: () => void } | null = null;
   private speechEndedAtMs: number | null = null;
+  private responseServerCompleted = false;
+  private ttsPlaybackTerminal = true;
+  private bargeInInFlight = false;
+  private autoCommitBargeInTurn = false;
+  private bargeInSpeechEndedPending = false;
+  private bargeInCommitInFlight = false;
+  private bargeInTurnId: string | null = null;
+  private ttsPlaybackStartedAtMs: number | null = null;
+  private ttsPlaybackResponseId: string | null = null;
+  private sileroSpeechSegmentStartedAtMs: number | null = null;
+  private sileroSpeechSegmentStartedDuringGuard = false;
 
   constructor(options: VoiceSocketOptions = {}) {
     this.adapter = options.adapter ?? nativeVoiceSocketAdapter;
@@ -581,7 +605,7 @@ export class VoiceSocket {
     await this.requestSessionStart(null);
   }
 
-  async startTurn(): Promise<void> {
+  async startTurn(options: VoiceTurnStartOptions = {}): Promise<void> {
     if (this.snapshot.session !== 'ready') {
       throw new Error('Start a voice session before starting a turn.');
     }
@@ -608,8 +632,22 @@ export class VoiceSocket {
       ) {
         throw new Error('Microphone permission is required for a voice turn.');
       }
-      await this.stopMicrophoneSafely();
-      await this.adapter.startMicrophone?.();
+      if (!options.preserveMicrophone) {
+        await this.stopMicrophoneSafely();
+        await this.adapter.startMicrophone?.();
+      }
+      this.responseServerCompleted = false;
+      this.ttsPlaybackTerminal = true;
+      this.ttsPlaybackStartedAtMs = null;
+      this.ttsPlaybackResponseId = null;
+      this.sileroSpeechSegmentStartedAtMs = null;
+      this.sileroSpeechSegmentStartedDuringGuard = false;
+      this.autoCommitBargeInTurn = Boolean(options.autoCommitOnSpeechEnd);
+      this.bargeInSpeechEndedPending = false;
+      this.bargeInCommitInFlight = false;
+      if (!options.autoCommitOnSpeechEnd) {
+        this.bargeInTurnId = null;
+      }
       this.turnStartedAtMs = this.now();
       this.speechEndedAtMs = null;
       this.setSnapshot({
@@ -620,10 +658,14 @@ export class VoiceSocket {
         ttsError: null,
         error: null,
       });
-      this.handleStatus(await this.adapter.startTurn());
+      this.handleStatus(
+        await this.adapter.startTurn(null, Boolean(options.includePreRoll)),
+      );
       this.ensureTranscriptPlaceholder('listening');
     } catch (error) {
       this.turnStartedAtMs = null;
+      this.autoCommitBargeInTurn = false;
+      this.bargeInSpeechEndedPending = false;
       this.markCurrentTranscriptError(error);
       this.setSnapshot({
         turn: 'idle',
@@ -654,7 +696,10 @@ export class VoiceSocket {
     });
     try {
       const status = await this.adapter.commitAudio(durationMs);
-      await this.stopMicrophoneSafely();
+      // Keep AudioRecord alive after commit. Native AEC/NS and Silero VAD
+      // continue processing speaker-aware microphone frames while the
+      // assistant response is buffered or playing. The transport does not
+      // upload frames once commitAudio marks the turn inactive.
       this.handleStatus(status);
     } catch (error) {
       this.markCurrentTranscriptError(error);
@@ -722,7 +767,9 @@ export class VoiceSocket {
     this.setSnapshot({ ttsPlaybackState: 'stopping', ttsError: null });
     try {
       await this.adapter.stopPlayback?.();
+      this.ttsPlaybackTerminal = true;
       this.setSnapshot({ ttsPlaybackState: 'idle' });
+      this.finalizeResponseIfReady();
     } catch {
       this.setSnapshot({
         ttsPlaybackState: 'failed',
@@ -964,11 +1011,8 @@ export class VoiceSocket {
   }
 
   private async stopMicrophoneSafely(): Promise<void> {
-    if (!this.adapter.stopMicrophone) {
-      return;
-    }
     try {
-      await this.adapter.stopMicrophone();
+      await this.adapter.stopMicrophone?.();
     } catch {
       // Capture may already have stopped after VAD/transport cancellation.
     }
@@ -1281,6 +1325,18 @@ export class VoiceSocket {
           speechDetected: false,
         });
         this.ensureTranscriptPlaceholder('listening');
+        if (this.autoCommitBargeInTurn) {
+          this.bargeInTurnId = event.turnId;
+          console.info('BARGE_IN_NEW_TURN_CREATED', {
+            turnId: event.turnId,
+            responseId: event.responseId,
+            timestampMs: this.now(),
+          });
+          if (this.bargeInSpeechEndedPending && !this.bargeInCommitInFlight) {
+            this.bargeInSpeechEndedPending = false;
+            this.commitBargeInTurn().catch(() => undefined);
+          }
+        }
         break;
       case 'voice.audio.commit.received':
       case 'voice.turn.finalization.started':
@@ -1293,9 +1349,24 @@ export class VoiceSocket {
       case 'assistant.text.delta':
       case 'assistant.text.final':
       case 'llm.response.completed':
+        if (
+          event.type === 'assistant.response.started' &&
+          event.turnId === this.bargeInTurnId
+        ) {
+          console.info('NEW_RESPONSE_STARTED', {
+            turnId: event.turnId,
+            responseId: event.responseId,
+            timestampMs: this.now(),
+          });
+        }
         this.setSnapshot({ turn: 'waiting', speechDetected: false });
         break;
       case 'tts.started':
+        this.ttsPlaybackTerminal = false;
+        if (this.ttsPlaybackResponseId !== event.responseId) {
+          this.ttsPlaybackResponseId = event.responseId;
+          this.ttsPlaybackStartedAtMs = null;
+        }
         this.setSnapshot({
           turn: 'waiting',
           ttsPlaybackState: 'buffering',
@@ -1304,6 +1375,17 @@ export class VoiceSocket {
         });
         break;
       case 'tts.playback.started':
+        this.ttsPlaybackTerminal = false;
+        // Playback may report this lifecycle event more than once while a
+        // response is being drained. The first timestamp is the only valid
+        // origin for the startup guard; later chunks/events must not extend it.
+        if (
+          this.ttsPlaybackResponseId !== event.responseId ||
+          this.ttsPlaybackStartedAtMs === null
+        ) {
+          this.ttsPlaybackResponseId = event.responseId;
+          this.ttsPlaybackStartedAtMs = event.timestampMs ?? this.now();
+        }
         this.setSnapshot({
           ttsPlaybackState: 'speaking',
           ttsResponseId: event.responseId,
@@ -1311,26 +1393,38 @@ export class VoiceSocket {
         });
         break;
       case 'tts.playback.completed':
+        this.ttsPlaybackTerminal = true;
+        this.ttsPlaybackStartedAtMs = null;
+        this.ttsPlaybackResponseId = null;
         this.setSnapshot({
           ttsPlaybackState: 'completed',
           ttsResponseId: event.responseId,
         });
+        this.finalizeResponseIfReady();
         break;
       case 'tts.playback.stopped':
       case 'tts.cancelled':
+        this.ttsPlaybackTerminal = true;
+        this.ttsPlaybackStartedAtMs = null;
+        this.ttsPlaybackResponseId = null;
         this.setSnapshot({
           ttsPlaybackState: 'idle',
           ttsResponseId: event.responseId ?? this.snapshot.ttsResponseId,
           ttsError: null,
         });
+        this.finalizeResponseIfReady();
         break;
       case 'tts.failed':
+        this.ttsPlaybackTerminal = true;
+        this.ttsPlaybackStartedAtMs = null;
+        this.ttsPlaybackResponseId = null;
         this.setSnapshot({
           ttsPlaybackState: 'failed',
           ttsResponseId: event.responseId,
           ttsError:
             event.errorMessage ?? event.errorCode ?? 'Voice output failed.',
         });
+        this.finalizeResponseIfReady();
         break;
       case 'transcript.partial':
       case 'voice.transcript.partial':
@@ -1349,19 +1443,13 @@ export class VoiceSocket {
           responseId: event.responseId,
           timestampMs: event.timestampMs,
         });
-        this.retireCorrelation(
-          null,
-          null,
-          event.responseId ?? this.snapshot.responseId,
-        );
-        this.turnStartedAtMs = null;
+        this.responseServerCompleted = true;
         this.setSnapshot({
-          turn: 'completed',
-          turnId: null,
-          responseId: null,
+          turn: this.ttsPlaybackTerminal ? 'completed' : 'waiting',
+          speechDetected: false,
           session: 'ready',
         });
-        this.setSnapshot({ turn: 'idle' });
+        this.finalizeResponseIfReady();
         break;
       case 'response.cancelled':
         this.applyConversationEvent({
@@ -1377,6 +1465,8 @@ export class VoiceSocket {
           event.responseId ?? this.snapshot.responseId,
         );
         this.turnStartedAtMs = null;
+        this.responseServerCompleted = true;
+        this.ttsPlaybackTerminal = true;
         this.markCurrentTranscriptCancelled();
         this.setSnapshot({
           turn: 'cancelled',
@@ -1386,6 +1476,7 @@ export class VoiceSocket {
           session: 'ready',
         });
         this.setSnapshot({ turn: 'idle' });
+        this.stopMicrophoneSafely().catch(() => undefined);
         break;
       case 'server.turn.failed':
       case 'assistant.response.failed':
@@ -1400,6 +1491,7 @@ export class VoiceSocket {
           session: 'ready',
           error: turnError.message,
         });
+        this.stopMicrophoneSafely().catch(() => undefined);
         break;
       case 'server.error':
         if (isTerminalSessionError(event.errorCode)) {
@@ -1440,6 +1532,9 @@ export class VoiceSocket {
     this.desiredSession = false;
     this.turnStartedAtMs = null;
     this.speechEndedAtMs = null;
+    this.responseServerCompleted = false;
+    this.ttsPlaybackTerminal = true;
+    this.bargeInInFlight = false;
     this.stopMicrophoneSafely().catch(() => undefined);
 
     const shouldReconnect = this.desiredConnection && !this.explicitStop;
@@ -1466,13 +1561,320 @@ export class VoiceSocket {
     }
   }
 
+  private finalizeResponseIfReady(): void {
+    if (
+      !this.responseServerCompleted ||
+      !this.ttsPlaybackTerminal ||
+      this.bargeInInFlight
+    ) {
+      return;
+    }
+
+    this.retireCorrelation(
+      null,
+      this.snapshot.turnId,
+      this.snapshot.responseId,
+    );
+    this.turnStartedAtMs = null;
+    this.setSnapshot({
+      turn: 'completed',
+      turnId: null,
+      responseId: null,
+      session: 'ready',
+    });
+    this.setSnapshot({ turn: 'idle' });
+    this.stopMicrophoneSafely().catch(() => undefined);
+  }
+
+  private shouldBargeIn(eventType: string): boolean {
+    return (
+      (eventType === 'SILERO_VAD_SPEECH_STARTED' ||
+        eventType === 'SILERO_VAD_SPEECH_ACTIVITY') &&
+      Boolean(this.snapshot.turnId && this.snapshot.responseId) &&
+      this.snapshot.ttsPlaybackState === 'speaking' &&
+      ['committing', 'waiting'].includes(this.snapshot.turn) &&
+      !this.bargeInInFlight
+    );
+  }
+
+  private playbackBargeInDecision(event: Record<string, unknown>) {
+    const rawTimestamp = event.timestampMs;
+    const candidateAtMs =
+      typeof rawTimestamp === 'number' && Number.isFinite(rawTimestamp)
+        ? rawTimestamp
+        : this.now();
+    const rawProbability = event.probability;
+    const probability =
+      typeof rawProbability === 'number' && Number.isFinite(rawProbability)
+        ? rawProbability
+        : null;
+    return evaluatePlaybackBargeIn({
+      playbackActive: this.snapshot.ttsPlaybackState === 'speaking',
+      playbackStartedAtMs: this.ttsPlaybackStartedAtMs,
+      candidateAtMs,
+      probability,
+    });
+  }
+
+  private async interruptForBargeIn(): Promise<void> {
+    if (
+      this.bargeInInFlight ||
+      !this.shouldBargeIn('SILERO_VAD_SPEECH_STARTED')
+    ) {
+      return;
+    }
+
+    const turnId = this.snapshot.turnId;
+    const responseId = this.snapshot.responseId;
+    if (!turnId || !responseId) {
+      return;
+    }
+
+    this.bargeInInFlight = true;
+    console.info('BARGE_IN_CONFIRMED', {
+      oldTurnId: turnId,
+      oldResponseId: responseId,
+      timestampMs: this.now(),
+    });
+    // Retire the old correlation before any asynchronous work so late text
+    // deltas and audio chunks cannot leak into the new user turn.
+    this.retireCorrelation(null, turnId, responseId);
+    this.applyConversationEvent({
+      type: 'assistant.response.cancelled',
+      sessionId: this.snapshot.sessionId,
+      turnId,
+      responseId,
+      timestampMs: this.now(),
+    });
+    this.markCurrentTranscriptCancelled();
+    this.setSnapshot({
+      turn: 'cancelled',
+      speechDetected: false,
+      ttsPlaybackState: 'stopping',
+      ttsError: null,
+      error: null,
+    });
+
+    try {
+      // Local audio must stop before the network cancellation to prevent the
+      // old response from speaking over the newly detected user turn.
+      try {
+        await this.adapter.stopPlayback?.();
+      } catch {
+        // A local player failure must not leave the server response running.
+        // The cancellation below is still sent, while the UI is reset to the
+        // new-turn state after the old response is retired.
+      } finally {
+        this.ttsPlaybackTerminal = true;
+        this.setSnapshot({
+          ttsPlaybackState: 'idle',
+          ttsResponseId: null,
+        });
+        console.info('LOCAL_TTS_STOPPED', {
+          oldResponseId: responseId,
+          timestampMs: this.now(),
+        });
+      }
+
+      // Queue the old-response cancellation before the new turn control
+      // message, but do not await the server acknowledgement. The native
+      // transport retains the microphone and buffers the interruption while
+      // the server finishes cancelling the old response.
+      const cancellation = this.adapter.cancelResponse('barge_in');
+      cancellation
+        .then(() => {
+          console.info('CLIENT_RESPONSE_CANCEL_SENT', {
+            oldResponseId: responseId,
+            timestampMs: this.now(),
+          });
+        })
+        .catch(error => {
+          this.setSnapshot({ error: safeVoiceError(error) });
+        });
+
+      this.responseServerCompleted = false;
+      this.ttsPlaybackTerminal = true;
+      this.turnStartedAtMs = null;
+      this.speechEndedAtMs = null;
+      this.autoCommitBargeInTurn = true;
+      this.bargeInSpeechEndedPending = false;
+      this.setSnapshot({
+        turn: 'idle',
+        turnId: null,
+        responseId: null,
+        session: 'ready',
+        speechDetected: false,
+        ttsPlaybackState: 'idle',
+        ttsResponseId: null,
+        ttsError: null,
+      });
+      console.info('BARGE_IN_NEW_TURN_PENDING', {
+        oldTurnId: turnId,
+        oldResponseId: responseId,
+        timestampMs: this.now(),
+      });
+      await this.startTurn({
+        preserveMicrophone: true,
+        includePreRoll: true,
+        autoCommitOnSpeechEnd: true,
+      });
+    } catch (error) {
+      this.autoCommitBargeInTurn = false;
+      this.bargeInSpeechEndedPending = false;
+      this.setSnapshot({
+        turn: 'failed',
+        speechDetected: false,
+        error: safeVoiceError(error),
+      });
+    } finally {
+      this.bargeInInFlight = false;
+    }
+  }
+
   private handleVadEvent(input: unknown): void {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       return;
     }
     const event = input as Record<string, unknown>;
     const eventType = typeof event.event === 'string' ? event.event : '';
-    if (!eventType || !this.snapshot.turnId) {
+    if (!eventType) {
+      return;
+    }
+    const isSileroSpeechEvent =
+      eventType === 'SILERO_VAD_SPEECH_STARTED' ||
+      eventType === 'SILERO_VAD_SPEECH_ACTIVITY';
+    if (this.shouldBargeIn(eventType)) {
+      const decision = this.playbackBargeInDecision(event);
+      const candidateAtMs =
+        typeof event.timestampMs === 'number' && Number.isFinite(event.timestampMs)
+          ? event.timestampMs
+          : this.now();
+      const speechDurationMs =
+        typeof event.speechDurationMs === 'number' &&
+        Number.isFinite(event.speechDurationMs)
+          ? event.speechDurationMs
+          : 0;
+      // Native SILERO_VAD_SPEECH_STARTED is emitted only after the native
+      // 160 ms confirmation window. Its event payload intentionally reports
+      // duration 0, so use the configured confirmation duration for the JS
+      // decision while preserving the raw payload in diagnostics.
+      const effectiveSpeechDurationMs =
+        eventType === 'SILERO_VAD_SPEECH_STARTED'
+          ? Math.max(speechDurationMs, 160)
+          : speechDurationMs;
+      if (eventType === 'SILERO_VAD_SPEECH_STARTED') {
+        this.sileroSpeechSegmentStartedAtMs = candidateAtMs;
+        this.sileroSpeechSegmentStartedDuringGuard = !decision.accepted;
+      }
+      console.info('BARGE_IN_CANDIDATE', {
+        reason: 'silero',
+        probability: event.probability ?? null,
+        playbackActive: true,
+        playbackAgeMs: decision.playbackAgeMs,
+        playbackStartGuardMs: PLAYBACK_START_GUARD_MS,
+        playbackProbabilityThreshold: PLAYBACK_SPEECH_PROBABILITY_THRESHOLD,
+        elapsed_since_tts_start_ms: decision.playbackAgeMs,
+        speech_duration_ms: effectiveSpeechDurationMs,
+        eventType,
+        timestampMs: this.now(),
+      });
+      console.info('BARGE_IN_GUARD_CHECK', {
+        guard_active:
+          decision.playbackAgeMs !== null &&
+          decision.playbackAgeMs < PLAYBACK_START_GUARD_MS,
+        elapsed_since_tts_start_ms: decision.playbackAgeMs,
+        timestampMs: this.now(),
+      });
+      const probability =
+        typeof event.probability === 'number' && Number.isFinite(event.probability)
+          ? event.probability
+          : null;
+      console.info('BARGE_IN_THRESHOLD_CHECK', {
+        probability,
+        required: PLAYBACK_SPEECH_PROBABILITY_THRESHOLD,
+        passed:
+          probability !== null &&
+          probability >= PLAYBACK_SPEECH_PROBABILITY_THRESHOLD,
+        timestampMs: this.now(),
+      });
+      const continuationOfGuardSegment =
+        eventType === 'SILERO_VAD_SPEECH_ACTIVITY' &&
+        this.sileroSpeechSegmentStartedDuringGuard;
+      if (!decision.accepted || continuationOfGuardSegment) {
+        console.info('BARGE_IN_REJECTED', {
+          reason:
+            continuationOfGuardSegment
+              ? 'segment_started_during_playback_guard'
+              : decision.reason,
+          probability: event.probability ?? null,
+          playbackActive: true,
+          playbackAgeMs: decision.playbackAgeMs,
+          speech_duration_ms: effectiveSpeechDurationMs,
+          timestampMs: this.now(),
+        });
+        if (eventType === 'SILERO_VAD_SPEECH_STARTED') {
+          console.info('BARGE_IN_CONFIRM_TIMER_CANCELLED', {
+            reason: decision.reason,
+            timestampMs: this.now(),
+          });
+        }
+        return;
+      }
+      if (eventType === 'SILERO_VAD_SPEECH_STARTED') {
+        console.info('BARGE_IN_CONFIRM_TIMER_STARTED', {
+          required_ms: 160,
+          speech_duration_ms: effectiveSpeechDurationMs,
+          source: 'native_silero_confirmation',
+          timestampMs: this.now(),
+        });
+      }
+      if (effectiveSpeechDurationMs < 160) {
+        console.info('BARGE_IN_CONFIRM_TIMER_STARTED', {
+          required_ms: 160,
+          speech_duration_ms: effectiveSpeechDurationMs,
+          timestampMs: this.now(),
+        });
+        return;
+      }
+      console.info('BARGE_IN_SPEECH_DETECTED', {
+        responseId: this.snapshot.responseId,
+        timestampMs: this.now(),
+      });
+      this.interruptForBargeIn().catch(() => undefined);
+      return;
+    }
+    if (isSileroSpeechEvent && this.snapshot.ttsPlaybackState === 'speaking') {
+      const decision = this.playbackBargeInDecision(event);
+      console.info('BARGE_IN_CANDIDATE', {
+        reason: 'silero_not_eligible_state',
+        probability: event.probability ?? null,
+        playbackActive: true,
+        playbackAgeMs: decision.playbackAgeMs,
+        elapsed_since_tts_start_ms: decision.playbackAgeMs,
+        speech_duration_ms: event.speechDurationMs ?? 0,
+        eventType,
+        timestampMs: this.now(),
+      });
+      console.info('BARGE_IN_REJECTED', {
+        reason: 'client_turn_state_not_interruptible',
+        playbackAgeMs: decision.playbackAgeMs,
+        timestampMs: this.now(),
+      });
+    }
+    if (!this.snapshot.turnId) {
+      if (
+        this.autoCommitBargeInTurn &&
+        (eventType === 'VAD_SPEECH_STOPPED' ||
+          eventType === 'SILERO_VAD_SPEECH_STOPPED')
+      ) {
+        this.bargeInSpeechEndedPending = true;
+        this.speechEndedAtMs = this.now();
+        console.info('BARGE_IN_SPEECH_END', {
+          turnId: this.bargeInTurnId,
+          timestampMs: this.speechEndedAtMs,
+          pendingTurnId: true,
+        });
+      }
       return;
     }
     if (
@@ -1494,6 +1896,10 @@ export class VoiceSocket {
       eventType === 'VAD_SPEECH_STOPPED' ||
       eventType === 'SILERO_VAD_SPEECH_STOPPED'
     ) {
+      if (eventType === 'SILERO_VAD_SPEECH_STOPPED') {
+        this.sileroSpeechSegmentStartedAtMs = null;
+        this.sileroSpeechSegmentStartedDuringGuard = false;
+      }
       if (!['recording', 'speech_detected'].includes(this.snapshot.turn)) {
         return;
       }
@@ -1501,6 +1907,35 @@ export class VoiceSocket {
       this.markCurrentTranscriptSpeechEnded();
       this.markCurrentTranscriptPhase('listening');
       this.setSnapshot({ turn: 'recording', speechDetected: false });
+      if (this.autoCommitBargeInTurn) {
+        console.info('BARGE_IN_SPEECH_END', {
+          turnId: this.snapshot.turnId,
+          timestampMs: this.speechEndedAtMs,
+        });
+        this.commitBargeInTurn().catch(() => undefined);
+      }
+    }
+  }
+
+  private async commitBargeInTurn(): Promise<void> {
+    if (this.bargeInCommitInFlight || !this.autoCommitBargeInTurn) {
+      return;
+    }
+    this.bargeInCommitInFlight = true;
+    try {
+      console.info('NEW_TURN_COMMITTED', {
+        turnId: this.snapshot.turnId,
+        timestampMs: this.now(),
+      });
+      await this.commitTurn();
+    } catch (error) {
+      this.setSnapshot({
+        turn: 'failed',
+        error: safeVoiceError(error),
+      });
+    } finally {
+      this.autoCommitBargeInTurn = false;
+      this.bargeInCommitInFlight = false;
     }
   }
 
@@ -1661,6 +2096,13 @@ export class VoiceSocket {
         timestampMs: event.timestampMs,
       });
     } else if (message?.final && event.text.trim()) {
+      if (event.turnId === this.bargeInTurnId) {
+        console.info('STT_FINAL', {
+          turnId: event.turnId,
+          text: event.text,
+          timestampMs: this.now(),
+        });
+      }
       this.applyConversationEvent({
         type: 'user.transcript.final',
         sessionId: event.sessionId,
@@ -1953,6 +2395,9 @@ export class VoiceSocket {
     );
     this.sessionStartInFlight = false;
     this.turnStartedAtMs = null;
+    this.responseServerCompleted = false;
+    this.ttsPlaybackTerminal = true;
+    this.bargeInInFlight = false;
     this.setSnapshot({
       connection: 'disconnected',
       session: 'idle',
