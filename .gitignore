@@ -125,3 +125,8 @@ backend/htmlcov/
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Phase latency tracing only
+logs/latency_trace.jsonl
+logs/latency/
+docs/latency_runs/

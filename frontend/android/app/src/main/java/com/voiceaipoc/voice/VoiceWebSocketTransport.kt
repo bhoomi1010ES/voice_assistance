@@ -1034,6 +1034,16 @@ class VoiceWebSocketTransport(
             "TTS_FRAME_RECEIVED response_id=${frame.responseId} seq=${frame.sequence} " +
                 "bytes=${frame.payload.size} starts=${frame.startsResponse} ends=${frame.endsResponse}",
         )
+        if (frame.sequence == 0L) {
+            logLatency(
+                sessionId = synchronized(stateLock) { status.sessionId },
+                turnId = synchronized(stateLock) { status.turnId },
+                responseId = frame.responseId.toString(),
+                component = "android",
+                event = "tts_first_chunk_received",
+                metadata = mapOf("bytes" to frame.payload.size),
+            )
+        }
         if (!isTtsOutputEnabled()) return
         if (frame.startsResponse) {
             if (!ttsAudioPlayer.start(frame.responseId, frame.sampleRateHz)) {
@@ -1059,6 +1069,13 @@ class VoiceWebSocketTransport(
 
     private fun notifyTtsPlayback(eventType: String, responseId: java.util.UUID) {
         val current = synchronized(stateLock) { status }
+        logLatency(
+            sessionId = current.sessionId,
+            turnId = current.turnId,
+            responseId = responseId.toString(),
+            component = "android",
+            event = eventType.replace('.', '_'),
+        )
         listener.onTtsPlayback(
             eventType,
             current.sessionId,
@@ -1066,6 +1083,32 @@ class VoiceWebSocketTransport(
             responseId.toString(),
             System.currentTimeMillis(),
         )
+    }
+
+    private fun logLatency(
+        sessionId: String?,
+        turnId: String?,
+        responseId: String?,
+        component: String,
+        event: String,
+        metadata: Map<String, Any?> = emptyMap(),
+    ) {
+        val record = JSONObject()
+            .put("timestamp", java.time.Instant.now().toString())
+            .put("timestamp_ms", System.currentTimeMillis())
+            .put("monotonic_ms", SystemClock.elapsedRealtime())
+            .put("clock_domain", "android")
+            .put("session_id", sessionId ?: JSONObject.NULL)
+            .put("turn_id", turnId ?: JSONObject.NULL)
+            .put("response_id", responseId ?: JSONObject.NULL)
+            .put("component", component)
+            .put("event", event)
+        if (metadata.isNotEmpty()) {
+            val safe = JSONObject()
+            metadata.forEach { (key, value) -> safe.put(key, value ?: JSONObject.NULL) }
+            record.put("metadata", safe)
+        }
+        Log.i(TAG, "LATENCY_TRACE $record")
     }
 
     private fun extractServerEventPayload(

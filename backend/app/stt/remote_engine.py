@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.core.config import Settings
+from app.services.latency_trace import LatencyTracer
 from app.stt.base import (
     EnginePartialCallback,
     STTAudioError,
@@ -72,6 +73,7 @@ class RemoteTranscriptionEngine(STTEngine):
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
         self._info: STTEngineInfo | None = None
+        self._latency_tracer = LatencyTracer()
         self._initialize_lock = asyncio.Lock()
         self._turns_lock = asyncio.Lock()
         self._turns: dict[tuple[uuid.UUID, uuid.UUID], _RemoteTurnState] = {}
@@ -281,6 +283,23 @@ class RemoteTranscriptionEngine(STTEngine):
                 "request_start_monotonic_ms": request_start_monotonic_ms,
             },
         )
+        self._latency_tracer.emit(
+            session_id=state.handle.session_id,
+            turn_id=state.handle.turn_id,
+            response_id=state.handle.response_id,
+            component="stt",
+            event="stt_request_start",
+            monotonic_ms=request_start_monotonic_ms,
+            metadata={"audio_bytes": len(state.audio), "audio_duration_ms": audio_duration_ms},
+        )
+        self._latency_tracer.emit(
+            session_id=state.handle.session_id,
+            turn_id=state.handle.turn_id,
+            response_id=state.handle.response_id,
+            component="stt",
+            event="stt_remote_request_sent",
+            monotonic_ms=request_start_monotonic_ms,
+        )
         started = time.perf_counter()
         try:
             response = await client.post(
@@ -327,6 +346,24 @@ class RemoteTranscriptionEngine(STTEngine):
                 "request_duration_ms": duration_ms,
                 "remote_request_latency_ms": duration_ms,
             },
+        )
+        self._latency_tracer.emit(
+            session_id=state.handle.session_id,
+            turn_id=state.handle.turn_id,
+            response_id=state.handle.response_id,
+            component="stt",
+            event="stt_response_received",
+            monotonic_ms=response_monotonic_ms,
+            duration_ms=duration_ms,
+            metadata={"status_code": response.status_code},
+        )
+        self._latency_tracer.emit(
+            session_id=state.handle.session_id,
+            turn_id=state.handle.turn_id,
+            response_id=state.handle.response_id,
+            component="stt",
+            event="stt_final",
+            monotonic_ms=response_monotonic_ms,
         )
         return STTEngineFinal(
             session_id=state.handle.session_id,

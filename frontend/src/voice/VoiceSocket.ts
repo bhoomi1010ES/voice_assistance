@@ -51,6 +51,7 @@ import {
   PLAYBACK_SPEECH_PROBABILITY_THRESHOLD,
   PLAYBACK_START_GUARD_MS,
 } from './playbackBargeInPolicy';
+import { emitLatencyTrace } from './latencyTrace';
 
 export const VOICE_GATEWAY_URL = `${publicApiConfig.websocketBaseUrl}/v1/voice`;
 
@@ -650,6 +651,14 @@ export class VoiceSocket {
       }
       this.turnStartedAtMs = this.now();
       this.speechEndedAtMs = null;
+      emitLatencyTrace({
+        sessionId: this.snapshot.sessionId,
+        turnId: null,
+        responseId: null,
+        component: 'client',
+        event: 'turn_start_requested',
+        metadata: { include_pre_roll: Boolean(options.includePreRoll) },
+      });
       this.setSnapshot({
         turn: 'starting',
         speechDetected: false,
@@ -688,6 +697,14 @@ export class VoiceSocket {
       Math.round(this.now() - (this.turnStartedAtMs ?? this.now())),
     );
     this.speechEndedAtMs = this.speechEndedAtMs ?? this.now();
+    emitLatencyTrace({
+      sessionId: this.snapshot.sessionId,
+      turnId: this.snapshot.turnId,
+      responseId: this.snapshot.responseId,
+      component: 'client',
+      event: 'turn_commit_sent',
+      metadata: { duration_ms: durationMs },
+    });
     this.markCurrentTranscriptPhase('transcribing');
     this.setSnapshot({
       turn: 'committing',
@@ -1221,6 +1238,24 @@ export class VoiceSocket {
     }
 
     const receivedAtMs = this.now();
+    const clientTraceEvent =
+      event.type === 'server.turn.ready'
+        ? 'turn_ready_received'
+        : event.type === 'assistant.response.started'
+          ? 'response_received'
+          : event.type === 'transcript.final'
+            ? 'client_stt_final'
+            : event.type === 'tts.completed'
+              ? 'tts_generation_complete_received'
+              : event.type;
+    emitLatencyTrace({
+      sessionId: event.sessionId,
+      turnId: event.turnId,
+      responseId: event.responseId,
+      component: 'client',
+      event: clientTraceEvent,
+      metadata: { gateway_timestamp_ms: event.timestampMs, received_at_ms: receivedAtMs },
+    });
     this.setSnapshot({
       eventSequence: this.snapshot.eventSequence + 1,
       lastEvent: event.type,
@@ -1375,6 +1410,13 @@ export class VoiceSocket {
         });
         break;
       case 'tts.playback.started':
+        emitLatencyTrace({
+          sessionId: event.sessionId,
+          turnId: event.turnId,
+          responseId: event.responseId,
+          component: 'android',
+          event: 'tts_playback_start',
+        });
         this.ttsPlaybackTerminal = false;
         // Playback may report this lifecycle event more than once while a
         // response is being drained. The first timestamp is the only valid
@@ -1393,6 +1435,13 @@ export class VoiceSocket {
         });
         break;
       case 'tts.playback.completed':
+        emitLatencyTrace({
+          sessionId: event.sessionId,
+          turnId: event.turnId,
+          responseId: event.responseId,
+          component: 'android',
+          event: 'tts_playback_complete',
+        });
         this.ttsPlaybackTerminal = true;
         this.ttsPlaybackStartedAtMs = null;
         this.ttsPlaybackResponseId = null;
@@ -1636,6 +1685,13 @@ export class VoiceSocket {
       oldResponseId: responseId,
       timestampMs: this.now(),
     });
+    emitLatencyTrace({
+      sessionId: this.snapshot.sessionId,
+      turnId,
+      responseId,
+      component: 'client',
+      event: 'barge_in_confirmed',
+    });
     // Retire the old correlation before any asynchronous work so late text
     // deltas and audio chunks cannot leak into the new user turn.
     this.retireCorrelation(null, turnId, responseId);
@@ -1674,6 +1730,13 @@ export class VoiceSocket {
           oldResponseId: responseId,
           timestampMs: this.now(),
         });
+        emitLatencyTrace({
+          sessionId: this.snapshot.sessionId,
+          turnId,
+          responseId,
+          component: 'android',
+          event: 'barge_in_playback_stopped',
+        });
       }
 
       // Queue the old-response cancellation before the new turn control
@@ -1686,6 +1749,14 @@ export class VoiceSocket {
           console.info('CLIENT_RESPONSE_CANCEL_SENT', {
             oldResponseId: responseId,
             timestampMs: this.now(),
+          });
+          emitLatencyTrace({
+            sessionId: this.snapshot.sessionId,
+            turnId,
+            responseId,
+            component: 'client',
+            event: 'response_cancel_sent',
+            metadata: { reason: 'barge_in' },
           });
         })
         .catch(error => {
@@ -1743,6 +1814,32 @@ export class VoiceSocket {
     const isSileroSpeechEvent =
       eventType === 'SILERO_VAD_SPEECH_STARTED' ||
       eventType === 'SILERO_VAD_SPEECH_ACTIVITY';
+    if (eventType === 'SILERO_VAD_SPEECH_STARTED' || eventType === 'VAD_SPEECH_STARTED') {
+      emitLatencyTrace({
+        sessionId: this.snapshot.sessionId,
+        turnId: this.snapshot.turnId,
+        responseId: this.snapshot.responseId,
+        component: 'android',
+        event: 'microphone_speech_start',
+        metadata: {
+          probability: event.probability,
+          speech_duration_ms: event.speechDurationMs,
+          reason: event.reason,
+        },
+      });
+    } else if (
+      eventType === 'SILERO_VAD_SPEECH_STOPPED' ||
+      eventType === 'VAD_SPEECH_STOPPED'
+    ) {
+      emitLatencyTrace({
+        sessionId: this.snapshot.sessionId,
+        turnId: this.snapshot.turnId,
+        responseId: this.snapshot.responseId,
+        component: 'android',
+        event: 'vad_end',
+        metadata: { speech_duration_ms: event.speechDurationMs, reason: event.reason },
+      });
+    }
     if (this.shouldBargeIn(eventType)) {
       const decision = this.playbackBargeInDecision(event);
       const candidateAtMs =
@@ -1764,8 +1861,23 @@ export class VoiceSocket {
           : speechDurationMs;
       if (eventType === 'SILERO_VAD_SPEECH_STARTED') {
         this.sileroSpeechSegmentStartedAtMs = candidateAtMs;
-        this.sileroSpeechSegmentStartedDuringGuard = !decision.accepted;
+          this.sileroSpeechSegmentStartedDuringGuard = !decision.accepted;
       }
+      emitLatencyTrace({
+        sessionId: this.snapshot.sessionId,
+        turnId: this.snapshot.turnId,
+        responseId: this.snapshot.responseId,
+        component: 'client',
+        event: 'barge_in_candidate',
+        metadata: {
+          probability: event.probability,
+          playback_age_ms: decision.playbackAgeMs,
+          speech_duration_ms: effectiveSpeechDurationMs,
+          accepted: decision.accepted,
+          reason: decision.reason,
+          event_type: eventType,
+        },
+      });
       console.info('BARGE_IN_CANDIDATE', {
         reason: 'silero',
         probability: event.probability ?? null,
