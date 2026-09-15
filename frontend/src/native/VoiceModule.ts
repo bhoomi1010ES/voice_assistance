@@ -592,6 +592,7 @@ export type VoiceOutputPreferences = {
 export type VoiceVadEvent = {
   event: string;
   timestampMs?: number | null;
+  monotonicNs?: string | null;
   frameIndex?: number | null;
   inferenceIndex?: number | null;
   probability?: number | null;

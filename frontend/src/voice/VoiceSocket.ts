@@ -1872,6 +1872,14 @@ export class VoiceSocket {
     if (!eventType) {
       return;
     }
+    const nativeMonotonicNs =
+      typeof event.monotonicNs === 'string' && /^\d+$/.test(event.monotonicNs)
+        ? Number(event.monotonicNs)
+        : null;
+    const nativeMonotonicMs =
+      nativeMonotonicNs != null && Number.isFinite(nativeMonotonicNs)
+        ? nativeMonotonicNs / 1_000_000
+        : null;
     const isSileroSpeechEvent =
       eventType === 'SILERO_VAD_SPEECH_STARTED' ||
       eventType === 'SILERO_VAD_SPEECH_ACTIVITY';
@@ -1885,6 +1893,9 @@ export class VoiceSocket {
         responseId: this.snapshot.responseId,
         component: 'android',
         event: 'microphone_speech_start',
+        monotonicNs: nativeMonotonicNs,
+        monotonicMs: nativeMonotonicMs,
+        clockDomain: nativeMonotonicNs == null ? 'client' : 'android',
         metadata: {
           probability: event.probability,
           speech_duration_ms: event.speechDurationMs,
@@ -1901,6 +1912,9 @@ export class VoiceSocket {
         responseId: this.snapshot.responseId,
         component: 'android',
         event: 'vad_end',
+        monotonicNs: nativeMonotonicNs,
+        monotonicMs: nativeMonotonicMs,
+        clockDomain: nativeMonotonicNs == null ? 'client' : 'android',
         metadata: {
           speech_duration_ms: event.speechDurationMs,
           reason: event.reason,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Callable
+from contextlib import nullcontext
 
 from app.core.config import Settings
 from app.llm.errors import LLMContextLimitError, LLMInvalidRequestError
@@ -13,6 +15,7 @@ from app.llm.types import (
     LLMToolChoice,
     LLMToolDefinition,
 )
+from app.services.latency_trace import latency_span
 from app.services.task_due_dates import has_temporal_expression
 
 VOICE_SYSTEM_PROMPT_VERSION = "phase6-voice-v1-routing"
@@ -115,26 +118,81 @@ def build_voice_llm_request(
     transcript: str,
     allowed_tools: tuple[LLMToolDefinition, ...] = (),
     memory_context: str | None = None,
+    trace: Callable[..., None] | None = None,
 ) -> LLMRequest:
     """Build the bounded Phase 5 v2 context for one committed speech turn."""
+
+    span = (
+        latency_span(
+            trace,
+            component="prompt",
+            event="prompt_build",
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            metadata={
+                "tool_count": len(allowed_tools),
+                "memory_context_characters": len(memory_context or ""),
+            },
+        )
+        if trace is not None
+        else nullcontext()
+    )
+    with span:
+        return _build_voice_llm_request(
+            settings,
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            transcript=transcript,
+            allowed_tools=allowed_tools,
+            memory_context=memory_context,
+            trace=trace,
+        )
+
+
+def _build_voice_llm_request(
+    settings: Settings,
+    *,
+    session_id: uuid.UUID,
+    turn_id: uuid.UUID,
+    response_id: uuid.UUID,
+    transcript: str,
+    allowed_tools: tuple[LLMToolDefinition, ...],
+    memory_context: str | None,
+    trace: Callable[..., None] | None,
+) -> LLMRequest:
 
     user_text = transcript.strip()
     if not user_text:
         raise LLMInvalidRequestError("A final transcript is required for LLM generation.")
 
-    # Tokenization is provider/model-specific. This character ceiling is a
-    # conservative preflight bound; the provider remains authoritative for its
-    # exact tokenizer and maps a provider context rejection to a typed error.
-    character_ceiling = settings.llm_max_context_tokens * 4
     memory_text = "\n".join(memory_context.split()) if memory_context else ""
-    if len(memory_text) > character_ceiling:
-        raise LLMContextLimitError("The memory context exceeds the configured context bound.")
-    if len(VOICE_SYSTEM_INSTRUCTIONS) + len(user_text) + len(memory_text) > character_ceiling:
-        raise LLMContextLimitError("The voice request exceeds the configured context bound.")
-
     system_instructions = f"{VOICE_SYSTEM_INSTRUCTIONS}\n{VOICE_TOOL_ROUTING_INSTRUCTIONS}"
-    if len(system_instructions) + len(user_text) + len(memory_text) > character_ceiling:
-        raise LLMContextLimitError("The voice request exceeds the configured context bound.")
+    budget_span = (
+        latency_span(
+            trace,
+            component="token_budget",
+            event="token_budget",
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            metadata={"budget_method": "character_ceiling_4_chars_per_token"},
+        )
+        if trace is not None
+        else nullcontext()
+    )
+    with budget_span:
+        # Tokenization is provider/model-specific. This character ceiling is a
+        # conservative preflight bound; the provider remains authoritative for its
+        # exact tokenizer and maps a provider context rejection to a typed error.
+        character_ceiling = settings.llm_max_context_tokens * 4
+        if len(memory_text) > character_ceiling:
+            raise LLMContextLimitError("The memory context exceeds the configured context bound.")
+        if len(VOICE_SYSTEM_INSTRUCTIONS) + len(user_text) + len(memory_text) > character_ceiling:
+            raise LLMContextLimitError("The voice request exceeds the configured context bound.")
+        if len(system_instructions) + len(user_text) + len(memory_text) > character_ceiling:
+            raise LLMContextLimitError("The voice request exceeds the configured context bound.")
 
     messages = (
         (
@@ -151,6 +209,22 @@ def build_voice_llm_request(
         else ()
     ) + (LLMMessage(role=LLMRole.USER, content=user_text),)
 
+    tool_span = (
+        latency_span(
+            trace,
+            component="tool_routing",
+            event="tool_routing",
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            metadata={"tool_count": len(allowed_tools)},
+        )
+        if trace is not None
+        else nullcontext()
+    )
+    with tool_span:
+        tool_choice = classify_voice_tool_choice(user_text, allowed_tools)
+
     return LLMRequest(
         session_id=session_id,
         turn_id=turn_id,
@@ -158,6 +232,6 @@ def build_voice_llm_request(
         system_instructions=system_instructions,
         messages=messages,
         allowed_tools=allowed_tools,
-        tool_choice=classify_voice_tool_choice(user_text, allowed_tools),
+        tool_choice=tool_choice,
         max_output_tokens=settings.llm_max_output_tokens,
     )

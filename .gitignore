@@ -115,6 +115,8 @@ backend/htmlcov/
 /scratch/*.log
 /scratch/*.err
 /scratch/*.png
+/scratch/latency_trace_device_test_*.jsonl
+/scratch/stt_llm_latency_report_*.txt
 /scratch/*live_bundle.js
 /.pytest_tmp_phase9/
 

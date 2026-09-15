@@ -57,7 +57,7 @@ from app.services.device_time import (
     timezone_for_request,
     valid_timezone,
 )
-from app.services.latency_trace import LatencyTracer
+from app.services.latency_trace import LatencyTracer, latency_span
 from app.services.task_due_dates import format_local_due_at
 from app.services.tool_idempotency import PostgresToolIdempotencyStore
 from app.services.voice_confirmation import (
@@ -231,6 +231,7 @@ class VoiceGateway:
         self.queue: asyncio.Queue[ControlMessageType | BinaryPcmFrame] = asyncio.Queue(
             maxsize=settings.voice_queue_capacity_frames
         )
+        self._queued_audio_commits: dict[int, tuple[int, uuid.UUID, uuid.UUID]] = {}
         self.voice_session: VoiceSession | None = None
         self.active_turn: ConversationTurn | None = None
         self.stt_turn: STTTurn | None = None
@@ -386,6 +387,14 @@ class VoiceGateway:
     async def _enqueue(self, item: ControlMessageType | BinaryPcmFrame) -> bool:
         if self._closing.is_set():
             return False
+        commit_queue_timing: tuple[int, uuid.UUID, uuid.UUID, int] | None = None
+        if isinstance(item, AudioCommitMessage) and self.active_turn is not None:
+            commit_queue_timing = (
+                time.perf_counter_ns(),
+                self.active_turn.id,
+                self.active_turn.response_id,
+                self.queue.qsize(),
+            )
         try:
             self.queue.put_nowait(item)
         except asyncio.QueueFull:
@@ -393,6 +402,21 @@ class VoiceGateway:
             await self._protocol_failure("voice_queue_overflow", close_code=1013)
             return False
         self.stats.queue_high_water_mark = max(self.stats.queue_high_water_mark, self.queue.qsize())
+        if commit_queue_timing is not None:
+            queued_ns, turn_id, response_id, queue_depth = commit_queue_timing
+            self._queued_audio_commits[id(item)] = (queued_ns, turn_id, response_id)
+            self._trace_latency(
+                turn_id=turn_id,
+                response_id=response_id,
+                component="gateway_queue",
+                event="gateway_commit_queue_wait_started",
+                monotonic_ns=queued_ns,
+                metadata={
+                    "queue": "gateway_control_and_audio",
+                    "queue_depth_before_enqueue": queue_depth,
+                    "queue_capacity": self.queue.maxsize,
+                },
+            )
         return True
 
     async def _process_loop(self) -> None:
@@ -402,6 +426,26 @@ class VoiceGateway:
             except asyncio.CancelledError:
                 return
             try:
+                if isinstance(item, AudioCommitMessage):
+                    queued = self._queued_audio_commits.pop(id(item), None)
+                    if queued is not None:
+                        queued_ns, turn_id, response_id = queued
+                        dequeued_ns = time.perf_counter_ns()
+                        queue_wait_ms = (dequeued_ns - queued_ns) / 1_000_000
+                        self._trace_latency(
+                            turn_id=turn_id,
+                            response_id=response_id,
+                            component="gateway_queue",
+                            event="gateway_commit_queue_wait_completed",
+                            monotonic_ns=dequeued_ns,
+                            duration_ms=queue_wait_ms,
+                            metadata={
+                                "queue": "gateway_control_and_audio",
+                                "queue_wait_ms": queue_wait_ms,
+                                "queue_depth_after_dequeue": self.queue.qsize(),
+                                "queue_capacity": self.queue.maxsize,
+                            },
+                        )
                 if isinstance(item, BinaryPcmFrame):
                     await self._handle_binary(item)
                 else:
@@ -862,8 +906,17 @@ class VoiceGateway:
             if self._stt_finalize_task is not None:
                 await self._send_error("turn_finalizing")
                 return
+            queued_ns = time.perf_counter_ns()
+            self._trace_latency(
+                turn_id=self.active_turn.id,
+                response_id=self.active_turn.response_id,
+                component="gateway_queue",
+                event="finalize_task_queued",
+                monotonic_ns=queued_ns,
+                metadata={"queue": "asyncio_task_schedule"},
+            )
             self._stt_finalize_task = asyncio.create_task(
-                self._finish_audio_commit(message, self.stt_turn),
+                self._finish_audio_commit(message, self.stt_turn, queued_ns=queued_ns),
                 name=f"stt-finalize-{self.active_turn.id}",
             )
             self._stt_finalize_cancel_requested = False
@@ -874,6 +927,8 @@ class VoiceGateway:
         self,
         message: AudioCommitMessage,
         stt_turn: STTTurn | None,
+        *,
+        queued_ns: int | None = None,
     ) -> None:
         stt_result: STTTranscriptResult | None = None
         stt_error: STTError | None = None
@@ -891,6 +946,20 @@ class VoiceGateway:
             return
         turn_id = turn.id
         response_id = turn.response_id
+        if queued_ns is not None:
+            task_started_ns = time.perf_counter_ns()
+            self._trace_latency(
+                turn_id=turn_id,
+                response_id=response_id,
+                component="gateway_queue",
+                event="finalize_task_started",
+                monotonic_ns=task_started_ns,
+                duration_ms=(task_started_ns - queued_ns) / 1_000_000,
+                metadata={
+                    "queue": "asyncio_task_schedule",
+                    "queue_wait_ms": (task_started_ns - queued_ns) / 1_000_000,
+                },
+            )
         try:
             LOGGER.info(
                 "Voice turn finalization started",
@@ -904,8 +973,29 @@ class VoiceGateway:
             )
             if stt_turn is not None:
                 try:
-                    stt_result = await stt_turn.finalize()
+                    with latency_span(
+                        self._trace_latency,
+                        component="stt",
+                        event="stt_finalize",
+                        session_id=self._active_session_id(),
+                        turn_id=turn_id,
+                        response_id=response_id,
+                    ):
+                        stt_result = await stt_turn.finalize()
                     self._capture_turn_timing(turn_id, "stt_completed_at")
+                    self._trace_latency(
+                        turn_id=turn_id,
+                        response_id=response_id,
+                        component="stt",
+                        event="stt_final_received",
+                        metadata={"text_characters": len(stt_result.event.text)},
+                    )
+                    self._trace_latency(
+                        turn_id=turn_id,
+                        response_id=response_id,
+                        component="orchestration",
+                        event="orchestration_started",
+                    )
                     if not stt_result.event.text.strip():
                         raise STTEmptyTranscriptError("STT returned an empty transcript")
                 except STTCancelledError:
@@ -949,71 +1039,155 @@ class VoiceGateway:
             elif stt_error is not None:
                 metadata = {"stt_error": stt_error.code}
             turn_status = "failed" if stt_error is not None else "committed"
-            await self.persistence.finalize_turn(
-                self.db,
-                self.principal,
-                turn_id=counters.turn_id,
-                status=turn_status,
-                frame_count=counters.frame_count,
-                byte_count=counters.byte_count,
-                last_sequence=counters.last_sequence_no,
-                declared_duration_ms=message.duration_ms,
-                observed_duration_ms=observed_duration_ms,
-                metadata=metadata,
-            )
-            if stt_result is not None:
-                persisted_user_message = await self._persist_final_message_if_supported(
-                    turn_id=counters.turn_id,
-                    role="user",
-                    content=stt_result.event.text,
-                    content_json={
-                        "language": stt_result.event.language,
-                        "stt": stt_result.metrics,
-                    },
-                )
-                if persisted_user_message is not None and await self._memory_user_enabled():
-                    if (
-                        self.settings.memory_write_enabled
-                        and not self._memory_excluded_for_session()
+            with latency_span(
+                self._trace_latency,
+                component="persistence",
+                event="turn_persistence",
+                session_id=self._active_session_id(),
+                turn_id=turn_id,
+                response_id=response_id,
+            ):
+                with latency_span(
+                    self._trace_latency,
+                    component="postgres",
+                    event="turn_finalize_query",
+                    turn_id=turn_id,
+                    response_id=response_id,
+                ):
+                    await self.persistence.finalize_turn(
+                        self.db,
+                        self.principal,
+                        turn_id=counters.turn_id,
+                        status=turn_status,
+                        frame_count=counters.frame_count,
+                        byte_count=counters.byte_count,
+                        last_sequence=counters.last_sequence_no,
+                        declared_duration_ms=message.duration_ms,
+                        observed_duration_ms=observed_duration_ms,
+                        metadata=metadata,
+                    )
+                if stt_result is not None:
+                    with latency_span(
+                        self._trace_latency,
+                        component="postgres",
+                        event="user_message_persist",
+                        turn_id=turn_id,
+                        response_id=response_id,
                     ):
-                        await MemoryRepository().enqueue_extract_turn(
-                            self.db,
-                            user_id=self.principal.user_id,
-                            source_message_id=persisted_user_message.id,
-                            source_turn_id=counters.turn_id,
-                            source_session_id=self._active_session_id(),
-                            policy_version=self.settings.memory_policy_version,
+                        persisted_user_message = await self._persist_final_message_if_supported(
+                            turn_id=counters.turn_id,
+                            role="user",
+                            content=stt_result.event.text,
+                            content_json={
+                                "language": stt_result.event.language,
+                                "stt": stt_result.metrics,
+                            },
                         )
-            self._add_session_totals(counters.frame_count, counters.byte_count)
-            self.voice_session.last_activity_at = self._now_datetime()
-            self.active_turn = None
-            self._response_turn_id = counters.turn_id
-            self._turn_started = None
-            await self.registry.clear_turn(
-                self.owner,
-                self._active_session_id(),
-                turn_id=counters.turn_id,
-            )
-            await self.registry.refresh(self.owner, self._active_session_id())
-            await self.db.commit()
+                    if persisted_user_message is not None:
+                        with latency_span(
+                            self._trace_latency,
+                            component="postgres",
+                            event="memory_write_policy_lookup",
+                            turn_id=turn_id,
+                            response_id=response_id,
+                        ):
+                            memory_write_user_enabled = await self._memory_user_enabled()
+                        if memory_write_user_enabled and (
+                            self.settings.memory_write_enabled
+                            and not self._memory_excluded_for_session()
+                        ):
+                            with latency_span(
+                                self._trace_latency,
+                                component="postgres",
+                                event="memory_extract_enqueue",
+                                turn_id=turn_id,
+                                response_id=response_id,
+                            ):
+                                await MemoryRepository().enqueue_extract_turn(
+                                    self.db,
+                                    user_id=self.principal.user_id,
+                                    source_message_id=persisted_user_message.id,
+                                    source_turn_id=counters.turn_id,
+                                    source_session_id=self._active_session_id(),
+                                    policy_version=self.settings.memory_policy_version,
+                                )
+                self._add_session_totals(counters.frame_count, counters.byte_count)
+                self.voice_session.last_activity_at = self._now_datetime()
+                self.active_turn = None
+                self._response_turn_id = counters.turn_id
+                self._turn_started = None
+                with latency_span(
+                    self._trace_latency,
+                    component="voice_registry",
+                    event="turn_clear",
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    metadata={"registry_type": type(self.registry).__name__},
+                ):
+                    await self.registry.clear_turn(
+                        self.owner,
+                        self._active_session_id(),
+                        turn_id=counters.turn_id,
+                    )
+                with latency_span(
+                    self._trace_latency,
+                    component="voice_registry",
+                    event="session_refresh",
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    metadata={"registry_type": type(self.registry).__name__},
+                ):
+                    await self.registry.refresh(self.owner, self._active_session_id())
+                with latency_span(
+                    self._trace_latency,
+                    component="postgres",
+                    event="turn_commit",
+                    turn_id=turn_id,
+                    response_id=response_id,
+                ):
+                    await self.db.commit()
             if stt_result is not None:
-                await self._send_transcript_event(stt_result.event)
-                LOGGER.info(
-                    "Voice final transcript delivered",
-                    extra={
-                        "event": "voice.transcript.final.delivered",
-                        "session_id": str(stt_result.event.session_id),
-                        "turn_id": str(stt_result.event.turn_id),
-                        "response_id": str(stt_result.event.response_id),
-                        "text": stt_result.event.text,
-                        "language": stt_result.event.language,
-                        "timestamp_ms": int(time.time() * 1000),
-                        "transcript_timestamp_ms": stt_result.event.timestamp_ms,
-                        "monotonic_ms": round(time.monotonic() * 1000, 1),
-                        "metrics": stt_result.metrics,
-                    },
-                )
-            await self._close_stt_turn()
+                with latency_span(
+                    self._trace_latency,
+                    component="websocket",
+                    event="transcript_final_send",
+                    session_id=self._active_session_id(),
+                    turn_id=turn_id,
+                    response_id=response_id,
+                ):
+                    await self._send_transcript_event(stt_result.event)
+                with latency_span(
+                    self._trace_latency,
+                    component="sync_logging",
+                    event="transcript_delivery_log_write",
+                    session_id=self._active_session_id(),
+                    turn_id=turn_id,
+                    response_id=response_id,
+                ):
+                    LOGGER.info(
+                        "Voice final transcript delivered",
+                        extra={
+                            "event": "voice.transcript.final.delivered",
+                            "session_id": str(stt_result.event.session_id),
+                            "turn_id": str(stt_result.event.turn_id),
+                            "response_id": str(stt_result.event.response_id),
+                            "text": stt_result.event.text,
+                            "language": stt_result.event.language,
+                            "timestamp_ms": int(time.time() * 1000),
+                            "transcript_timestamp_ms": stt_result.event.timestamp_ms,
+                            "monotonic_ms": round(time.monotonic() * 1000, 1),
+                            "metrics": stt_result.metrics,
+                        },
+                    )
+            with latency_span(
+                self._trace_latency,
+                component="stt",
+                event="stt_turn_close",
+                session_id=self._active_session_id(),
+                turn_id=turn_id,
+                response_id=response_id,
+            ):
+                await self._close_stt_turn()
             if stt_error is not None:
                 await self._persist_conversation_log(
                     counters.turn_id,
@@ -1034,12 +1208,25 @@ class VoiceGateway:
 
             llm_result: dict[str, Any] = {"status": "disabled"}
             if stt_result is not None:
-                confirmation_result = await self._resolve_pending_confirmation(
+                with latency_span(
+                    self._trace_latency,
+                    component="confirmation",
+                    event="confirmation_routing",
                     session_id=self._active_session_id(),
-                    turn_id=counters.turn_id,
-                    response_id=counters.response_id,
-                    transcript=stt_result.event.text,
-                )
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    metadata={
+                        "confirmation_store_type": type(
+                            getattr(self, "confirmation_store", None)
+                        ).__name__
+                    },
+                ):
+                    confirmation_result = await self._resolve_pending_confirmation(
+                        session_id=self._active_session_id(),
+                        turn_id=counters.turn_id,
+                        response_id=counters.response_id,
+                        transcript=stt_result.event.text,
+                    )
                 if confirmation_result is not None:
                     llm_result = confirmation_result
                 elif self.llm_service.enabled:
@@ -1209,7 +1396,15 @@ class VoiceGateway:
 
         try:
             tool_registry = getattr(self, "tool_registry", None)
-            memory_user_enabled = await self._memory_user_enabled()
+            with latency_span(
+                self._trace_latency,
+                component="postgres",
+                event="memory_policy_lookup",
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+            ):
+                memory_user_enabled = await self._memory_user_enabled()
             memory_write_allowed = (
                 self.settings.memory_write_enabled
                 and memory_user_enabled
@@ -1270,11 +1465,20 @@ class VoiceGateway:
                 if tool_registry is not None
                 else None
             )
-            explicit_memory_call = (
-                build_explicit_memory_save_call(transcript, turn_id=turn_id)
-                if memory_write_allowed
-                else None
-            )
+            with latency_span(
+                self._trace_latency,
+                component="tool_routing",
+                event="explicit_memory_routing",
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                metadata={"memory_write_allowed": memory_write_allowed},
+            ):
+                explicit_memory_call = (
+                    build_explicit_memory_save_call(transcript, turn_id=turn_id)
+                    if memory_write_allowed
+                    else None
+                )
             if explicit_memory_call is not None and context is not None:
                 await self._send_tool_status(
                     session_id=session_id,
@@ -1303,7 +1507,20 @@ class VoiceGateway:
                     "status": "completed" if result.success else "failed",
                     "tool_execution_count": 1 if result.executed else 0,
                 }
-            memory_context = await self._memory_context_for_transcript(transcript)
+            with latency_span(
+                self._trace_latency,
+                component="memory",
+                event="memory_decision",
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+            ):
+                memory_context = await self._memory_context_for_transcript(
+                    transcript,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                )
             request = build_voice_llm_request(
                 self.settings,
                 session_id=session_id,
@@ -1312,6 +1529,7 @@ class VoiceGateway:
                 transcript=transcript,
                 allowed_tools=allowed_tools,
                 memory_context=memory_context,
+                trace=self._trace_latency,
             )
             if tool_registry is None:
                 event_stream = self.llm_service.stream(request)
@@ -1341,13 +1559,14 @@ class VoiceGateway:
                     continue
                 first_event_at = first_event_at or event.monotonic_seconds
                 if event.event_type == "text_delta" and event.delta:
+                    is_first_text_delta = not first_token_traced
                     first_text_at = first_text_at or event.monotonic_seconds
                     self._capture_turn_timing(
                         turn_id,
                         "llm_first_token_at",
                         monotonic=event.monotonic_seconds,
                     )
-                    if not first_token_traced:
+                    if is_first_text_delta:
                         first_token_traced = True
                         self._trace_latency(
                             session_id=session_id,
@@ -1357,23 +1576,52 @@ class VoiceGateway:
                             event="llm_first_token",
                             monotonic_ms=event.monotonic_seconds * 1000,
                         )
+                        observed_ns = time.perf_counter_ns()
+                        provider_token_ns = int(event.monotonic_seconds * 1_000_000_000)
+                        self._trace_latency(
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            response_id=response_id,
+                            component="orchestration",
+                            event="llm_first_token_observed_by_gateway",
+                            monotonic_ns=observed_ns,
+                            duration_ms=(observed_ns - provider_token_ns) / 1_000_000,
+                            metadata={
+                                "provider_to_gateway_delay_ms": (observed_ns - provider_token_ns)
+                                / 1_000_000,
+                                "tool_loop_enabled": (
+                                    getattr(self, "tool_registry", None) is not None
+                                ),
+                            },
+                        )
                     text_parts.append(event.delta)
                     if tts_queue is not None and tts_segmenter is not None:
                         tts_input_started = True
                         for sentence in tts_segmenter.push(event.delta):
                             await tts_queue.put(sentence)
-                    await self._send(
-                        server_event(
-                            "assistant.text.delta",
+                    delta_event = server_event(
+                        "assistant.text.delta",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        response_id=response_id,
+                        sequence=event.sequence,
+                        delta=event.delta,
+                        provider=event.provider,
+                        model=event.configured_model,
+                    )
+                    if is_first_text_delta:
+                        with latency_span(
+                            self._trace_latency,
+                            component="websocket",
+                            event="first_assistant_text_send",
                             session_id=session_id,
                             turn_id=turn_id,
                             response_id=response_id,
-                            sequence=event.sequence,
-                            delta=event.delta,
-                            provider=event.provider,
-                            model=event.configured_model,
-                        )
-                    )
+                            metadata={"delta_characters": len(event.delta)},
+                        ):
+                            await self._send(delta_event)
+                    else:
+                        await self._send(delta_event)
                     continue
                 if event.event_type.startswith("tool_call_"):
                     if event.event_type == "tool_call_completed":
@@ -1432,6 +1680,15 @@ class VoiceGateway:
                         monotonic_ms=event.monotonic_seconds * 1000,
                         metadata={"status": "failed"},
                     )
+                    self._trace_latency(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        response_id=response_id,
+                        component="llm",
+                        event="llm_completed",
+                        monotonic_ns=int(event.monotonic_seconds * 1_000_000_000),
+                        metadata={"status": "failed"},
+                    )
                     break
                 if event.event_type == "response_completed":
                     terminal_event = event
@@ -1447,6 +1704,15 @@ class VoiceGateway:
                         component="llm",
                         event="llm_complete",
                         monotonic_ms=event.monotonic_seconds * 1000,
+                        metadata={"status": "completed"},
+                    )
+                    self._trace_latency(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        response_id=response_id,
+                        component="llm",
+                        event="llm_completed",
+                        monotonic_ns=int(event.monotonic_seconds * 1_000_000_000),
                         metadata={"status": "completed"},
                     )
                     if event.text is not None:
@@ -2413,7 +2679,7 @@ class VoiceGateway:
                 component="gateway",
                 event=trace_event,
                 timestamp=point.wall.isoformat().replace("+00:00", "Z"),
-                monotonic_ms=point.monotonic * 1000,
+                monotonic_ns=int(point.monotonic * 1_000_000_000),
             )
 
     def _trace_latency(
@@ -2425,6 +2691,7 @@ class VoiceGateway:
         turn_id: uuid.UUID | None = None,
         response_id: uuid.UUID | None = None,
         monotonic_ms: float | None = None,
+        monotonic_ns: int | None = None,
         timestamp: str | None = None,
         duration_ms: float | None = None,
         metadata: dict[str, Any] | None = None,
@@ -2437,6 +2704,7 @@ class VoiceGateway:
             component=component,
             event=event,
             monotonic_ms=monotonic_ms,
+            monotonic_ns=monotonic_ns,
             timestamp=timestamp,
             duration_ms=duration_ms,
             metadata=metadata,
@@ -3055,11 +3323,46 @@ class VoiceGateway:
             "server.session.ended",
         }:
             return
-        async with self._send_lock:
+        trace_send_lock = event.get("type") == "transcript.final"
+        wait_started_ns = time.perf_counter_ns() if trace_send_lock else None
+        if trace_send_lock and wait_started_ns is not None:
+            self._trace_latency(
+                session_id=event.get("session_id") or self._active_session_id(),
+                turn_id=event.get("turn_id")
+                or (self.active_turn.id if self.active_turn is not None else None),
+                response_id=event.get("response_id")
+                or (self.active_turn.response_id if self.active_turn is not None else None),
+                component="gateway_queue",
+                event="transcript_send_lock_wait_started",
+                monotonic_ns=wait_started_ns,
+                metadata={"lock": "websocket_send"},
+            )
+        acquired = False
+        try:
+            await self._send_lock.acquire()
+            acquired = True
+            if trace_send_lock and wait_started_ns is not None:
+                acquired_ns = time.perf_counter_ns()
+                wait_ms = (acquired_ns - wait_started_ns) / 1_000_000
+                self._trace_latency(
+                    session_id=event.get("session_id") or self._active_session_id(),
+                    turn_id=event.get("turn_id")
+                    or (self.active_turn.id if self.active_turn is not None else None),
+                    response_id=event.get("response_id")
+                    or (self.active_turn.response_id if self.active_turn is not None else None),
+                    component="gateway_queue",
+                    event="transcript_send_lock_acquired",
+                    monotonic_ns=acquired_ns,
+                    duration_ms=wait_ms,
+                    metadata={"lock": "websocket_send", "queue_wait_ms": wait_ms},
+                )
             try:
                 await self.websocket.send_json(event)
             except (RuntimeError, WebSocketDisconnect):
                 self._closing.set()
+        finally:
+            if acquired:
+                self._send_lock.release()
 
     async def shutdown(self) -> None:
         if self._finalized:
@@ -3663,61 +3966,94 @@ class VoiceGateway:
             metadata = getattr(voice_session, "client_metadata", None)
         return isinstance(metadata, dict) and metadata.get("memory_excluded") is True
 
-    async def _memory_context_for_transcript(self, transcript: str) -> str | None:
+    async def _memory_context_for_transcript(
+        self,
+        transcript: str,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+    ) -> str | None:
         if self.settings.memory_retrieval_mode == "off":
             return None
         service = getattr(self.websocket.app.state, "memory_service", None)
-        if (
-            service is None
-            or not await self._memory_user_enabled()
-            or self._memory_excluded_for_session()
+        if service is None or self._memory_excluded_for_session():
+            return None
+        with latency_span(
+            self._trace_latency,
+            component="postgres",
+            event="memory_retrieval_policy_lookup",
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
         ):
+            memory_enabled = await self._memory_user_enabled()
+        if not memory_enabled:
             return None
         rag_started = time.monotonic()
         self._trace_latency(
-            turn_id=self.active_turn.id if self.active_turn else None,
-            response_id=self.active_turn.response_id if self.active_turn else None,
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
             component="rag",
             event="rag_start",
         )
 
         def trace_retrieval_stage(stage: str, duration_ms: float, metadata: dict[str, Any]) -> None:
-            ended = time.monotonic()
-            started = ended - max(0.0, duration_ms) / 1000
+            ended_ns = time.perf_counter_ns()
+            started_ns = int(metadata.pop("started_monotonic_ns", 0)) or int(
+                ended_ns - max(0.0, duration_ms) * 1_000_000
+            )
+            if stage.endswith("_db_query"):
+                metadata["execution_ms"] = duration_ms
+                metadata["db_pool_wait_included"] = True
+                metadata["db_pool_wait_separately_measured"] = False
             self._trace_latency(
-                turn_id=self.active_turn.id if self.active_turn else None,
-                response_id=self.active_turn.response_id if self.active_turn else None,
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
                 component="rag",
-                event=f"{stage}_start",
-                monotonic_ms=started * 1000,
+                event=f"{stage}_started",
+                monotonic_ns=started_ns,
             )
             self._trace_latency(
-                turn_id=self.active_turn.id if self.active_turn else None,
-                response_id=self.active_turn.response_id if self.active_turn else None,
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
                 component="rag",
-                event=f"{stage}_end",
-                monotonic_ms=ended * 1000,
+                event=f"{stage}_completed",
+                monotonic_ns=ended_ns,
                 duration_ms=duration_ms,
                 metadata=metadata,
             )
 
         try:
-            result = await service.retrieve(
-                self.db,
-                user_id=self.principal.user_id,
-                query=transcript,
-                now=self._now_datetime(),
-                trace=trace_retrieval_stage,
-            )
+            with latency_span(
+                self._trace_latency,
+                component="rag",
+                event="rag_decision",
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+            ):
+                result = await service.retrieve(
+                    self.db,
+                    user_id=self.principal.user_id,
+                    query=transcript,
+                    now=self._now_datetime(),
+                    trace=trace_retrieval_stage,
+                )
         except MemoryProviderError:
             # Memory is an enhancement; a provider outage must not prevent
             # the committed transcript from reaching the configured LLM.
             return None
         self._trace_latency(
-            turn_id=self.active_turn.id if self.active_turn else None,
-            response_id=self.active_turn.response_id if self.active_turn else None,
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
             component="rag",
             event="rag_end",
+            monotonic_ns=time.perf_counter_ns(),
             duration_ms=(time.monotonic() - rag_started) * 1000,
         )
         if self.settings.memory_retrieval_mode == "shadow" or not result.memories:

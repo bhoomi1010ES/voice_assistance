@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.core.config import Settings
-from app.services.latency_trace import LatencyTracer
+from app.services.latency_trace import LatencyTracer, latency_span
 from app.stt.base import (
     EnginePartialCallback,
     STTAudioError,
@@ -263,33 +263,42 @@ class RemoteTranscriptionEngine(STTEngine):
         if language:
             data["language"] = language
         request_start_wall_ms = int(time.time() * 1000)
-        request_start_monotonic_ms = round(time.monotonic() * 1000, 1)
+        request_start_monotonic_ns = time.perf_counter_ns()
+        request_start_monotonic_ms = round(request_start_monotonic_ns / 1_000_000, 3)
         audio_duration_ms = round(
             state.audio_samples / self.settings.voice_sample_rate_hz * 1000,
             1,
         )
-        LOGGER.info(
-            "Remote STT request started",
-            extra={
-                "event": "STT_REMOTE_REQUEST_STARTED",
-                "session_id": str(state.handle.session_id),
-                "turn_id": str(state.handle.turn_id),
-                "response_id": str(state.handle.response_id),
-                "generation": generation,
-                "endpoint_host": urlsplit(self.settings.stt_api_url_resolved).netloc,
-                "audio_bytes": len(state.audio),
-                "audio_duration_ms": audio_duration_ms,
-                "request_start_timestamp_ms": request_start_wall_ms,
-                "request_start_monotonic_ms": request_start_monotonic_ms,
-            },
-        )
+        with latency_span(
+            self._latency_tracer.emit,
+            component="sync_logging",
+            event="stt_request_log_write",
+            session_id=state.handle.session_id,
+            turn_id=state.handle.turn_id,
+            response_id=state.handle.response_id,
+        ):
+            LOGGER.info(
+                "Remote STT request started",
+                extra={
+                    "event": "STT_REMOTE_REQUEST_STARTED",
+                    "session_id": str(state.handle.session_id),
+                    "turn_id": str(state.handle.turn_id),
+                    "response_id": str(state.handle.response_id),
+                    "generation": generation,
+                    "endpoint_host": urlsplit(self.settings.stt_api_url_resolved).netloc,
+                    "audio_bytes": len(state.audio),
+                    "audio_duration_ms": audio_duration_ms,
+                    "request_start_timestamp_ms": request_start_wall_ms,
+                    "request_start_monotonic_ms": request_start_monotonic_ms,
+                },
+            )
         self._latency_tracer.emit(
             session_id=state.handle.session_id,
             turn_id=state.handle.turn_id,
             response_id=state.handle.response_id,
             component="stt",
             event="stt_request_start",
-            monotonic_ms=request_start_monotonic_ms,
+            monotonic_ns=request_start_monotonic_ns,
             metadata={"audio_bytes": len(state.audio), "audio_duration_ms": audio_duration_ms},
         )
         self._latency_tracer.emit(
@@ -300,7 +309,74 @@ class RemoteTranscriptionEngine(STTEngine):
             event="stt_remote_request_sent",
             monotonic_ms=request_start_monotonic_ms,
         )
-        started = time.perf_counter()
+        started_ns = time.perf_counter_ns()
+        self._latency_tracer.emit(
+            session_id=state.handle.session_id,
+            turn_id=state.handle.turn_id,
+            response_id=state.handle.response_id,
+            component="stt",
+            event="stt_request_started",
+            monotonic_ns=started_ns,
+            metadata={"audio_bytes": len(state.audio), "audio_duration_ms": audio_duration_ms},
+        )
+
+        transport_started: dict[str, int] = {}
+
+        async def http_trace(name: str, info: dict[str, Any]) -> None:
+            event_ns = time.perf_counter_ns()
+            if name == "connection.connect_tcp.started":
+                transport_started["tcp"] = event_ns
+                event_name = "stt_tcp_connect_started"
+                duration = None
+                metadata: dict[str, Any] = {}
+            elif name == "connection.connect_tcp.complete":
+                prior_ns = transport_started.pop("tcp", None)
+                event_name = "stt_tcp_connect_completed"
+                duration = (event_ns - prior_ns) / 1_000_000 if prior_ns is not None else None
+                metadata = {}
+            elif name in {
+                "http11.send_request_headers.started",
+                "http2.send_request_headers.started",
+            }:
+                event_name = "stt_connection_acquired"
+                duration = None
+                metadata = {"connection_pool_wait_separately_measured": False}
+            elif name == "connection.start_tls.started":
+                transport_started["tls"] = event_ns
+                event_name = "stt_tls_started"
+                duration = None
+                metadata = {}
+            elif name == "connection.start_tls.complete":
+                prior_ns = transport_started.pop("tls", None)
+                event_name = "stt_tls_completed"
+                duration = (event_ns - prior_ns) / 1_000_000 if prior_ns is not None else None
+                metadata = {}
+            elif name in {
+                "http11.receive_response_headers.complete",
+                "http2.receive_response_headers.complete",
+            }:
+                returned = info.get("return_value")
+                status_code = None
+                if isinstance(returned, tuple) and returned:
+                    candidate = returned[1] if name.startswith("http11") else returned[0]
+                    if isinstance(candidate, int):
+                        status_code = candidate
+                event_name = "stt_response_headers_received"
+                duration = None
+                metadata = {"status_code": status_code}
+            else:
+                return
+            self._latency_tracer.emit(
+                session_id=state.handle.session_id,
+                turn_id=state.handle.turn_id,
+                response_id=state.handle.response_id,
+                component="stt_provider",
+                event=event_name,
+                monotonic_ns=event_ns,
+                duration_ms=duration,
+                metadata=metadata,
+            )
+
         try:
             response = await client.post(
                 self.settings.stt_api_url_resolved,
@@ -313,47 +389,58 @@ class RemoteTranscriptionEngine(STTEngine):
                         "audio/wav",
                     )
                 },
+                extensions={"trace": http_trace},
             )
         except httpx.TimeoutException as error:
             raise STTTimeoutError("remote STT request timed out") from error
         except httpx.RequestError as error:
             raise STTNetworkError("remote STT request failed") from error
-        duration_ms = round((time.perf_counter() - started) * 1000, 1)
+        response_received_ns = time.perf_counter_ns()
+        duration_ms = round((response_received_ns - started_ns) / 1_000_000, 3)
         if len(response.content) > self.settings.stt_api_max_response_bytes:
             raise STTUnavailableError("remote STT response exceeded the configured size limit")
         self._raise_for_status(response)
         text = self._extract_text(response)
-        completed = time.monotonic()
+        completed_ns = time.perf_counter_ns()
+        completed = completed_ns / 1_000_000_000
         response_wall_ms = int(time.time() * 1000)
-        response_monotonic_ms = round(completed * 1000, 1)
-        LOGGER.info(
-            "Remote STT transcription completed",
-            extra={
-                "event": "STT_REMOTE_FINAL",
-                "session_id": str(state.handle.session_id),
-                "turn_id": str(state.handle.turn_id),
-                "response_id": str(state.handle.response_id),
-                "generation": generation,
-                "endpoint_host": urlsplit(self.settings.stt_api_url_resolved).netloc,
-                "request_id": response.headers.get("x-request-id"),
-                "status_code": response.status_code,
-                "audio_bytes": len(state.audio),
-                "audio_duration_ms": audio_duration_ms,
-                "request_start_timestamp_ms": request_start_wall_ms,
-                "request_start_monotonic_ms": request_start_monotonic_ms,
-                "response_timestamp_ms": response_wall_ms,
-                "response_monotonic_ms": response_monotonic_ms,
-                "request_duration_ms": duration_ms,
-                "remote_request_latency_ms": duration_ms,
-            },
-        )
+        response_monotonic_ms = round(response_received_ns / 1_000_000, 3)
+        with latency_span(
+            self._latency_tracer.emit,
+            component="sync_logging",
+            event="stt_response_log_write",
+            session_id=state.handle.session_id,
+            turn_id=state.handle.turn_id,
+            response_id=state.handle.response_id,
+        ):
+            LOGGER.info(
+                "Remote STT transcription completed",
+                extra={
+                    "event": "STT_REMOTE_FINAL",
+                    "session_id": str(state.handle.session_id),
+                    "turn_id": str(state.handle.turn_id),
+                    "response_id": str(state.handle.response_id),
+                    "generation": generation,
+                    "endpoint_host": urlsplit(self.settings.stt_api_url_resolved).netloc,
+                    "request_id": response.headers.get("x-request-id"),
+                    "status_code": response.status_code,
+                    "audio_bytes": len(state.audio),
+                    "audio_duration_ms": audio_duration_ms,
+                    "request_start_timestamp_ms": request_start_wall_ms,
+                    "request_start_monotonic_ms": request_start_monotonic_ms,
+                    "response_timestamp_ms": response_wall_ms,
+                    "response_monotonic_ms": response_monotonic_ms,
+                    "request_duration_ms": duration_ms,
+                    "remote_request_latency_ms": duration_ms,
+                },
+            )
         self._latency_tracer.emit(
             session_id=state.handle.session_id,
             turn_id=state.handle.turn_id,
             response_id=state.handle.response_id,
             component="stt",
             event="stt_response_received",
-            monotonic_ms=response_monotonic_ms,
+            monotonic_ns=response_received_ns,
             duration_ms=duration_ms,
             metadata={"status_code": response.status_code},
         )
@@ -363,7 +450,16 @@ class RemoteTranscriptionEngine(STTEngine):
             response_id=state.handle.response_id,
             component="stt",
             event="stt_final",
-            monotonic_ms=response_monotonic_ms,
+            monotonic_ns=completed_ns,
+        )
+        self._latency_tracer.emit(
+            session_id=state.handle.session_id,
+            turn_id=state.handle.turn_id,
+            response_id=state.handle.response_id,
+            component="stt",
+            event="stt_final_parsed",
+            monotonic_ns=completed_ns,
+            metadata={"text_characters": len(text)},
         )
         return STTEngineFinal(
             session_id=state.handle.session_id,

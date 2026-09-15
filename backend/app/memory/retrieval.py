@@ -83,6 +83,7 @@ async def structured_retrieve(
     user_id: uuid.UUID,
     plan: MemoryQueryPlan,
     limit: int,
+    trace: Callable[[str, float, dict[str, Any]], None] | None = None,
 ) -> list[MemoryCandidate]:
     query = _base_memory_query(user_id, plan)
     if plan.intent == MemoryIntent.LATEST:
@@ -97,7 +98,14 @@ async def structured_retrieve(
         query = query.order_by(
             MemoryItem.salience.desc(), MemoryItem.created_at.desc(), MemoryItem.id.desc()
         )
+    started_ns = time.perf_counter_ns()
     rows = list((await session.scalars(query.limit(limit))).all())
+    if trace is not None:
+        trace(
+            "structured_db_query",
+            (time.perf_counter_ns() - started_ns) / 1_000_000,
+            {"started_monotonic_ns": started_ns},
+        )
     return [
         MemoryCandidate(
             memory_id=row.id,
@@ -120,6 +128,7 @@ async def fts_retrieve(
     user_id: uuid.UUID,
     plan: MemoryQueryPlan,
     limit: int,
+    trace: Callable[[str, float, dict[str, Any]], None] | None = None,
 ) -> list[MemoryCandidate]:
     # Use a phrase over meaningful terms. This avoids treating generic words
     # such as "favorite" as sufficient evidence while retaining exact lexical
@@ -134,6 +143,7 @@ async def fts_retrieve(
     tsquery = func.websearch_to_tsquery("simple", f'"{" ".join(terms)}"')
     query = _base_memory_query(user_id, plan).where(MemoryItem.search_tsv.op("@@")(tsquery))
     rank = func.ts_rank_cd(MemoryItem.search_tsv, tsquery)
+    started_ns = time.perf_counter_ns()
     rows = list(
         (
             await session.execute(
@@ -143,6 +153,12 @@ async def fts_retrieve(
             )
         ).all()
     )
+    if trace is not None:
+        trace(
+            "fts_db_query",
+            (time.perf_counter_ns() - started_ns) / 1_000_000,
+            {"started_monotonic_ns": started_ns},
+        )
     return [
         MemoryCandidate(
             memory_id=row[0].id,
@@ -186,10 +202,14 @@ async def dense_retrieve(
     limit: int,
     trace: Callable[[str, float, dict[str, Any]], None] | None = None,
 ) -> list[MemoryCandidate]:
-    embedding_started = time.monotonic()
+    embedding_started_ns = time.perf_counter_ns()
     embedding = (await provider.embed((plan.normalized_query,))).vectors[0]
     if trace is not None:
-        trace("embedding", (time.monotonic() - embedding_started) * 1000, {})
+        trace(
+            "embedding",
+            (time.perf_counter_ns() - embedding_started_ns) / 1_000_000,
+            {"started_monotonic_ns": embedding_started_ns},
+        )
     distance = MemoryChunk.embedding.cosine_distance(list(embedding))
     minimum_distance = func.min(distance).label("distance")
     query = (
@@ -207,7 +227,14 @@ async def dense_retrieve(
         .order_by(minimum_distance.asc(), MemoryItem.id.asc())
         .limit(limit)
     )
+    query_started_ns = time.perf_counter_ns()
     rows = list((await session.execute(query)).all())
+    if trace is not None:
+        trace(
+            "vector_db_query",
+            (time.perf_counter_ns() - query_started_ns) / 1_000_000,
+            {"started_monotonic_ns": query_started_ns},
+        )
     return [
         MemoryCandidate(
             memory_id=row[0].id,
@@ -370,28 +397,41 @@ class MemoryRetrievalService:
         # providers can still run independently when they are enabled.
         structured: list[MemoryCandidate] = []
         if should_run_structured_retrieval(plan):
+            structured_started_ns = time.perf_counter_ns()
             structured = await structured_retrieve(
                 session,
                 user_id=user_id,
                 plan=plan,
                 limit=self.settings.memory_candidate_count,
+                trace=trace,
             )
-        fts_started = time.monotonic()
+            if trace is not None:
+                trace(
+                    "structured",
+                    (time.perf_counter_ns() - structured_started_ns) / 1_000_000,
+                    {"count": len(structured), "started_monotonic_ns": structured_started_ns},
+                )
+        fts_started_ns = time.perf_counter_ns()
         fts = await fts_retrieve(
             session,
             user_id=user_id,
             plan=plan,
             limit=self.settings.memory_candidate_count,
+            trace=trace,
         )
         if trace is not None:
-            trace("fts", (time.monotonic() - fts_started) * 1000, {"count": len(fts)})
+            trace(
+                "fts",
+                (time.perf_counter_ns() - fts_started_ns) / 1_000_000,
+                {"count": len(fts), "started_monotonic_ns": fts_started_ns},
+            )
         sources: list[Sequence[MemoryCandidate]] = [fts]
         if structured:
             sources.insert(0, structured)
         provider_error: str | None = None
         if self.embedding_provider is not None:
             try:
-                vector_started = time.monotonic()
+                vector_started_ns = time.perf_counter_ns()
                 sources.append(
                     await dense_retrieve(
                         session,
@@ -405,22 +445,29 @@ class MemoryRetrievalService:
                 if trace is not None:
                     trace(
                         "vector_search",
-                        (time.monotonic() - vector_started) * 1000,
-                        {"count": len(sources[-1])},
+                        (time.perf_counter_ns() - vector_started_ns) / 1_000_000,
+                        {
+                            "count": len(sources[-1]),
+                            "started_monotonic_ns": vector_started_ns,
+                        },
                     )
             except MemoryProviderError as error:
                 provider_error = error.code
-        rrf_started = time.monotonic()
+        rrf_started_ns = time.perf_counter_ns()
         fused = fuse_candidates(
             sources,
             k=self.settings.memory_rrf_k,
             limit=self.settings.memory_candidate_count,
         )
         if trace is not None:
-            trace("rrf", (time.monotonic() - rrf_started) * 1000, {"count": len(fused)})
+            trace(
+                "rrf",
+                (time.perf_counter_ns() - rrf_started_ns) / 1_000_000,
+                {"count": len(fused), "started_monotonic_ns": rrf_started_ns},
+            )
         if self.reranker is not None and fused:
             try:
-                rerank_started = time.monotonic()
+                rerank_started_ns = time.perf_counter_ns()
                 fused = await rerank_fused(
                     fused,
                     query=plan.normalized_query,
@@ -430,8 +477,8 @@ class MemoryRetrievalService:
                 if trace is not None:
                     trace(
                         "rerank",
-                        (time.monotonic() - rerank_started) * 1000,
-                        {"count": len(fused)},
+                        (time.perf_counter_ns() - rerank_started_ns) / 1_000_000,
+                        {"count": len(fused), "started_monotonic_ns": rerank_started_ns},
                     )
                 fused = apply_relevance_boundary(
                     fused,

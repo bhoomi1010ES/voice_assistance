@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 
@@ -116,6 +117,32 @@ async def test_service_retries_only_before_first_output() -> None:
     assert [event.sequence for event in events] == list(range(len(events)))
     assert events[-1].event_type == "response_completed"
     assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_traces_semaphore_wait_and_retry_backoff(monkeypatch, tmp_path) -> None:
+    trace_path = tmp_path / "service-trace.jsonl"
+    monkeypatch.setenv("LATENCY_TRACE_PATH", str(trace_path))
+    provider = RetryProvider()
+    service = LLMService(_settings(), provider=provider)
+    await service.initialize()
+    request = _request()
+
+    events = [event async for event in service.stream(request)]
+    await service.close()
+
+    records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    turn_records = [record for record in records if record.get("turn_id") == str(request.turn_id)]
+    by_event = {record["event"]: record for record in turn_records}
+    assert {
+        "llm_semaphore_wait_started",
+        "llm_semaphore_acquired",
+        "llm_semaphore_released",
+    } <= set(by_event)
+    assert by_event["llm_semaphore_acquired"]["metadata"]["queue_wait_ms"] >= 0
+    assert by_event["llm_semaphore_released"]["metadata"]["execution_ms"] >= 0
+    assert {"llm_retry_started", "llm_retry_completed"} <= set(by_event)
+    assert events[-1].event_type == "response_completed"
 
 
 @pytest.mark.asyncio

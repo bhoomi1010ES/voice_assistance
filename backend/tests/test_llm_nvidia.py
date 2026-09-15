@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 
@@ -121,6 +122,93 @@ async def test_nvidia_stream_maps_text_usage_and_completion() -> None:
     assert completed.provider_request_id == "header-request"
     assert completed.returned_model == "returned-model"
     assert completed.finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_nvidia_trace_records_adapter_and_stream_boundaries(monkeypatch, tmp_path) -> None:
+    trace_path = tmp_path / "llm-trace.jsonl"
+    monkeypatch.setenv("LATENCY_TRACE_PATH", str(trace_path))
+    body = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+    body += 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+    body += "data: [DONE]\n\n"
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=body))
+    )
+    provider = NvidiaProvider(_settings(), client=client)
+    request = _request()
+    await _collect(provider, request)
+    await client.aclose()
+
+    records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    turn_records = [record for record in records if record.get("turn_id") == str(request.turn_id)]
+    events = {record["event"] for record in turn_records}
+    assert {
+        "llm_prepare_started",
+        "llm_prepare_completed",
+        "provider_prepare_started",
+        "provider_prepare_completed",
+        "http_request_started",
+        "llm_request_started",
+        "stream_opened",
+        "llm_stream_opened",
+        "first_sse_event",
+        "llm_first_sse_event",
+        "llm_first_event",
+        "first_content_token",
+        "llm_first_content_token",
+    } <= events
+    assert all(record["monotonic_ns"] > 0 for record in turn_records)
+    assert '"ok"' not in trace_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_nvidia_trace_records_tcp_and_response_header_boundaries(
+    monkeypatch, tmp_path
+) -> None:
+    trace_path = tmp_path / "network-trace.jsonl"
+    monkeypatch.setenv("LATENCY_TRACE_PATH", str(trace_path))
+    body = b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+    body += b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+    body += b"data: [DONE]\n\n"
+
+    async def respond(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        headers = await reader.readuntil(b"\r\n\r\n")
+        header_lines = headers.decode("latin1").split("\r\n")
+        content_length = next(
+            int(line.split(":", 1)[1].strip())
+            for line in header_lines
+            if line.casefold().startswith("content-length:")
+        )
+        await reader.readexactly(content_length)
+        writer.write(
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: text/event-stream\r\n"
+            + f"Content-Length: {len(body)}\r\n".encode("ascii")
+            + b"Connection: close\r\n\r\n"
+            + body
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(respond, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    provider = NvidiaProvider(_settings(llm_base_url=f"http://127.0.0.1:{port}/v1"))
+    request = _request()
+    try:
+        await _collect(provider, request)
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    turn_records = [record for record in records if record.get("turn_id") == str(request.turn_id)]
+    events = {record["event"] for record in turn_records}
+    assert "llm_connection_acquired" in events
+    assert "llm_tcp_connect_started" in events
+    assert "llm_tcp_connect_completed" in events
+    assert "response_headers_received" in events
+    assert "llm_response_headers_received" in events
 
 
 @pytest.mark.asyncio

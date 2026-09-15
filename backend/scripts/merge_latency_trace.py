@@ -68,6 +68,7 @@ def main() -> None:
             record.get("response_id"),
             record.get("timestamp_ms"),
             record.get("monotonic_ms"),
+            record.get("monotonic_ns"),
         )
         unique[key] = record
     records = list(unique.values())

@@ -13,6 +13,7 @@ from app.llm.errors import LLMConfigurationError, LLMError
 from app.llm.factory import create_llm_provider
 from app.llm.provider import LLMProvider
 from app.llm.types import LLMEvent, LLMProviderInfo, LLMRequest
+from app.services.latency_trace import LatencyTracer
 
 LOGGER = logging.getLogger("voice-assistance-backend")
 
@@ -41,6 +42,7 @@ class LLMService:
         self._initialized = False
         self._closed = False
         self._semaphore = asyncio.Semaphore(settings.llm_max_concurrent_requests)
+        self._latency_tracer = LatencyTracer()
         self._active_tasks: dict[uuid.UUID, asyncio.Task[Any]] = {}
         self._cancel_events: dict[uuid.UUID, asyncio.Event] = {}
 
@@ -114,7 +116,53 @@ class LLMService:
         self._cancel_events[request.response_id] = cancel_event
         sequence = 0
         try:
-            async with self._semaphore:
+            wait_started_ns = time.perf_counter_ns()
+            self._latency_tracer.emit(
+                session_id=request.session_id,
+                turn_id=request.turn_id,
+                response_id=request.response_id,
+                component="llm_queue",
+                event="llm_semaphore_wait_started",
+                monotonic_ns=wait_started_ns,
+                metadata={"queue": "llm_concurrency_semaphore"},
+            )
+            acquired = False
+            try:
+                await self._semaphore.acquire()
+                acquired = True
+            except BaseException:
+                wait_completed_ns = time.perf_counter_ns()
+                self._latency_tracer.emit(
+                    session_id=request.session_id,
+                    turn_id=request.turn_id,
+                    response_id=request.response_id,
+                    component="llm_queue",
+                    event="llm_semaphore_wait_completed",
+                    monotonic_ns=wait_completed_ns,
+                    duration_ms=(wait_completed_ns - wait_started_ns) / 1_000_000,
+                    metadata={
+                        "queue": "llm_concurrency_semaphore",
+                        "status": "cancelled_or_failed",
+                        "queue_wait_ms": (wait_completed_ns - wait_started_ns) / 1_000_000,
+                    },
+                )
+                raise
+            acquired_ns = time.perf_counter_ns()
+            queue_wait_ms = (acquired_ns - wait_started_ns) / 1_000_000
+            self._latency_tracer.emit(
+                session_id=request.session_id,
+                turn_id=request.turn_id,
+                response_id=request.response_id,
+                component="llm_queue",
+                event="llm_semaphore_acquired",
+                monotonic_ns=acquired_ns,
+                duration_ms=queue_wait_ms,
+                metadata={
+                    "queue": "llm_concurrency_semaphore",
+                    "queue_wait_ms": queue_wait_ms,
+                },
+            )
+            try:
                 for attempt in range(1, self.settings.llm_max_retry_attempts + 2):
                     emitted_output = False
                     try:
@@ -142,7 +190,36 @@ class LLMService:
                             and not cancel_event.is_set()
                         )
                         if can_retry:
-                            await self._sleep(self._retry_delay(error, attempt))
+                            delay_seconds = self._retry_delay(error, attempt)
+                            retry_started_ns = time.perf_counter_ns()
+                            self._latency_tracer.emit(
+                                session_id=request.session_id,
+                                turn_id=request.turn_id,
+                                response_id=request.response_id,
+                                component="llm_retry",
+                                event="llm_retry_started",
+                                monotonic_ns=retry_started_ns,
+                                metadata={
+                                    "attempt": attempt,
+                                    "backoff_ms": delay_seconds * 1000,
+                                },
+                            )
+                            await self._sleep(delay_seconds)
+                            retry_completed_ns = time.perf_counter_ns()
+                            self._latency_tracer.emit(
+                                session_id=request.session_id,
+                                turn_id=request.turn_id,
+                                response_id=request.response_id,
+                                component="llm_retry",
+                                event="llm_retry_completed",
+                                monotonic_ns=retry_completed_ns,
+                                duration_ms=(retry_completed_ns - retry_started_ns) / 1_000_000,
+                                metadata={
+                                    "attempt": attempt,
+                                    "backoff_ms": (retry_completed_ns - retry_started_ns)
+                                    / 1_000_000,
+                                },
+                            )
                             continue
                         if cancel_event.is_set():
                             return
@@ -161,6 +238,25 @@ class LLMService:
                             retryable=error.retryable,
                         )
                         return
+            finally:
+                if acquired:
+                    execution_ms = (time.perf_counter_ns() - acquired_ns) / 1_000_000
+                    self._semaphore.release()
+                    released_ns = time.perf_counter_ns()
+                    self._latency_tracer.emit(
+                        session_id=request.session_id,
+                        turn_id=request.turn_id,
+                        response_id=request.response_id,
+                        component="llm_queue",
+                        event="llm_semaphore_released",
+                        monotonic_ns=released_ns,
+                        duration_ms=execution_ms,
+                        metadata={
+                            "queue": "llm_concurrency_semaphore",
+                            "queue_wait_ms": queue_wait_ms,
+                            "execution_ms": execution_ms,
+                        },
+                    )
         finally:
             if self._active_tasks.get(request.response_id) is task:
                 self._active_tasks.pop(request.response_id, None)

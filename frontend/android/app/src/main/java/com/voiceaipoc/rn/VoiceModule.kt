@@ -809,6 +809,7 @@ class VoiceModule(
         val payload = Arguments.createMap().apply {
             putString("event", event.event)
             putDouble("timestampMs", event.timestampMs.toDouble())
+            putString("monotonicNs", SystemClock.elapsedRealtimeNanos().toString())
             putDouble("frameIndex", event.frameIndex.toDouble())
             putDouble("energyDbFs", event.energyDbFs)
             putDouble("speechDurationMs", event.speechDurationMs.toDouble())
@@ -838,6 +839,7 @@ class VoiceModule(
         val payload = Arguments.createMap().apply {
             putString("event", event.event)
             putDouble("timestampMs", event.timestampMs.toDouble())
+            putString("monotonicNs", SystemClock.elapsedRealtimeNanos().toString())
             putDouble("probability", event.probability.toDouble())
             putDouble("inferenceIndex", event.inferenceIndex.toDouble())
             putDouble("speechDurationMs", event.speechDurationMs.toDouble())

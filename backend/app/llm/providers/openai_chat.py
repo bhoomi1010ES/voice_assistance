@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -37,6 +38,7 @@ from app.llm.types import (
     LLMToolCall,
     LLMUsage,
 )
+from app.services.latency_trace import LatencyTracer, latency_span
 
 
 @dataclass
@@ -65,6 +67,7 @@ class OpenAIChatProvider:
         self._client = client
         self._owns_client = client is None
         self._initialized = False
+        self._latency_tracer = LatencyTracer()
 
     @property
     def endpoint(self) -> str:
@@ -107,6 +110,82 @@ class OpenAIChatProvider:
             raise LLMProtocolError("The LLM provider was not initialized.")
         client = self._ensure_client()
         sequence = 0
+        tracer = self._latency_tracer
+
+        def trace(
+            event_name: str,
+            *,
+            monotonic_ns: int | None = None,
+            duration_ms: float | None = None,
+            **metadata: Any,
+        ) -> None:
+            tracer.emit(
+                session_id=request.session_id,
+                turn_id=request.turn_id,
+                response_id=request.response_id,
+                component="llm_provider",
+                event=event_name,
+                monotonic_ns=monotonic_ns,
+                duration_ms=duration_ms,
+                metadata={"provider": self.provider_name, "attempt": attempt, **metadata},
+            )
+
+        transport_started: dict[str, int] = {}
+
+        async def http_trace(name: str, info: dict[str, Any]) -> None:
+            event_ns = time.perf_counter_ns()
+            if name == "connection.connect_tcp.started":
+                transport_started["tcp"] = event_ns
+                trace("llm_tcp_connect_started", monotonic_ns=event_ns)
+            elif name == "connection.connect_tcp.complete":
+                started_ns = transport_started.pop("tcp", None)
+                trace(
+                    "llm_tcp_connect_completed",
+                    monotonic_ns=event_ns,
+                    duration_ms=(event_ns - started_ns) / 1_000_000
+                    if started_ns is not None
+                    else None,
+                )
+            elif name in {
+                "http11.send_request_headers.started",
+                "http2.send_request_headers.started",
+            }:
+                # This boundary is reached after httpcore assigns a pooled or
+                # newly opened connection to this request.
+                trace("connection_acquired")
+                trace("llm_connection_acquired")
+            elif name == "connection.start_tls.started":
+                transport_started["tls"] = event_ns
+                trace("llm_tls_started", monotonic_ns=event_ns)
+            elif name == "connection.start_tls.complete":
+                started_ns = transport_started.pop("tls", None)
+                trace(
+                    "llm_tls_completed",
+                    monotonic_ns=event_ns,
+                    duration_ms=(event_ns - started_ns) / 1_000_000
+                    if started_ns is not None
+                    else None,
+                )
+            elif name in {
+                "http11.receive_response_headers.complete",
+                "http2.receive_response_headers.complete",
+            }:
+                returned = info.get("return_value")
+                status_code = None
+                if isinstance(returned, tuple) and returned:
+                    status_candidate = returned[1] if name.startswith("http11") else returned[0]
+                    if isinstance(status_candidate, int):
+                        status_code = status_candidate
+                trace(
+                    "response_headers_received",
+                    monotonic_ns=event_ns,
+                    status_code=status_code,
+                )
+                trace(
+                    "llm_response_headers_received",
+                    monotonic_ns=event_ns,
+                    status_code=status_code,
+                )
 
         def event(event_type: LLMEventType, **values: Any) -> LLMEvent:
             nonlocal sequence
@@ -127,12 +206,36 @@ class OpenAIChatProvider:
 
         yield event("request_started")
 
-        payload = self._build_payload(request)
-        headers = {
-            "Accept": "text/event-stream",
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._api_key()}",
-        }
+        with (
+            latency_span(
+                tracer.emit,
+                component="llm_provider",
+                event="llm_prepare",
+                session_id=request.session_id,
+                turn_id=request.turn_id,
+                response_id=request.response_id,
+                metadata={"provider": self.provider_name, "attempt": attempt},
+            ),
+            ExitStack() as prepare_stack,
+        ):
+            if self.provider_name == "nvidia":
+                prepare_stack.enter_context(
+                    latency_span(
+                        tracer.emit,
+                        component="llm_provider",
+                        event="provider_prepare",
+                        session_id=request.session_id,
+                        turn_id=request.turn_id,
+                        response_id=request.response_id,
+                        metadata={"provider": self.provider_name, "attempt": attempt},
+                    )
+                )
+            payload = self._build_payload(request)
+            headers = {
+                "Accept": "text/event-stream",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._api_key()}",
+            }
         provider_request_id: str | None = None
         returned_model: str | None = None
         finish_reason: str | None = None
@@ -143,11 +246,20 @@ class OpenAIChatProvider:
         event_data_bytes = 0
         saw_payload = False
         completed = False
+        first_sse_event_traced = False
+        first_content_token_traced = False
 
         async def process_data(data: str) -> AsyncIterator[LLMEvent]:
             nonlocal completed, finish_reason, provider_request_id, returned_model, saw_payload
+            nonlocal first_sse_event_traced, first_content_token_traced
             if not data:
                 return
+            if not first_sse_event_traced:
+                first_sse_event_traced = True
+                first_sse_ns = time.perf_counter_ns()
+                trace("first_sse_event", monotonic_ns=first_sse_ns)
+                trace("llm_first_sse_event", monotonic_ns=first_sse_ns)
+                trace("llm_first_event", monotonic_ns=first_sse_ns)
             if data == "[DONE]":
                 for tool_event in self._complete_tool_calls(tools, event):
                     yield tool_event
@@ -209,6 +321,19 @@ class OpenAIChatProvider:
                 text_delta = self._extract_text(delta.get("content"))
                 if text_delta:
                     full_text.append(text_delta)
+                    if not first_content_token_traced:
+                        first_content_token_traced = True
+                        token_ns = time.perf_counter_ns()
+                        trace(
+                            "first_content_token",
+                            monotonic_ns=token_ns,
+                            delta_characters=len(text_delta),
+                        )
+                        trace(
+                            "llm_first_content_token",
+                            monotonic_ns=token_ns,
+                            delta_characters=len(text_delta),
+                        )
                     yield event(
                         "text_delta",
                         delta=text_delta,
@@ -224,13 +349,19 @@ class OpenAIChatProvider:
                         for tool_event in self._apply_tool_delta(tools, tool_delta, event):
                             yield tool_event
 
+        http_started_ns = time.perf_counter_ns()
+        trace("http_request_started", monotonic_ns=http_started_ns)
+        trace("llm_request_started", monotonic_ns=http_started_ns)
         try:
             async with client.stream(
                 "POST",
                 self.endpoint,
                 headers=headers,
                 json=payload,
+                extensions={"trace": http_trace},
             ) as response:
+                trace("stream_opened")
+                trace("llm_stream_opened")
                 provider_request_id = self._header_request_id(response.headers)
                 if response.status_code < 200 or response.status_code >= 300:
                     body = await self._read_bounded_error(response)

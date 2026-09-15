@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import time
 
-from app.services.latency_trace import LatencyTracer
+from app.services.latency_trace import LatencyTracer, latency_span
 
 
 def test_latency_trace_writes_correlated_monotonic_jsonl_and_redacts_secrets(tmp_path) -> None:
@@ -23,8 +24,37 @@ def test_latency_trace_writes_correlated_monotonic_jsonl_and_redacts_secrets(tmp
     assert record["turn_id"] == "turn"
     assert record["response_id"] == "response"
     assert record["monotonic_ms"] == 123.4
+    assert record["monotonic_ns"] == 123_400_000
     assert record["duration_ms"] == 9.5
     assert record["metadata"]["api_key"] == "[redacted]"
+
+
+def test_latency_span_emits_high_resolution_duration_and_writer_cost(tmp_path) -> None:
+    path = tmp_path / "trace.jsonl"
+    tracer = LatencyTracer(path)
+    with latency_span(
+        tracer.emit,
+        component="orchestration",
+        event="test_stage",
+        session_id="session",
+        turn_id="turn",
+        response_id="response",
+    ):
+        time.sleep(0.001)
+    tracer.emit(
+        component="test",
+        event="following_event",
+        turn_id="turn",
+    )
+
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [record["event"] for record in records[:2]] == [
+        "test_stage_started",
+        "test_stage_completed",
+    ]
+    assert records[0]["monotonic_ns"] < records[1]["monotonic_ns"]
+    assert records[1]["duration_ms"] >= 1
+    assert records[-1]["trace_writer_previous"]["event"] == "test_stage_completed"
 
 
 def test_latency_trace_is_best_effort_when_parent_directory_is_unwritable(tmp_path) -> None:

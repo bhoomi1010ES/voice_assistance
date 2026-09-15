@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -41,6 +42,7 @@ except ModuleNotFoundError:  # Direct ``python backend/scripts/live_latency.py``
 
 
 CompletionEvents = frozenset({"turn_complete", "server.turn.completed", "tts_playback_complete"})
+_ANDROID_LOGCAT_TIME = re.compile(r"\d{2}-\d{2}_\d{2}:\d{2}:\d{2}\.\d{3}")
 
 _STAGES: tuple[tuple[str, str, str], ...] = (
     ("speech", "speech_start", "speech_end"),
@@ -69,6 +71,7 @@ def record_key(record: dict[str, Any]) -> tuple[Any, ...]:
         record.get("response_id"),
         record.get("timestamp_ms"),
         record.get("monotonic_ms"),
+        record.get("monotonic_ns"),
     )
 
 
@@ -83,6 +86,26 @@ def parse_log_line(line: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) and value.get("event") else None
+
+
+def build_logcat_command(adb_command: str, *, start_at_now: bool) -> list[str]:
+    """Build a logcat command that does not replay the ring buffer by default."""
+
+    command = [adb_command, "logcat", "-b", "all"]
+    if start_at_now:
+        device_time = subprocess.run(
+            [adb_command, "shell", "date", "+%m-%d_%H:%M:%S.%3N"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        ).stdout.strip()
+        if not _ANDROID_LOGCAT_TIME.fullmatch(device_time):
+            raise RuntimeError(f"Unexpected Android date for logcat start: {device_time!r}")
+        command.extend(["-T", device_time.replace("_", " ")])
+    command.extend(["-v", "threadtime"])
+    return command
 
 
 class FileTail:
@@ -159,8 +182,11 @@ class LiveCollector:
                 stderr=subprocess.PIPE,
                 text=True,
             )
+        logcat_command = build_logcat_command(self.adb_command, start_at_now=not self.clear_logcat)
+        if not self.clear_logcat:
+            print(f"Android logcat capture starts at {logcat_command[5]}", flush=True)
         self.logcat_process = subprocess.Popen(
-            [self.adb_command, "logcat", "-b", "all", "-v", "threadtime"],
+            logcat_command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

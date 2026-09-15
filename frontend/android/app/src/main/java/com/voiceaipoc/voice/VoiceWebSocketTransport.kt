@@ -137,6 +137,7 @@ class VoiceWebSocketTransport(
 
     private val stateLock = Any()
     private val drainScheduled = AtomicBoolean(false)
+    private var firstAssistantTextResponseId: String? = null
     private var webSocket: WebSocket? = null
     private var heartbeatTask: ScheduledFuture<*>? = null
     private var status = Status()
@@ -550,6 +551,18 @@ class VoiceWebSocketTransport(
                     .put("frame_count", committed.first)
                     .put("byte_count", committed.second)
                     .put("duration_ms", normalizedDuration),
+            )
+            val current = synchronized(stateLock) { status }
+            logLatency(
+                sessionId = current.sessionId,
+                turnId = current.turnId,
+                responseId = current.responseId,
+                component = "android",
+                event = "native_turn_commit_sent",
+                metadata = mapOf(
+                    "frame_count" to committed.first,
+                    "byte_count" to committed.second,
+                ),
             )
             Log.i(
                 TAG,
@@ -996,6 +1009,37 @@ class VoiceWebSocketTransport(
             null
         }
         val payload = extractServerEventPayload(eventType, json)
+        if (eventType == "transcript.final" || eventType == "voice.transcript.final.delivered") {
+            logLatency(
+                sessionId = sessionId ?: synchronized(stateLock) { status.sessionId },
+                turnId = turnId ?: synchronized(stateLock) { status.turnId },
+                responseId = responseId ?: synchronized(stateLock) { status.responseId },
+                component = "android",
+                event = "client_stt_final_received",
+                metadata = mapOf("transcript_sequence" to payload?.transcriptSequence),
+            )
+        }
+        val traceResponseId = responseId ?: synchronized(stateLock) { status.responseId }
+        val firstAssistantText = eventType == "assistant.text.delta" &&
+            !payload?.delta.isNullOrBlank() && traceResponseId != null &&
+            synchronized(stateLock) {
+                if (firstAssistantTextResponseId == traceResponseId) {
+                    false
+                } else {
+                    firstAssistantTextResponseId = traceResponseId
+                    true
+                }
+            }
+        if (firstAssistantText) {
+            logLatency(
+                sessionId = sessionId ?: synchronized(stateLock) { status.sessionId },
+                turnId = turnId ?: synchronized(stateLock) { status.turnId },
+                responseId = traceResponseId,
+                component = "android",
+                event = "first_assistant_token_received",
+                metadata = mapOf("delta_characters" to payload?.delta?.length),
+            )
+        }
         val terminalSessionEvent = eventType == "server.session.ended" ||
             (eventType == "server.error" && payload?.errorCode == "session_not_available")
         Log.i(
@@ -1276,6 +1320,7 @@ class VoiceWebSocketTransport(
         val record = JSONObject()
             .put("timestamp", java.time.Instant.now().toString())
             .put("timestamp_ms", System.currentTimeMillis())
+            .put("monotonic_ns", SystemClock.elapsedRealtimeNanos())
             .put("monotonic_ms", SystemClock.elapsedRealtime())
             .put("clock_domain", "android")
             .put("session_id", sessionId ?: JSONObject.NULL)
@@ -1283,6 +1328,8 @@ class VoiceWebSocketTransport(
             .put("response_id", responseId ?: JSONObject.NULL)
             .put("component", component)
             .put("event", event)
+            .put("duration_ms", JSONObject.NULL)
+            .put("metadata", JSONObject())
         if (metadata.isNotEmpty()) {
             val safe = JSONObject()
             metadata.forEach { (key, value) -> safe.put(key, value ?: JSONObject.NULL) }

@@ -5,39 +5,77 @@ export type LatencyTraceInput = {
   responseId?: string | null;
   component: string;
   event: string;
+  monotonicNs?: number | null;
+  monotonicMs?: number | null;
+  clockDomain?: string;
   durationMs?: number | null;
   metadata?: Record<string, unknown>;
 };
 
-function monotonicMs(): number {
-  const performanceObject = (globalThis as { performance?: { now?: () => number } }).performance;
-  return typeof performanceObject?.now === 'function' ? performanceObject.now() : Date.now();
+function monotonicTimestamp(): {
+  monotonicMs: number | null;
+  monotonicNs: number | null;
+} {
+  const performanceObject = (
+    globalThis as { performance?: { now?: () => number } }
+  ).performance;
+  if (typeof performanceObject?.now === 'function') {
+    const value = performanceObject.now();
+    // Some React Native/Jest performance polyfills return epoch milliseconds.
+    // Such values are wall time, not a monotonic clock, so leave those fields
+    // empty instead of labeling them as monotonic.
+    if (Number.isFinite(value) && value >= Date.now() / 2) {
+      return { monotonicMs: null, monotonicNs: null };
+    }
+    if (Number.isFinite(value)) {
+      return { monotonicMs: value, monotonicNs: Math.round(value * 1_000_000) };
+    }
+  }
+  return { monotonicMs: null, monotonicNs: null };
 }
 
 function safeMetadata(
   metadata: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
   if (!metadata) return undefined;
-  const blocked = /(token|secret|password|authorization|api[_-]?key|credential)/i;
+  const blocked =
+    /(token|secret|password|authorization|api[_-]?key|credential)/i;
   return Object.fromEntries(
-    Object.entries(metadata).filter(([key]) => !blocked.test(key)).slice(0, 32),
+    Object.entries(metadata)
+      .filter(([key]) => !blocked.test(key))
+      .slice(0, 32),
   );
 }
 
 export function emitLatencyTrace(input: LatencyTraceInput): void {
   const metadata = safeMetadata(input.metadata);
+  const monotonic = monotonicTimestamp();
+  const inputNs = input.monotonicNs;
+  const monotonicNs =
+    typeof inputNs === 'number' && Number.isFinite(inputNs)
+      ? inputNs
+      : monotonic.monotonicNs;
+  const inputMs = input.monotonicMs;
+  const monotonicMs =
+    typeof inputMs === 'number' && Number.isFinite(inputMs)
+      ? inputMs
+      : monotonicNs != null
+      ? monotonicNs / 1_000_000
+      : monotonic.monotonicMs;
   const record = {
     timestamp: new Date().toISOString(),
     timestamp_ms: Date.now(),
-    monotonic_ms: Number(monotonicMs().toFixed(3)),
-    clock_domain: 'client',
+    monotonic_ns: monotonicNs,
+    monotonic_ms: monotonicMs == null ? null : Number(monotonicMs.toFixed(3)),
+    clock_domain: input.clockDomain ?? 'client',
     session_id: input.sessionId ?? null,
     turn_id: input.turnId ?? null,
     response_id: input.responseId ?? null,
     component: input.component,
     event: input.event,
-    ...(input.durationMs == null ? {} : { duration_ms: Math.max(0, input.durationMs) }),
-    ...(metadata ? { metadata } : {}),
+    duration_ms:
+      input.durationMs == null ? null : Math.max(0, input.durationMs),
+    metadata: metadata ?? {},
   };
   // Logcat/Metro collectors use this stable prefix. Logging is best-effort and
   // deliberately cannot affect the voice state machine.
