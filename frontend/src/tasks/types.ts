@@ -8,7 +8,9 @@ export type Task = {
   status: TaskStatus;
   priority: TaskPriority;
   due_at: string | null;
+  local_due_at: string | null;
   timezone: string;
+  timezone_source: string;
   source_turn_id: string | null;
   created_at: string;
   updated_at: string;
@@ -23,7 +25,9 @@ export type Reminder = {
   title: string;
   body: string | null;
   trigger_at: string;
+  local_trigger_at: string | null;
   timezone: string;
+  timezone_source: string;
   recurrence_rule: string | null;
   status: ReminderStatus;
   delivery_channel: 'push' | string;

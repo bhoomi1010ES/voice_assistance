@@ -4,6 +4,7 @@ import java.util.Collections
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CopyOnWriteArrayList
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -85,6 +86,59 @@ class TtsAudioPlayerTest {
     }
 
     @Test
+    fun summaryReportsMultiChunkWritesAndPartialWrites() {
+        val factory = FakeTrackFactory(writeLimit = 3)
+        val events = Events()
+        val player = TtsAudioPlayer(
+            trackFactory = factory,
+            listener = events,
+            startupPrebufferBytes = 4,
+            maxQueueBytes = 64,
+        )
+        val responseId = UUID.randomUUID()
+        try {
+            assertTrue(player.start(responseId, 24_000))
+            assertTrue(player.write(responseId, 7, ByteArray(10)))
+            assertTrue(player.finish(responseId))
+            waitUntil { events.summaries.size == 1 }
+
+            val summary = events.summaries.single()
+            assertEquals(1, summary.framesQueued)
+            assertEquals(1, summary.framesWritten)
+            assertEquals(10L, summary.pcmBytesQueued)
+            assertEquals(10L, summary.pcmBytesWritten)
+            assertEquals(3, summary.partialWrites)
+            assertEquals(0, summary.writeErrors)
+        } finally {
+            player.shutdown()
+        }
+    }
+
+    @Test
+    fun writeErrorIsReportedWithoutRetryingAClosedTrack() {
+        val factory = FakeTrackFactory(writeLimit = -6)
+        val events = Events()
+        val player = TtsAudioPlayer(
+            trackFactory = factory,
+            listener = events,
+            startupPrebufferBytes = 4,
+            maxQueueBytes = 64,
+        )
+        val responseId = UUID.randomUUID()
+        try {
+            assertTrue(player.start(responseId, 24_000))
+            assertTrue(player.write(responseId, 0, ByteArray(4)))
+            assertTrue(player.finish(responseId))
+            assertTrue(events.error.await(1, TimeUnit.SECONDS))
+            waitUntil { events.summaries.size == 1 }
+            assertEquals(1, events.summaries.single().writeErrors)
+            assertTrue(factory.tracks.single().released)
+        } finally {
+            player.shutdown()
+        }
+    }
+
+    @Test
     fun rejectsMicrophoneSampleRateForTts() {
         val factory = FakeTrackFactory()
         val player = TtsAudioPlayer(trackFactory = factory)
@@ -107,9 +161,18 @@ class TtsAudioPlayerTest {
     private class Events : TtsAudioPlayer.Listener {
         val started = CountDownLatch(1)
         val completed = CountDownLatch(2)
+        val error = CountDownLatch(1)
+        val summaries = CopyOnWriteArrayList<TtsAudioPlayer.PlaybackSummary>()
 
         override fun onPlaybackStarted(responseId: UUID) = started.countDown()
         override fun onPlaybackCompleted(responseId: UUID) = completed.countDown()
+        override fun onPlaybackError(responseId: UUID, errorCode: String) = error.countDown()
+        override fun onPlaybackSummary(
+            responseId: UUID,
+            summary: TtsAudioPlayer.PlaybackSummary,
+        ) {
+            summaries += summary
+        }
     }
 
     private class FakeTrackFactory(private val writeLimit: Int = Int.MAX_VALUE) :

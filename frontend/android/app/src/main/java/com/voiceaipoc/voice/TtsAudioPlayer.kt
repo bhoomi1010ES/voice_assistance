@@ -77,11 +77,30 @@ internal class TtsAudioPlayer(
         Thread(it, "VoiceAI-TtsAudioWriter").apply { isDaemon = true }
     },
 ) {
+    data class PlaybackSummary(
+        val framesQueued: Int,
+        val framesWritten: Int,
+        val pcmBytesQueued: Long,
+        val pcmBytesWritten: Long,
+        val partialWrites: Int,
+        val writeErrors: Int,
+        val underrunDelta: Int,
+    )
+
     interface Listener {
         fun onPlaybackStarted(responseId: UUID) = Unit
         fun onPlaybackCompleted(responseId: UUID) = Unit
         fun onPlaybackStopped(responseId: UUID) = Unit
         fun onPlaybackError(responseId: UUID, errorCode: String) = Unit
+        fun onPcmEnqueued(responseId: UUID, sequence: Long, bytes: Int, queuedBytes: Int) = Unit
+        fun onPcmWrite(
+            responseId: UUID,
+            sequence: Long,
+            requestedBytes: Int,
+            writtenBytes: Int,
+            queueBytesRemaining: Int,
+        ) = Unit
+        fun onPlaybackSummary(responseId: UUID, summary: PlaybackSummary) = Unit
 
         companion object {
             val NONE: Listener = object : Listener {}
@@ -97,10 +116,22 @@ internal class TtsAudioPlayer(
         var finishRequested = false
         var queuedBytes = 0
         var underrunsBefore = 0
+        var framesQueued = 0
+        var framesWritten = 0
+        var pcmBytesQueued = 0L
+        var pcmBytesWritten = 0L
+        var partialWrites = 0
+        var writeErrors = 0
+        var firstPcmWriteLogged = false
+        var writeInProgress = false
+        var cancelRequested = false
+        var resourcesStopped = false
     }
 
+    private data class Chunk(val sequence: Long, val payload: ByteArray)
+
     private val lock = Object()
-    private val queue = ArrayDeque<ByteArray>()
+    private val queue = ArrayDeque<Chunk>()
     private var generation = 0L
     private var active: Session? = null
 
@@ -147,7 +178,11 @@ internal class TtsAudioPlayer(
     }
 
     /** Enqueue only; this method never writes to AudioTrack. */
-    fun write(responseId: UUID, payload: ByteArray): Boolean {
+    fun write(responseId: UUID, payload: ByteArray): Boolean =
+        write(responseId, -1L, payload)
+
+    /** Enqueue only; AudioTrack writes happen on the dedicated writer. */
+    fun write(responseId: UUID, sequence: Long, payload: ByteArray): Boolean {
         if (payload.isEmpty()) return true
         if (payload.size % BYTES_PER_SAMPLE != 0) {
             Log.e(TAG, "TTS_PCM_REJECTED reason=odd_pcm_payload bytes=${payload.size}")
@@ -163,14 +198,17 @@ internal class TtsAudioPlayer(
                 return false
             }
             val copy = payload.copyOf()
-            queue.addLast(copy)
+            queue.addLast(Chunk(sequence, copy))
             session.queuedBytes += copy.size
+            session.framesQueued += 1
+            session.pcmBytesQueued += copy.size
             Log.i(
                 TAG,
                 "TTS_PREBUFFER queued_bytes=${session.queuedBytes} " +
                     "queued_duration_ms=${queuedDurationMs(session.queuedBytes)}",
             )
             lock.notifyAll()
+            listener.onPcmEnqueued(responseId, sequence, copy.size, session.queuedBytes)
             return true
         }
     }
@@ -179,7 +217,10 @@ internal class TtsAudioPlayer(
         synchronized(lock) {
             val session = active?.takeIf { it.responseId == responseId } ?: return false
             session.finishRequested = true
-            Log.i(TAG, "TTS_END_RECEIVED response_id=$responseId")
+            Log.i(
+                TAG,
+                "TTS_END_RECEIVED response_id=$responseId elapsedMs=${android.os.SystemClock.elapsedRealtime()}",
+            )
             lock.notifyAll()
             return true
         }
@@ -208,7 +249,7 @@ internal class TtsAudioPlayer(
     private fun runWriter(session: Session) {
         try {
             while (true) {
-                var chunk: ByteArray? = null
+                var chunk: Chunk? = null
                 var notifyStarted = false
                 var shouldComplete = false
                 synchronized(lock) {
@@ -228,10 +269,16 @@ internal class TtsAudioPlayer(
                             session.playbackStarted = true
                             Log.i(
                                 TAG,
-                                "TTS_PREBUFFER_READY queued_bytes=${session.queuedBytes} " +
-                                    "queued_duration_ms=${queuedDurationMs(session.queuedBytes)}",
+                                "TTS_PREBUFFER_READY response_id=${session.responseId} " +
+                                    "queued_bytes=${session.queuedBytes} " +
+                                    "queued_duration_ms=${queuedDurationMs(session.queuedBytes)} " +
+                                    "elapsedMs=${android.os.SystemClock.elapsedRealtime()}",
                             )
-                            Log.i(TAG, "TTS_PLAY_STARTED response_id=${session.responseId}")
+                            Log.i(
+                                TAG,
+                                "TTS_PLAY_STARTED response_id=${session.responseId} " +
+                                    "elapsedMs=${android.os.SystemClock.elapsedRealtime()}",
+                            )
                             notifyStarted = true
                         }
                     }
@@ -255,19 +302,29 @@ internal class TtsAudioPlayer(
         }
     }
 
-    private fun writeFully(session: Session, chunk: ByteArray) {
+    private fun writeFully(session: Session, chunk: Chunk) {
         var offset = 0
-        while (offset < chunk.size) {
+        while (offset < chunk.payload.size) {
             val track = synchronized(lock) {
                 if (active !== session) return
+                session.writeInProgress = true
                 session.track
             }
             val written = runCatching {
-                track.write(chunk, offset, chunk.size - offset, AudioTrack.WRITE_BLOCKING)
+                track.write(
+                    chunk.payload,
+                    offset,
+                    chunk.payload.size - offset,
+                    AudioTrack.WRITE_BLOCKING,
+                )
             }.getOrElse {
+                synchronized(lock) {
+                    session.writeInProgress = false
+                }
                 fail(session, "write_exception_${it::class.java.simpleName}")
                 return
             }
+            synchronized(lock) { session.writeInProgress = false }
             if (written < 0) {
                 Log.e(TAG, "TTS_PCM_WRITE_ERROR code=$written")
                 fail(session, "write_error_$written")
@@ -278,20 +335,48 @@ internal class TtsAudioPlayer(
                 continue
             }
             offset += written
+            var queueBytesRemaining = 0
+            var cancelled = false
             synchronized(lock) {
-                if (active !== session) return
                 session.queuedBytes = (session.queuedBytes - written).coerceAtLeast(0)
+                session.pcmBytesWritten += written
+                if (offset == chunk.payload.size) session.framesWritten += 1
+                if (offset < chunk.payload.size) session.partialWrites += 1
+                queueBytesRemaining = session.queuedBytes
+                cancelled = session.cancelRequested
             }
             Log.i(
                 TAG,
-                "TTS_PCM_WRITE requested_bytes=${chunk.size - offset + written} " +
-                    "written_bytes=$written queue_bytes_remaining=${session.queuedBytes}",
+                    "TTS_PCM_WRITE response_id=${session.responseId} seq=${chunk.sequence} " +
+                        "requested_bytes=${chunk.payload.size - offset + written} " +
+                        "written_bytes=$written queue_bytes_remaining=$queueBytesRemaining " +
+                        "elapsedMs=${android.os.SystemClock.elapsedRealtime()}",
             )
+            if (!session.firstPcmWriteLogged) {
+                session.firstPcmWriteLogged = true
+                Log.i(
+                    TAG,
+                    "TTS_FIRST_PCM_WRITE response_id=${session.responseId} seq=${chunk.sequence} " +
+                        "bytes=$written elapsedMs=${android.os.SystemClock.elapsedRealtime()}",
+                )
+            }
+            listener.onPcmWrite(
+                session.responseId,
+                chunk.sequence,
+                chunk.payload.size - offset + written,
+                written,
+                queueBytesRemaining,
+            )
+            if (cancelled) {
+                synchronized(lock) { stopSessionResourcesLocked(session) }
+                return
+            }
         }
     }
 
     private fun complete(session: Session) {
         var notify = false
+        var summary: PlaybackSummary? = null
         synchronized(lock) {
             if (active !== session) return
             val underrunsAfter = session.track.underrunCount()
@@ -301,11 +386,13 @@ internal class TtsAudioPlayer(
             } else {
                 Log.i(TAG, "TTS_UNDERRUN count=$underrunsAfter delta=0")
             }
+            summary = summaryLocked(session, underrunDelta)
             stopSessionResourcesLocked(session)
             notify = session.playbackStarted
         }
         if (notify) {
             Log.i(TAG, "TTS_PLAYBACK_COMPLETED response_id=${session.responseId}")
+            listener.onPlaybackSummary(session.responseId, summary!!)
             listener.onPlaybackCompleted(session.responseId)
         }
     }
@@ -314,10 +401,14 @@ internal class TtsAudioPlayer(
         var notify = false
         synchronized(lock) {
             if (active !== session) return
+            session.writeErrors += 1
             stopSessionResourcesLocked(session)
             notify = true
         }
-        if (notify) listener.onPlaybackError(session.responseId, errorCode)
+        if (notify) {
+            listener.onPlaybackSummary(session.responseId, summary(session))
+            listener.onPlaybackError(session.responseId, errorCode)
+        }
     }
 
     private fun stopLocked(notifyStopped: Boolean): UUID? {
@@ -328,6 +419,12 @@ internal class TtsAudioPlayer(
     }
 
     private fun stopSessionResourcesLocked(session: Session) {
+        if (session.resourcesStopped) return
+        if (session.writeInProgress) {
+            session.cancelRequested = true
+            return
+        }
+        session.resourcesStopped = true
         if (active === session) active = null
         queue.clear()
         session.queuedBytes = 0
@@ -335,6 +432,21 @@ internal class TtsAudioPlayer(
         runCatching { session.track.flush() }
         runCatching { session.track.release() }
     }
+
+    private fun summary(session: Session): PlaybackSummary = synchronized(lock) {
+        summaryLocked(session, underrunDelta = 0)
+    }
+
+    private fun summaryLocked(session: Session, underrunDelta: Int): PlaybackSummary =
+        PlaybackSummary(
+            framesQueued = session.framesQueued,
+            framesWritten = session.framesWritten,
+            pcmBytesQueued = session.pcmBytesQueued,
+            pcmBytesWritten = session.pcmBytesWritten,
+            partialWrites = session.partialWrites,
+            writeErrors = session.writeErrors,
+            underrunDelta = underrunDelta,
+        )
 
     private fun queuedDurationMs(bytes: Int): Int =
         (bytes * 1_000L / (TTS_SAMPLE_RATE_HZ * BYTES_PER_SAMPLE)).toInt()

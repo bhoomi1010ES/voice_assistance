@@ -30,6 +30,7 @@ from app.llm.types import (
     LLMToolCall,
     LLMToolDefinition,
 )
+from app.services.device_time import DeviceTimeContext, format_local_time
 
 ToolHandler = Callable[["ToolExecutionContext", BaseModel], Awaitable[Any]]
 ToolArgumentNormalizer = Callable[["ToolExecutionContext", BaseModel], BaseModel]
@@ -54,6 +55,8 @@ class ToolExecutionContext:
     db: AsyncSession | None = None
     clock: Clock = field(default_factory=SystemClock)
     user_timezone: str = "UTC"
+    timezone_source: str = "device"
+    device_time_context: DeviceTimeContext | None = None
     source_transcript: str | None = None
     cancellation_check: Callable[[], bool] | None = None
     tool_execution_started: Callable[[LLMToolCall, float], Awaitable[None] | None] | None = None
@@ -574,7 +577,21 @@ class EmptyToolArguments(BaseModel):
 
 
 async def _current_time(_context: ToolExecutionContext, _arguments: BaseModel) -> dict[str, str]:
-    return {"utc": _context.clock.now_utc().isoformat()}
+    if _context.device_time_context is not None:
+        return format_local_time(_context.device_time_context)
+    fallback = DeviceTimeContext(
+        device_epoch_ms=int(_context.clock.now_utc().timestamp() * 1000),
+        timezone_id=_context.user_timezone,
+        utc_offset="+00:00",
+        locale="en",
+        source=_context.timezone_source,
+    )
+    return format_local_time(fallback)
+
+
+async def _current_date(context: ToolExecutionContext, arguments: BaseModel) -> dict[str, str]:
+    result = await _current_time(context, arguments)
+    return {key: result[key] for key in ("local_date", "timezone", "utc_offset")}
 
 
 def create_default_tool_registry() -> ToolRegistry:
@@ -583,9 +600,22 @@ def create_default_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(
         name="get_current_time",
-        description="Return the current UTC time. This is read-only.",
+        description=(
+            "Return the current local time from the authenticated device clock "
+            "and IANA timezone. This is read-only."
+        ),
         arguments_model=EmptyToolArguments,
         handler=_current_time,
+        read_only=True,
+    )
+    registry.register(
+        name="get_current_date",
+        description=(
+            "Return today's local calendar date from the authenticated device "
+            "clock and IANA timezone. This is read-only."
+        ),
+        arguments_model=EmptyToolArguments,
+        handler=_current_date,
         read_only=True,
     )
     from app.llm.reminder_tools import register_reminder_tools

@@ -4392,4 +4392,21 @@ If the Phase 0 mobile audio proof-of-concept and the first end-to-end voice loop
 
 Evidence: `docs/20260910_162126_conversation_logging.md` and `docs/evidence/conversation_logging/`.
 
+## Phase 8 TTS acceptance status — 2026-09-11
+
+- [x] Android TTS diagnostics identify WebSocket close code/reason, initiator, session/turn/response correlation, last frame, and playback state.
+- [x] AudioTrack playback remains on the dedicated writer thread; network callbacks only validate and enqueue PCM.
+- [x] First PCM, 200 ms prebuffer, playback start, first write, sequence, write, underrun, and response-summary telemetry implemented.
+- [x] Backend Kokoro generation duration, PCM duration, and RTF telemetry implemented.
+- [x] Authentication-expiry recovery refreshes HTTP auth and starts a new voice session rather than resuming a released session.
+- [x] Physical first-PCM path and turns 1–5 were heard clearly on RMX5070 in the initial run.
+- [ ] Post-auth-fix five-turn physical run with zero unexpected closes/reconnects.
+- [ ] Physical cancellation and post-cancellation response.
+- [ ] Final underrun/latency/RTF evidence and human-confirmed final JSONL record.
+- [ ] Phase 8 gate PASS.
+
+Current status: **PHASE 8: IMPLEMENTED — PHYSICAL ACCEPTANCE PENDING**. Manual testing was stopped at the user's request. Phase 9 is not started.
+
+Detailed evidence: `docs/20260911_184809_phase8_tts_acceptance_pending.md`.
+
 **End of document**

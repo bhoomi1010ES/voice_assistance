@@ -341,7 +341,9 @@ class Task(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     priority: Mapped[str] = mapped_column(String(16), nullable=False, default="normal")
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    local_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    timezone_source: Mapped[str] = mapped_column(String(16), nullable=False, default="device")
     source_turn_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
@@ -386,7 +388,11 @@ class Reminder(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
     trigger_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    local_trigger_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    timezone_source: Mapped[str] = mapped_column(String(16), nullable=False, default="device")
     recurrence_rule: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="scheduled")
     delivery_channel: Mapped[str] = mapped_column(String(32), nullable=False, default="push")

@@ -11,6 +11,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -19,7 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.async_utils import await_cleanup
-from app.core.clock import Clock, SystemClock
+from app.core.clock import Clock, DeviceEpochClock, SystemClock
 from app.core.config import Settings
 from app.llm.context import VOICE_SYSTEM_PROMPT_VERSION, build_voice_llm_request
 from app.llm.errors import LLMError
@@ -48,6 +49,13 @@ from app.services.conversation_logging import (
     ConversationLogger,
     TimingPoint,
     build_timing_payload,
+)
+from app.services.device_time import (
+    DeviceTimeContext,
+    build_device_time_context,
+    format_utc_offset,
+    timezone_for_request,
+    valid_timezone,
 )
 from app.services.task_due_dates import format_local_due_at
 from app.services.tool_idempotency import PostgresToolIdempotencyStore
@@ -81,6 +89,7 @@ from app.websocket.protocol import (
     ClientPingMessage,
     ConfirmationResolveMessage,
     ControlMessageType,
+    DeviceTimeContextPayload,
     ProtocolError,
     ResponseCancelMessage,
     ResponseRetryMessage,
@@ -239,6 +248,10 @@ class VoiceGateway:
         self._session_total_frames = 0
         self._session_total_bytes = 0
         self._session_client_metadata: dict[str, Any] | None = None
+        self._device_time_context: DeviceTimeContext | None = None
+        self._device_clock: Clock | None = None
+        self._active_timezone_source = "device"
+        self._active_timezone = "UTC"
         self._last_response_id: uuid.UUID | None = None
         self._response_turn_id: uuid.UUID | None = None
         self._connection_started = time.monotonic()
@@ -444,6 +457,20 @@ class VoiceGateway:
             await self._protocol_failure("audio_contract_mismatch", close_code=1002)
             return
 
+        safe_metadata = _safe_client_metadata(message.client_metadata)
+        self._refresh_device_time_context(
+            message.device_time_context,
+            legacy_timezone=safe_metadata.get("timezone"),
+        )
+        safe_metadata["device_time_context"] = {
+            "device_epoch_ms": self._device_time_context.device_epoch_ms,
+            "timezone_id": self._device_time_context.timezone_id,
+            "utc_offset": self._device_time_context.utc_offset,
+            "locale": self._device_time_context.locale,
+        }
+        safe_metadata["timezone"] = self._device_time_context.timezone_id
+        safe_metadata["locale"] = self._device_time_context.locale
+
         if message.resume_session_id is None:
             await self._reap_stale_sessions()
 
@@ -464,8 +491,12 @@ class VoiceGateway:
                 self.db,
                 self.principal,
                 protocol_version=message.protocol_version,
-                client_metadata=_safe_client_metadata(message.client_metadata),
+                client_metadata=safe_metadata,
             )
+
+        # A reconnect is allowed to move with the device. Replace the stored
+        # snapshot only after ownership/session validation has succeeded.
+        voice_session.client_metadata = safe_metadata
 
         acquired = await self.registry.acquire(self.owner, voice_session.id)
         if not acquired:
@@ -494,6 +525,12 @@ class VoiceGateway:
                 "stt_enabled": self._stt_enabled,
                 "stt_language": self._stt_language or self.settings.stt_language,
                 "reconnect": self.stats.reconnect,
+                "time_context": {
+                    "source": self._device_time_context.source,
+                    "timezone": self._device_time_context.timezone_id,
+                    "locale": self._device_time_context.locale,
+                    "device_epoch_ms": self._device_time_context.device_epoch_ms,
+                },
                 "timestamp_ms": int(time.time() * 1000),
                 "monotonic_ms": round(time.monotonic() * 1000, 1),
                 "backend_pid": os.getpid(),
@@ -521,6 +558,11 @@ class VoiceGateway:
                 stt={
                     "enabled": self._stt_enabled,
                     "language": self._stt_language or self.settings.stt_language,
+                },
+                time_context={
+                    "timezone": self._device_time_context.timezone_id,
+                    "locale": self._device_time_context.locale,
+                    "source": self._device_time_context.source,
                 },
                 llm=self._safe_llm_session_info(),
             )
@@ -562,6 +604,19 @@ class VoiceGateway:
 
     async def _handle_turn_start(self, message: TurnStartMessage) -> None:
         self._require_session()
+        if message.device_time_context is not None:
+            self._refresh_device_time_context(message.device_time_context)
+            if self.voice_session is not None:
+                metadata = dict(self.voice_session.client_metadata or {})
+                metadata["device_time_context"] = {
+                    "device_epoch_ms": self._device_time_context.device_epoch_ms,
+                    "timezone_id": self._device_time_context.timezone_id,
+                    "utc_offset": self._device_time_context.utc_offset,
+                    "locale": self._device_time_context.locale,
+                }
+                metadata["timezone"] = self._device_time_context.timezone_id
+                metadata["locale"] = self._device_time_context.locale
+                self.voice_session.client_metadata = metadata
         if self._stt_finalize_task is not None or self._response_turn_id is not None:
             await self._send_error("response_in_progress")
             return
@@ -867,8 +922,18 @@ class VoiceGateway:
             await self.db.rollback()
             self.stats.error_count += 1
             await self._protocol_failure("voice_persistence_unavailable", close_code=1011)
-        except Exception:  # noqa: BLE001 - isolate background turn completion failures
+        except Exception as error:  # noqa: BLE001 - isolate background turn completion failures
             self.stats.error_count += 1
+            LOGGER.exception(
+                "Voice turn completion failed",
+                extra={
+                    "event": "voice.turn.completion.failed",
+                    "session_id": str(self._active_session_id()),
+                    "turn_id": str(counters.turn_id) if "counters" in locals() else None,
+                    "response_id": (str(counters.response_id) if "counters" in locals() else None),
+                    "error_type": type(error).__name__,
+                },
+            )
             await self._protocol_failure("voice_turn_completion_failed", close_code=1011)
         finally:
             if self._stt_finalize_task is asyncio.current_task():
@@ -949,6 +1014,13 @@ class VoiceGateway:
             )
             websocket_app = getattr(getattr(self, "websocket", None), "app", None)
             memory_service = getattr(getattr(websocket_app, "state", None), "memory_service", None)
+            effective_timezone, timezone_source = timezone_for_request(
+                transcript,
+                device_timezone=self._user_timezone(),
+            )
+            self._active_timezone_source = timezone_source
+            self._active_timezone = effective_timezone
+            effective_time_context = self._time_context_for_timezone(effective_timezone)
             context = (
                 ToolExecutionContext(
                     user_id=self.principal.user_id,
@@ -971,8 +1043,10 @@ class VoiceGateway:
                         }
                     ),
                     db=self.db,
-                    clock=self._application_clock(),
-                    user_timezone=self._user_timezone(),
+                    clock=self._trusted_user_clock(),
+                    user_timezone=effective_timezone,
+                    timezone_source=timezone_source,
+                    device_time_context=effective_time_context,
                     source_transcript=transcript,
                     confirmation_requested=self._persist_confirmation_request,
                     tool_execution_started=on_tool_execution_started,
@@ -1416,6 +1490,7 @@ class VoiceGateway:
         original_turn_id = self._response_turn_id
         if original_turn_id is None:
             return False
+        active_timezone = getattr(self, "_active_timezone", None) or self._user_timezone()
         pending = PendingConfirmation.new(
             authenticated_user_id=self.principal.user_id,
             device_id=self.principal.device_id,
@@ -1432,7 +1507,8 @@ class VoiceGateway:
                 call.tool_call_id,
             ),
             ttl_seconds=self.settings.voice_confirmation_ttl_seconds,
-            user_timezone=self._user_timezone(),
+            user_timezone=active_timezone,
+            timezone_source=getattr(self, "_active_timezone_source", "device"),
         )
         stored = await store.create_or_get(pending)
         if stored.tool_name != tool.name or stored.tool_call_id != call.tool_call_id:
@@ -1480,6 +1556,7 @@ class VoiceGateway:
             tool_name=stored.tool_name,
             validated_arguments=stored.validated_tool_arguments,
             timezone=stored.user_timezone,
+            timezone_source=stored.timezone_source,
             due_at_utc=_confirmation_due_at_utc(stored.validated_tool_arguments),
             due_at_local=_confirmation_due_at_local(stored),
             expires_at=stored.expires_at.isoformat(),
@@ -1509,6 +1586,8 @@ class VoiceGateway:
                 "validated_arguments": stored.validated_tool_arguments,
                 "expires_at": stored.expires_at.isoformat(),
                 "status": stored.status,
+                "timezone": stored.user_timezone,
+                "timezone_source": stored.timezone_source,
             },
         )
         return True
@@ -1761,8 +1840,10 @@ class VoiceGateway:
             ),
             confirmed_tool_call_ids=frozenset({claimed.tool_call_id}),
             db=self.db,
-            clock=self._application_clock(),
+            clock=self._trusted_user_clock(),
             user_timezone=claimed.user_timezone,
+            timezone_source=claimed.timezone_source,
+            device_time_context=self._time_context_for_timezone(claimed.user_timezone),
             cancellation_check=lambda: not self.cancel_guard.can_emit(response_id),
             tool_execution_started=on_confirmation_execution_started,
             tool_execution_audit=self._record_tool_execution_audit,
@@ -2028,6 +2109,11 @@ class VoiceGateway:
                 "encoding": "pcm16",
                 "prebuffer_ms": TTS_STARTUP_PREBUFFER_MS,
                 "prebuffer_bytes": prebuffer_bytes,
+                "frames_sent": 0,
+                "pcm_bytes_sent": 0,
+                "tts_generation_ms": None,
+                "tts_audio_duration_ms": None,
+                "tts_rtf": None,
                 # These server-side counters describe the emitted stream.
                 # Android-only stale-frame and AudioTrack counters remain null
                 # until client telemetry is propagated back to the gateway.
@@ -2496,9 +2582,35 @@ class VoiceGateway:
                     self.access_token,
                 )
         except (AuthenticationError, AuthConfigurationError):
+            LOGGER.warning(
+                "VOICE_AUTH_REVALIDATION_FAILED",
+                extra={
+                    "event": "voice.auth.revalidation.failed",
+                    "reason": "authentication_expired_or_revoked",
+                    "session_id": str(self._active_session_id())
+                    if self._active_session_id()
+                    else None,
+                    "user_id": str(self.principal.user_id),
+                    "device_id": str(self.principal.device_id),
+                    "monotonic_ms": round(time.monotonic() * 1000, 1),
+                },
+            )
             await self._protocol_failure("authentication_expired_or_revoked", close_code=1008)
             return False
         except SQLAlchemyError:
+            LOGGER.warning(
+                "VOICE_AUTH_REVALIDATION_UNAVAILABLE",
+                extra={
+                    "event": "voice.auth.revalidation.failed",
+                    "reason": "authentication_service_unavailable",
+                    "session_id": str(self._active_session_id())
+                    if self._active_session_id()
+                    else None,
+                    "user_id": str(self.principal.user_id),
+                    "device_id": str(self.principal.device_id),
+                    "monotonic_ms": round(time.monotonic() * 1000, 1),
+                },
+            )
             await self._protocol_failure("authentication_revalidation_unavailable", close_code=1013)
             return False
         return True
@@ -2733,13 +2845,65 @@ class VoiceGateway:
         return self._application_clock().now_utc()
 
     def _application_clock(self) -> Clock:
+        """Return the server clock used for persistence and session lifecycle."""
+
         return getattr(self, "clock", SystemClock())
 
+    def _trusted_user_clock(self) -> Clock:
+        """Return device time for user-facing temporal tools when available."""
+
+        return getattr(self, "_device_clock", None) or self._application_clock()
+
+    def _refresh_device_time_context(
+        self,
+        payload: DeviceTimeContextPayload | None,
+        *,
+        legacy_timezone: str | None = None,
+    ) -> None:
+        payload_value = payload.model_dump() if payload is not None else None
+        self._device_time_context = build_device_time_context(
+            payload_value,
+            fallback_clock=getattr(self, "clock", SystemClock()),
+            fallback_timezone=self.settings.voice_default_timezone,
+            legacy_timezone=legacy_timezone,
+        )
+        self._device_clock = DeviceEpochClock(self._device_time_context.device_epoch_ms)
+        LOGGER.info(
+            "TIME_CONTEXT",
+            extra={
+                "event": "time.context",
+                "source": self._device_time_context.source,
+                "timezone": self._device_time_context.timezone_id,
+                "locale": self._device_time_context.locale,
+                "device_epoch_ms": self._device_time_context.device_epoch_ms,
+                "user_id": str(self.principal.user_id),
+                "device_id": str(self.principal.device_id),
+                "session_id": str(self._session_id) if self._session_id else None,
+            },
+        )
+
+    def _time_context_for_timezone(self, timezone_name: str) -> DeviceTimeContext | None:
+        context = getattr(self, "_device_time_context", None)
+        if context is None:
+            return None
+        valid_name = valid_timezone(timezone_name) or context.timezone_id
+        zone = context.zone if valid_name == context.timezone_id else ZoneInfo(valid_name)
+        offset = context.instant_utc.astimezone(zone).utcoffset()
+        return DeviceTimeContext(
+            device_epoch_ms=context.device_epoch_ms,
+            timezone_id=valid_name,
+            utc_offset=format_utc_offset(offset),
+            locale=context.locale,
+            source=context.source,
+        )
+
     def _user_timezone(self) -> str:
+        device_context = getattr(self, "_device_time_context", None)
+        if device_context is not None:
+            return device_context.timezone_id
+        voice_session = getattr(self, "voice_session", None)
         metadata = (
-            getattr(self.voice_session, "client_metadata", None)
-            if self.voice_session is not None
-            else None
+            getattr(voice_session, "client_metadata", None) if voice_session is not None else None
         )
         if isinstance(metadata, dict):
             timezone_name = metadata.get("timezone")
@@ -2782,6 +2946,8 @@ class VoiceGateway:
         started = False
         sent_pcm_bytes = 0
         pacing_started_at: float | None = None
+        generation_ms_total = 0.0
+        audio_duration_ms_total = 0.0
         try:
             while True:
                 sentence = await queue.get()
@@ -2799,6 +2965,18 @@ class VoiceGateway:
                     if not started:
                         started = True
                         self._tts_timing_state(turn_id)
+                        LOGGER.info(
+                            "TTS_START",
+                            extra={
+                                "event": "tts.start",
+                                "session_id": str(session_id),
+                                "turn_id": str(turn_id),
+                                "response_id": str(response_id),
+                                "sample_rate_hz": self.settings.tts_api_sample_rate_hz,
+                                "channels": 1,
+                                "encoding": "pcm16",
+                            },
+                        )
                         await self._send_tts_event(
                             "tts.started",
                             session_id=session_id,
@@ -2818,6 +2996,11 @@ class VoiceGateway:
                     )
                     sequence += 1
                     if chunk:
+                        timing_state = self._tts_timing_state(turn_id)
+                        timing = timing_state.tts
+                        assert timing is not None
+                        timing["frames_sent"] += 1
+                        timing["pcm_bytes_sent"] += len(chunk)
                         if pacing_started_at is None:
                             pacing_started_at = time.monotonic()
                         sent_pcm_bytes += len(chunk)
@@ -2829,7 +3012,38 @@ class VoiceGateway:
                         )
                         if delay > 0:
                             await asyncio.sleep(delay)
+                stream_metrics = getattr(self.tts_service, "last_stream_metrics", None)
+                if stream_metrics is not None:
+                    generation_ms_total += stream_metrics.generation_ms
+                    audio_duration_ms_total += stream_metrics.audio_duration_ms
             if started and self.cancel_guard.can_emit(response_id):
+                timing_state = self._tts_timing_state(turn_id)
+                timing = timing_state.tts
+                assert timing is not None
+                timing["tts_generation_ms"] = (
+                    round(generation_ms_total, 3) if generation_ms_total > 0 else None
+                )
+                timing["tts_audio_duration_ms"] = (
+                    round(audio_duration_ms_total, 3) if audio_duration_ms_total > 0 else None
+                )
+                timing["tts_rtf"] = (
+                    round(generation_ms_total / audio_duration_ms_total, 6)
+                    if generation_ms_total > 0 and audio_duration_ms_total > 0
+                    else None
+                )
+                LOGGER.info(
+                    "TTS_RESPONSE_METRICS",
+                    extra={
+                        "event": "tts.response.metrics",
+                        "session_id": str(session_id),
+                        "turn_id": str(turn_id),
+                        "response_id": str(response_id),
+                        "tts_generation_ms": timing["tts_generation_ms"],
+                        "tts_audio_duration_ms": timing["tts_audio_duration_ms"],
+                        "tts_rtf": timing["tts_rtf"],
+                        "pcm_bytes": timing["pcm_bytes_sent"],
+                    },
+                )
                 await self._send_tts_audio(
                     session_id=session_id,
                     turn_id=turn_id,
@@ -2963,7 +3177,19 @@ class VoiceGateway:
                         "sample_rate_hz": sample_rate_hz,
                     },
                 )
-            except (RuntimeError, WebSocketDisconnect):
+            except (RuntimeError, WebSocketDisconnect, OSError) as error:
+                LOGGER.warning(
+                    "TTS_SEND_FAILURE",
+                    extra={
+                        "event": "tts.send.failed",
+                        "session_id": str(session_id),
+                        "turn_id": str(turn_id),
+                        "response_id": str(response_id),
+                        "sequence": sequence,
+                        "exception": type(error).__name__,
+                        "message": str(error)[:240],
+                    },
+                )
                 self._closing.set()
 
     async def _persist_conversation_log(

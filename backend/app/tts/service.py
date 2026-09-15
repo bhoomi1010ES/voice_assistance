@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 
 from app.core.config import Settings
 from app.tts.base import TTSEngineInfo
-from app.tts.remote import RemoteTTSEngine
+from app.tts.remote import RemoteTTSEngine, TTSStreamMetrics
 
 
 class TTSService:
@@ -28,3 +28,7 @@ class TTSService:
 
     async def close(self) -> None:
         await self.engine.close()
+
+    @property
+    def last_stream_metrics(self) -> TTSStreamMetrics | None:
+        return self.engine.last_stream_metrics

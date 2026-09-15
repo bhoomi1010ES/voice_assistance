@@ -8,7 +8,15 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    TypeAdapter,
+    ValidationError,
+)
 
 
 class ProtocolError(ValueError):
@@ -37,6 +45,15 @@ class SttSessionConfig(BaseModel):
     language: str | None = Field(default=None, min_length=2, max_length=20)
 
 
+class DeviceTimeContextPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    device_epoch_ms: StrictInt = Field(ge=0)
+    timezone_id: StrictStr = Field(min_length=1, max_length=64)
+    utc_offset: StrictStr = Field(min_length=1, max_length=16)
+    locale: StrictStr = Field(min_length=1, max_length=32)
+
+
 class SessionStartMessage(ControlMessage):
     type: Literal["client.session.start"]
     protocol_version: int = Field(gt=0)
@@ -44,11 +61,13 @@ class SessionStartMessage(ControlMessage):
     client_metadata: dict[str, Any] = Field(default_factory=dict)
     resume_session_id: uuid.UUID | None = None
     stt: SttSessionConfig | None = None
+    device_time_context: DeviceTimeContextPayload | None = None
 
 
 class TurnStartMessage(ControlMessage):
     type: Literal["client.turn.start"]
     client_turn_id: uuid.UUID | None = None
+    device_time_context: DeviceTimeContextPayload | None = None
 
 
 class AudioCommitMessage(ControlMessage):

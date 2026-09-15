@@ -66,7 +66,8 @@ _WEEKDAY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _RELATIVE_DURATION_PATTERN = re.compile(
-    r"\bin\s+(?P<amount>\d+)\s+(?P<unit>minute|minutes|hour|hours)\b",
+    r"\bin\s+(?P<amount>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
+    r"(?P<unit>minute|minutes|hour|hours)\b",
     re.IGNORECASE,
 )
 
@@ -158,15 +159,37 @@ def _parse_expression(expression: str, now_utc: datetime, timezone_name: str) ->
 
     duration_match = _RELATIVE_DURATION_PATTERN.search(normalized)
     if duration_match:
-        amount = int(duration_match.group("amount"))
+        amount_value = duration_match.group("amount")
+        amount = (
+            int(amount_value)
+            if amount_value.isdigit()
+            else {
+                "one": 1,
+                "two": 2,
+                "three": 3,
+                "four": 4,
+                "five": 5,
+                "six": 6,
+                "seven": 7,
+                "eight": 8,
+                "nine": 9,
+                "ten": 10,
+            }[amount_value]
+        )
         if amount < 1:
             raise TaskDueDateResolutionError("relative duration must be positive")
         unit = duration_match.group("unit")
         delta = timedelta(minutes=amount) if unit.startswith("minute") else timedelta(hours=amount)
         return (now_utc + delta).astimezone(UTC)
 
-    local_date = _resolve_calendar_date(normalized, local_now.date())
     local_time = _parse_clock_time(normalized)
+    local_date = _resolve_calendar_date(
+        normalized,
+        local_now.date(),
+        local_time=local_time,
+        now_utc=now_utc,
+        zone=zone,
+    )
     if local_date is None and local_time is not None:
         local_date = local_now.date()
         candidate = _localize_strict(
@@ -183,7 +206,14 @@ def _parse_expression(expression: str, now_utc: datetime, timezone_name: str) ->
     return _localize_strict(datetime.combine(local_date, local_time), zone, label="task due date")
 
 
-def _resolve_calendar_date(value: str, local_today: date) -> date | None:
+def _resolve_calendar_date(
+    value: str,
+    local_today: date,
+    *,
+    local_time: time | None = None,
+    now_utc: datetime | None = None,
+    zone: ZoneInfo | None = None,
+) -> date | None:
     if re.search(r"\btomorrow\b", value):
         return local_today + timedelta(days=1)
     if re.search(r"\b(?:today|tonight|this\s+(?:morning|afternoon|evening))\b", value):
@@ -195,8 +225,21 @@ def _resolve_calendar_date(value: str, local_today: date) -> date | None:
     if weekday_match:
         target = WEEKDAYS[weekday_match.group("weekday").casefold()]
         days_ahead = (target - local_today.weekday()) % 7
-        if days_ahead == 0 or weekday_match.group("next"):
+        if weekday_match.group("next"):
             days_ahead = days_ahead or 7
+        elif days_ahead == 0:
+            # Same-day Tuesday is valid while the requested wall-clock time
+            # is still ahead; otherwise use the following Tuesday.
+            if local_time is None or now_utc is None or zone is None:
+                days_ahead = 7
+            else:
+                candidate = _localize_strict(
+                    datetime.combine(local_today, local_time),
+                    zone,
+                    label="task due date",
+                )
+                if candidate <= now_utc:
+                    days_ahead = 7
         return local_today + timedelta(days=days_ahead)
 
     month_match = _MONTH_DATE_PATTERN.search(value)

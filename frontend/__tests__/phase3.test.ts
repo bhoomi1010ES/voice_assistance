@@ -473,6 +473,43 @@ test('retires an unavailable resumed session and reconnects without replaying it
   expect(socket.getSnapshot().reconnectAttempt).toBe(0);
 });
 
+test('refreshes expired authentication and starts a fresh voice session', async () => {
+  jest.useFakeTimers();
+  const { socket, adapter } = createSocket(new FakeVoiceAdapter(), {
+    appState: new FakeAppState(),
+  });
+  await prepareSession(socket, adapter);
+
+  adapter.emitStatus(
+    gatewayStatus({
+      state: 'ERROR',
+      sessionStarted: true,
+      sessionId: SESSION_ID,
+      lastError: 'E_VOICE_SERVER: authentication_expired_or_revoked',
+    }),
+  );
+
+  expect(socket.getSnapshot()).toMatchObject({
+    connection: 'reconnecting',
+    session: 'idle',
+    sessionId: null,
+    turnId: null,
+    responseId: null,
+  });
+
+  await jest.advanceTimersByTimeAsync(5);
+  await jest.runAllTicks();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(adapter.startSessionResumeIds).toEqual([null, null]);
+  expect(socket.getSnapshot()).toMatchObject({
+    connection: 'connected',
+    session: 'idle',
+    sessionId: null,
+  });
+});
+
 test('keeps the reconnect budget across sockets that open then immediately close', async () => {
   jest.useFakeTimers();
   const appState = new FakeAppState();

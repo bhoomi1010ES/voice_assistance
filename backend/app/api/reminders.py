@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
@@ -52,7 +53,9 @@ def _public_response(reminder: Reminder) -> ReminderResponse:
         title=reminder.title,
         body=reminder.body,
         trigger_at=reminder.trigger_at,
+        local_trigger_at=reminder.local_trigger_at,
         timezone=reminder.timezone,
+        timezone_source=reminder.timezone_source,
         recurrence_rule=reminder.recurrence_rule,
         status=public_status,
         delivery_channel=reminder.delivery_channel,
@@ -132,7 +135,9 @@ async def create_reminder(
         title=payload.title,
         body=payload.body,
         trigger_at=trigger_at,
+        local_trigger_at=trigger_at.astimezone(ZoneInfo(timezone_name)),
         timezone=timezone_name,
+        timezone_source="explicit" if payload.timezone else "backend",
         recurrence_rule=recurrence_rule,
         status="scheduled",
         delivery_channel=payload.delivery_channel,
@@ -212,6 +217,9 @@ async def update_reminder(
     if "task_id" in payload.model_fields_set:
         reminder.task_id = payload.task_id
     reminder.timezone = timezone_name
+    reminder.local_trigger_at = reminder.trigger_at.astimezone(ZoneInfo(timezone_name))
+    if payload.timezone is not None:
+        reminder.timezone_source = "explicit"
     recurrence_changed = "recurrence_rule" in payload.model_fields_set
     should_reschedule = payload.trigger_at is not None or (
         recurrence_changed and recurrence_rule is not None
@@ -229,6 +237,7 @@ async def update_reminder(
             )
         reminder.recurrence_rule = recurrence_rule
         reminder.trigger_at = trigger_at
+        reminder.local_trigger_at = trigger_at.astimezone(ZoneInfo(timezone_name))
         reminder.delivery_id = str(uuid.uuid4())
         reminder.status = "scheduled"
         reminder.sent_at = None

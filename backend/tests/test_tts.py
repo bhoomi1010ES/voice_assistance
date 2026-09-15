@@ -66,6 +66,10 @@ async def test_remote_tts_uses_configured_speech_endpoint_and_extracts_wav_pcm()
     assert len(calls) == 1
     assert str(calls[0].url) == settings.tts_api_url
     assert calls[0].headers["authorization"] == "Bearer test-only-key"
+    assert engine.last_stream_metrics is not None
+    assert engine.last_stream_metrics.pcm_bytes == 4
+    assert engine.last_stream_metrics.audio_duration_ms == pytest.approx(0.083333, rel=1e-4)
+    assert engine.last_stream_metrics.rtf is not None
     assert json.loads(calls[0].content) == {
         "model": "kokoro",
         "voice": "af_heart",

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 from sqlalchemy import select
@@ -12,6 +14,8 @@ from app.llm.tool_loop import ToolExecutionContext, ToolRegistry
 from app.models import Reminder, Task
 from app.services.recurrence import RecurrenceResolutionError, validate_recurrence_rule
 from app.services.task_due_dates import TaskDueDateResolutionError, resolve_task_due_at
+
+LOGGER = logging.getLogger("voice-assistance-backend")
 
 
 class CreateReminderArguments(BaseModel):
@@ -66,13 +70,28 @@ def _resolve_trigger(
     trigger_expression: str | None,
 ) -> datetime | None:
     try:
-        return resolve_task_due_at(
+        resolved = resolve_task_due_at(
             due_at=trigger_at,
             due_expression=trigger_expression,
             source_transcript=context.source_transcript,
             now_utc=context.clock.now_utc(),
             timezone_name=context.user_timezone,
         )
+        if resolved is not None:
+            LOGGER.info(
+                "DATETIME_RESOLUTION",
+                extra={
+                    "event": "datetime.resolution",
+                    "input": context.source_transcript or trigger_expression,
+                    "timezone": context.user_timezone,
+                    "timezone_source": context.timezone_source,
+                    "resolved_local": resolved.astimezone(
+                        ZoneInfo(context.user_timezone)
+                    ).isoformat(),
+                    "resolved_utc": resolved.isoformat(),
+                },
+            )
+        return resolved
     except TaskDueDateResolutionError as error:
         raise LLMToolTemporalResolutionError(str(error)) from error
 
@@ -161,7 +180,9 @@ async def create_reminder_handler(
         title=arguments.title,
         body=arguments.body,
         trigger_at=arguments.trigger_at,
+        local_trigger_at=arguments.trigger_at.astimezone(ZoneInfo(context.user_timezone)),
         timezone=context.user_timezone,
+        timezone_source=context.timezone_source,
         recurrence_rule=recurrence_rule,
         status="scheduled",
         delivery_channel="push",
@@ -198,7 +219,7 @@ async def update_reminder_handler(
         reminder.body = arguments.body
     if "task_id" in arguments.model_fields_set:
         reminder.task_id = arguments.task_id
-    should_reschedule = "trigger_at" in arguments.model_fields_set or (
+    should_reschedule = bool({"trigger_at", "trigger_expression"} & arguments.model_fields_set) or (
         recurrence_changed and recurrence_rule is not None
     )
     if should_reschedule:
@@ -208,6 +229,7 @@ async def update_reminder_handler(
                 "a future trigger time is required when enabling recurrence"
             )
         reminder.trigger_at = trigger_at
+        reminder.local_trigger_at = trigger_at.astimezone(ZoneInfo(context.user_timezone))
         reminder.delivery_id = str(uuid.uuid4())
         reminder.status = "scheduled"
         reminder.sent_at = None
@@ -220,6 +242,7 @@ async def update_reminder_handler(
     if recurrence_changed:
         reminder.recurrence_rule = recurrence_rule
     reminder.timezone = context.user_timezone
+    reminder.timezone_source = context.timezone_source
     await context.db.flush()
     return _reminder_result(reminder)
 
@@ -273,7 +296,11 @@ def _reminder_result(reminder: Reminder) -> dict[str, Any]:
         "title": reminder.title,
         "body": reminder.body,
         "trigger_at": reminder.trigger_at.isoformat(),
+        "local_trigger_at": (
+            reminder.local_trigger_at.isoformat() if reminder.local_trigger_at is not None else None
+        ),
         "timezone": reminder.timezone,
+        "timezone_source": reminder.timezone_source,
         "status": reminder.status,
     }
 

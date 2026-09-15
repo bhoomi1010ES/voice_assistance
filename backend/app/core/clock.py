@@ -33,3 +33,13 @@ class FrozenClock:
 
     def now_utc(self) -> datetime:
         return self.value
+
+
+@dataclass(frozen=True)
+class DeviceEpochClock:
+    """Clock backed by one validated device epoch snapshot."""
+
+    epoch_ms: int
+
+    def now_utc(self) -> datetime:
+        return datetime.fromtimestamp(self.epoch_ms / 1000, tz=UTC)

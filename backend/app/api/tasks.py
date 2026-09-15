@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
@@ -66,7 +67,9 @@ async def create_task(
         status="pending",
         priority=payload.priority,
         due_at=due_at,
+        local_due_at=due_at.astimezone(ZoneInfo(timezone_name)) if due_at is not None else None,
         timezone=timezone_name,
+        timezone_source="explicit" if payload.timezone else "backend",
     )
     session.add(task)
     await session.commit()
@@ -157,6 +160,11 @@ async def update_task(
         task.priority = payload.priority
     task.timezone = timezone_name
     task.due_at = due_at
+    task.local_due_at = (
+        due_at.astimezone(ZoneInfo(timezone_name)) if due_at is not None else None
+    )
+    if payload.timezone is not None:
+        task.timezone_source = "explicit"
     _set_completed_at(task, payload.status)
     await session.commit()
     await session.refresh(task)

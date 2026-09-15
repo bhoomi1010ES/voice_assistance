@@ -16,6 +16,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.Locale
 import java.util.TimeZone
 
 /**
@@ -142,6 +143,23 @@ class VoiceWebSocketTransport(
     private var turnFrameCount = 0L
     private var turnByteCount = 0L
     private val ttsSequenceTracker = TtsFrameSequenceTracker()
+    private var localCloseRequested = false
+    private var localCloseReason: String? = null
+    private var activeTtsResponseId: String? = null
+    private var activeTtsFirstAudioElapsedMs: Long? = null
+    private var lastTtsFrameSequence: Long? = null
+    private var lastTtsFrameBytes = 0
+    private var lastTtsFrameReceivedElapsedMs: Long? = null
+    private var lastTtsFrameEnqueuedSequence: Long? = null
+    private var lastTtsFrameWrittenSequence: Long? = null
+    private var firstTtsEnqueueResponseId: String? = null
+    private var ttsFramesReceived = 0L
+    private var ttsFramesEnqueued = 0L
+    private var ttsPcmBytesReceived = 0L
+    private var ttsPcmBytesEnqueued = 0L
+    private var ttsSequenceGaps = 0L
+    private var ttsDuplicateFrames = 0L
+    private var ttsStaleFrames = 0L
     private val ttsAudioPlayer = TtsAudioPlayer(
         listener = object : TtsAudioPlayer.Listener {
             override fun onPlaybackStarted(responseId: java.util.UUID) =
@@ -156,6 +174,63 @@ class VoiceWebSocketTransport(
             override fun onPlaybackError(responseId: java.util.UUID, errorCode: String) {
                 Log.e(TAG, "TTS_PLAYBACK_ERROR response_id=$responseId code=$errorCode")
                 notifyTtsPlayback("tts.playback.stopped", responseId)
+            }
+
+            override fun onPcmEnqueued(
+                responseId: java.util.UUID,
+                sequence: Long,
+                bytes: Int,
+                queuedBytes: Int,
+            ) {
+                lastTtsFrameEnqueuedSequence = sequence
+                ttsFramesEnqueued += 1
+                ttsPcmBytesEnqueued += bytes
+                if (firstTtsEnqueueResponseId != responseId.toString()) {
+                    firstTtsEnqueueResponseId = responseId.toString()
+                    Log.i(
+                        TAG,
+                        "TTS_FIRST_PCM_ENQUEUED response_id=$responseId seq=$sequence " +
+                            "bytes=$bytes elapsedMs=${SystemClock.elapsedRealtime()}",
+                    )
+                }
+                Log.i(
+                    TAG,
+                    "TTS_FRAME_ENQUEUED response_id=$responseId seq=$sequence " +
+                        "bytes=$bytes queued_bytes=$queuedBytes " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
+            }
+
+            override fun onPcmWrite(
+                responseId: java.util.UUID,
+                sequence: Long,
+                requestedBytes: Int,
+                writtenBytes: Int,
+                queueBytesRemaining: Int,
+            ) {
+                lastTtsFrameWrittenSequence = sequence
+            }
+
+            override fun onPlaybackSummary(
+                responseId: java.util.UUID,
+                summary: TtsAudioPlayer.PlaybackSummary,
+            ) {
+                Log.i(
+                    TAG,
+                    "TTS_RESPONSE_SUMMARY response_id=$responseId " +
+                        "frames_received=$ttsFramesReceived frames_enqueued=$ttsFramesEnqueued " +
+                        "frames_written=${summary.framesWritten} " +
+                        "pcm_bytes_received=$ttsPcmBytesReceived " +
+                        "pcm_bytes_enqueued=$ttsPcmBytesEnqueued " +
+                        "pcm_bytes_written=${summary.pcmBytesWritten} " +
+                        "sequence_gaps=$ttsSequenceGaps duplicates=$ttsDuplicateFrames " +
+                        "stale_frames=$ttsStaleFrames partial_writes=${summary.partialWrites} " +
+                        "write_errors=${summary.writeErrors} underrun_delta=${summary.underrunDelta} " +
+                        "ws_connected_after_playback=${synchronized(stateLock) { status.connected }}",
+                )
+                if (activeTtsResponseId == responseId.toString()) {
+                    activeTtsResponseId = null
+                }
             }
         },
     )
@@ -192,6 +267,8 @@ class VoiceWebSocketTransport(
             }
             socketToCancel = webSocket
             webSocket = null
+            localCloseRequested = false
+            localCloseReason = null
             status = status.copy(
                 state = State.CONNECTING,
                 connected = false,
@@ -238,6 +315,8 @@ class VoiceWebSocketTransport(
         synchronized(stateLock) {
             if (status.state == State.DISCONNECTED) return
             socketToClose = webSocket
+            localCloseRequested = true
+            localCloseReason = "client_disconnect"
             status = status.copy(state = State.CLOSING, connected = false, turnActive = false)
         }
         sendQueue.clear()
@@ -275,8 +354,10 @@ class VoiceWebSocketTransport(
                 JSONObject()
                     .put("platform", "android")
                     .put("client_version", "phase3-native")
-                    .put("timezone", TimeZone.getDefault().id),
+                    .put("timezone", TimeZone.getDefault().id)
+                    .put("locale", Locale.getDefault().toLanguageTag()),
             )
+            .put("device_time_context", deviceTimeContext())
             .put("stt", JSONObject().put("enabled", true))
         if (resumeSessionId != null) message.put("resume_session_id", resumeSessionId)
         postControl(message)
@@ -300,7 +381,9 @@ class VoiceWebSocketTransport(
                 "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
         )
         notifyStatus()
-        val message = JSONObject().put("type", "client.turn.start")
+        val message = JSONObject()
+            .put("type", "client.turn.start")
+            .put("device_time_context", deviceTimeContext())
         if (clientTurnId != null) message.put("client_turn_id", clientTurnId)
         postControl(message)
         return Result(true)
@@ -476,7 +559,7 @@ class VoiceWebSocketTransport(
             }
             Log.i(
                 TAG,
-                "VOICE websocket opened wallMs=${System.currentTimeMillis()} " +
+                "WS_CONNECTED http_code=${response.code} wallMs=${System.currentTimeMillis()} " +
                     "elapsedMs=${SystemClock.elapsedRealtime()}",
             )
             synchronized(stateLock) {
@@ -498,9 +581,14 @@ class VoiceWebSocketTransport(
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
             if (!isCurrentSocket(webSocket)) return
+            val current = synchronized(stateLock) { status }
+            val initiator = if (localCloseRequested) "local" else "remote"
             Log.i(
                 TAG,
-                "VOICE websocket closing code=$code reason=$reason " +
+                "WS_CLOSING code=$code reason=${reason.take(120)} initiator=$initiator " +
+                    "session_id=${current.sessionId ?: "NONE"} turn_id=${current.turnId ?: "NONE"} " +
+                    "response_id=${current.responseId ?: "NONE"} tts_active=${activeTtsResponseId != null} " +
+                    "last_tts_seq=${lastTtsFrameSequence ?: -1} " +
                     "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
             )
             stopHeartbeat()
@@ -513,9 +601,14 @@ class VoiceWebSocketTransport(
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (!isCurrentSocket(webSocket)) return
+            val current = synchronized(stateLock) { status }
+            val initiator = if (localCloseRequested) "local" else "remote"
             Log.i(
                 TAG,
-                "VOICE websocket closed code=$code reason=$reason " +
+                "WS_CLOSED code=$code reason=${reason.take(120)} initiator=$initiator " +
+                    "session_id=${current.sessionId ?: "NONE"} turn_id=${current.turnId ?: "NONE"} " +
+                    "response_id=${current.responseId ?: "NONE"} tts_active=${activeTtsResponseId != null} " +
+                    "last_tts_seq=${lastTtsFrameSequence ?: -1} " +
                     "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
             )
             stopHeartbeat()
@@ -530,11 +623,24 @@ class VoiceWebSocketTransport(
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             if (!isCurrentSocket(webSocket)) return
+            val current = synchronized(stateLock) { status }
+            val initiator = if (localCloseRequested) "local" else "unknown"
             Log.e(
                 TAG,
-                "VOICE websocket failure type=${t::class.java.simpleName} " +
+                "WS_FAILURE exception=${t::class.java.simpleName} " +
+                    "message=${(t.message ?: "").take(240)} " +
+                    "http_code=${response?.code ?: -1} " +
+                    "session_id=${current.sessionId ?: "NONE"} turn_id=${current.turnId ?: "NONE"} " +
+                    "response_id=${current.responseId ?: "NONE"} tts_active=${activeTtsResponseId != null} " +
+                    "last_server_event=${current.lastServerEvent ?: "NONE"} " +
+                    "last_tts_seq=${lastTtsFrameSequence ?: -1} " +
+                    "last_tts_bytes=$lastTtsFrameBytes " +
+                    "last_tts_written_seq=${lastTtsFrameWrittenSequence ?: -1} " +
+                    "initiator=$initiator heartbeat_active=${heartbeatTask != null} " +
+                    "cancel_requested=${localCloseReason != null} " +
                     "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
             )
+            Log.e(TAG, "WS_FAILURE stacktrace", t)
             stopHeartbeat()
             ttsAudioPlayer.cancel()
             synchronized(stateLock) {
@@ -542,7 +648,19 @@ class VoiceWebSocketTransport(
                     this@VoiceWebSocketTransport.webSocket = null
                 }
             }
-            recordError("E_VOICE_WEBSOCKET", "Voice gateway connection failed.")
+            if (!localCloseRequested) {
+                recordError("E_VOICE_WEBSOCKET", "Voice gateway connection failed.")
+            } else {
+                synchronized(stateLock) {
+                    status = status.copy(
+                        state = State.DISCONNECTED,
+                        connected = false,
+                        turnActive = false,
+                        lastError = null,
+                    )
+                }
+                notifyStatus()
+            }
         }
     }
 
@@ -562,6 +680,15 @@ class VoiceWebSocketTransport(
         )
         val sent = webSocket?.send(message.toString()) == true
         if (!sent) recordError("E_VOICE_SEND", "Voice gateway message could not be sent.")
+    }
+
+    /**
+     * Capture the current device wall clock and timezone rules at the protocol
+     * boundary. The epoch is the absolute instant; the IANA ID is authoritative
+     * for local calendar/DST calculations. The offset is diagnostic metadata.
+     */
+    private fun deviceTimeContext(): JSONObject {
+        return buildDeviceTimeContextJson().toJson()
     }
 
     private fun scheduleDrain() {
@@ -672,6 +799,11 @@ class VoiceWebSocketTransport(
                 responseId = if (terminalSessionEvent) null else responseId ?: status.responseId,
                 lastServerEvent = eventType,
                 lastServerEventTimestampMs = System.currentTimeMillis(),
+                lastError = if (eventType == "server.error") {
+                    payload?.errorCode?.let { "E_VOICE_SERVER: $it" } ?: status.lastError
+                } else {
+                    status.lastError
+                },
             )
         }
         notifyStatus()
@@ -694,20 +826,53 @@ class VoiceWebSocketTransport(
         }
         val currentResponseId = synchronized(stateLock) { status.responseId }
         if (currentResponseId != frame.responseId.toString()) {
+            ttsStaleFrames += 1
             Log.w(TAG, "TTS_STALE_FRAME response_id=${frame.responseId} sequence=${frame.sequence}")
             return
         }
+        if (frame.startsResponse) {
+            activeTtsResponseId = frame.responseId.toString()
+            activeTtsFirstAudioElapsedMs = null
+            lastTtsFrameSequence = null
+            lastTtsFrameBytes = 0
+            lastTtsFrameReceivedElapsedMs = null
+            lastTtsFrameEnqueuedSequence = null
+            lastTtsFrameWrittenSequence = null
+            firstTtsEnqueueResponseId = null
+            ttsFramesReceived = 0
+            ttsFramesEnqueued = 0
+            ttsPcmBytesReceived = 0
+            ttsPcmBytesEnqueued = 0
+            ttsSequenceGaps = 0
+            ttsDuplicateFrames = 0
+            ttsStaleFrames = 0
+            val current = synchronized(stateLock) { status }
+            Log.i(
+                TAG,
+                "TTS_START session_id=${current.sessionId ?: "NONE"} " +
+                    "turn_id=${current.turnId ?: "NONE"} response_id=${frame.responseId} " +
+                    "sample_rate=${frame.sampleRateHz} channels=1 encoding=PCM16 " +
+                    "elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
+        }
         when (val sequenceResult = ttsSequenceTracker.observe(frame)) {
-            TtsFrameSequenceTracker.Result.GAP -> Log.e(
-                TAG,
-                "TTS_FRAME_GAP response_id=${frame.responseId} received=${frame.sequence}",
-            )
-            TtsFrameSequenceTracker.Result.DUPLICATE_OR_OUT_OF_ORDER -> Log.e(
-                TAG,
-                "TTS_FRAME_DUPLICATE_OR_OUT_OF_ORDER response_id=${frame.responseId} " +
-                    "received=${frame.sequence}",
-            )
+            TtsFrameSequenceTracker.Result.GAP -> {
+                ttsSequenceGaps += 1
+                Log.e(
+                    TAG,
+                    "TTS_FRAME_GAP response_id=${frame.responseId} received=${frame.sequence}",
+                )
+            }
+            TtsFrameSequenceTracker.Result.DUPLICATE_OR_OUT_OF_ORDER -> {
+                ttsDuplicateFrames += 1
+                Log.e(
+                    TAG,
+                    "TTS_FRAME_DUPLICATE_OR_OUT_OF_ORDER response_id=${frame.responseId} " +
+                        "received=${frame.sequence}",
+                )
+            }
             TtsFrameSequenceTracker.Result.STALE -> {
+                ttsStaleFrames += 1
                 Log.w(TAG, "TTS_STALE_FRAME response_id=${frame.responseId} sequence=${frame.sequence}")
                 return
             }
@@ -716,15 +881,30 @@ class VoiceWebSocketTransport(
         Log.i(
             TAG,
             "TTS_FRAME_RECEIVED response_id=${frame.responseId} seq=${frame.sequence} " +
-                "bytes=${frame.payload.size} starts=${frame.startsResponse} ends=${frame.endsResponse}",
+                "bytes=${frame.payload.size} starts=${frame.startsResponse} " +
+                "ends=${frame.endsResponse} elapsedMs=${SystemClock.elapsedRealtime()}",
         )
+        ttsFramesReceived += 1
+        ttsPcmBytesReceived += frame.payload.size
+        lastTtsFrameSequence = frame.sequence
+        lastTtsFrameBytes = frame.payload.size
+        lastTtsFrameReceivedElapsedMs = SystemClock.elapsedRealtime()
+        if (frame.payload.isNotEmpty() && activeTtsFirstAudioElapsedMs == null) {
+            activeTtsFirstAudioElapsedMs = lastTtsFrameReceivedElapsedMs
+            Log.i(
+                TAG,
+                "TTS_FIRST_AUDIO_RECEIVED response_id=${frame.responseId} seq=${frame.sequence} " +
+                    "bytes=${frame.payload.size} sample_rate=${frame.sampleRateHz} " +
+                    "channels=1 encoding=PCM16 elapsedMs=${activeTtsFirstAudioElapsedMs}",
+            )
+        }
         if (!isTtsOutputEnabled()) return
         if (frame.startsResponse) {
             if (!ttsAudioPlayer.start(frame.responseId, frame.sampleRateHz)) {
                 return
             }
         }
-        if (!ttsAudioPlayer.write(frame.responseId, frame.payload)) {
+        if (!ttsAudioPlayer.write(frame.responseId, frame.sequence, frame.payload)) {
             recordError("E_TTS_PLAYBACK", "TTS PCM could not be queued for playback.")
             return
         }

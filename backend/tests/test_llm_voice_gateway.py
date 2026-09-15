@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
+from app.core.clock import DeviceEpochClock, FrozenClock
 from app.core.config import Settings
 from app.llm.types import (
     LLMCapabilities,
@@ -14,6 +16,7 @@ from app.llm.types import (
     LLMToolCall,
     LLMUsage,
 )
+from app.services.device_time import build_device_time_context
 from app.websocket.cancellation import CancellationGuard
 from app.websocket.gateway import VoiceGateway
 
@@ -184,6 +187,52 @@ async def test_gateway_streams_correlated_text_and_persists_safe_metadata() -> N
     assert timing["llm_started_at"].monotonic <= timing["llm_first_token_at"].monotonic
     assert timing["llm_first_token_at"].monotonic <= timing["llm_completed_at"].monotonic
     assert timing["llm_first_token_at"].wall.tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_gateway_with_device_time_context_reaches_answer_stream() -> None:
+    """A device timezone must not fail the turn between STT and the LLM answer."""
+
+    def events(request):
+        yield _event(request, "request_started", 0)
+        yield _event(request, "text_delta", 1, delta="It is 4:22 PM.")
+        yield _event(
+            request,
+            "response_completed",
+            2,
+            text="It is 4:22 PM.",
+            finish_reason="stop",
+        )
+
+    gateway, outbound = _gateway(events)
+    backend_now = datetime(2026, 9, 11, 23, 22, tzinfo=UTC)
+    device_epoch_ms = int(datetime(2026, 9, 11, 10, 52, tzinfo=UTC).timestamp() * 1000)
+    gateway.clock = FrozenClock(backend_now)
+    gateway._device_time_context = build_device_time_context(
+        {
+            "device_epoch_ms": device_epoch_ms,
+            "timezone_id": "Asia/Kolkata",
+            "utc_offset": "+05:30",
+            "locale": "en-IN",
+        },
+        fallback_clock=gateway.clock,
+    )
+    gateway._device_clock = DeviceEpochClock(gateway._device_time_context.device_epoch_ms)
+    response_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._stream_llm_response(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=response_id,
+        transcript="What is the current time?",
+    )
+
+    assert result["status"] == "completed"
+    assert [event["type"] for event in outbound] == [
+        "assistant.text.delta",
+        "assistant.text.final",
+    ]
 
 
 @pytest.mark.asyncio

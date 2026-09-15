@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 from sqlalchemy import select
@@ -11,6 +13,8 @@ from app.llm.errors import LLMToolError, LLMToolTemporalResolutionError
 from app.llm.tool_loop import ToolExecutionContext, ToolRegistry
 from app.models import ConversationTurn, Task
 from app.services.task_due_dates import TaskDueDateResolutionError, resolve_task_due_at
+
+LOGGER = logging.getLogger("voice-assistance-backend")
 
 
 class CreateTaskArguments(BaseModel):
@@ -65,13 +69,28 @@ def _resolve_due(
     due_expression: str | None,
 ) -> datetime | None:
     try:
-        return resolve_task_due_at(
+        resolved = resolve_task_due_at(
             due_at=due_at,
             due_expression=due_expression,
             source_transcript=context.source_transcript,
             now_utc=context.clock.now_utc(),
             timezone_name=context.user_timezone,
         )
+        if resolved is not None:
+            LOGGER.info(
+                "DATETIME_RESOLUTION",
+                extra={
+                    "event": "datetime.resolution",
+                    "input": context.source_transcript or due_expression,
+                    "timezone": context.user_timezone,
+                    "timezone_source": context.timezone_source,
+                    "resolved_local": resolved.astimezone(
+                        ZoneInfo(context.user_timezone)
+                    ).isoformat(),
+                    "resolved_utc": resolved.isoformat(),
+                },
+            )
+        return resolved
     except TaskDueDateResolutionError as error:
         raise LLMToolTemporalResolutionError(str(error)) from error
 
@@ -129,7 +148,13 @@ async def create_task_handler(
         description=arguments.notes,
         priority=arguments.priority,
         due_at=arguments.due_at,
+        local_due_at=(
+            arguments.due_at.astimezone(ZoneInfo(context.user_timezone))
+            if arguments.due_at is not None
+            else None
+        ),
         timezone=context.user_timezone,
+        timezone_source=context.timezone_source,
         source_turn_id=source_turn_id,
     )
     context.db.add(task)
@@ -156,9 +181,15 @@ async def update_task_handler(
         task.completed_at = datetime.now(UTC) if arguments.status == "completed" else None
     if arguments.priority is not None:
         task.priority = arguments.priority
-    if "due_at" in arguments.model_fields_set:
+    if {"due_at", "due_expression"} & arguments.model_fields_set:
         task.due_at = arguments.due_at
+        task.local_due_at = (
+            arguments.due_at.astimezone(ZoneInfo(context.user_timezone))
+            if arguments.due_at is not None
+            else None
+        )
     task.timezone = context.user_timezone
+    task.timezone_source = context.timezone_source
     await context.db.flush()
     return _task_result(task)
 
@@ -202,7 +233,9 @@ def _task_result(task: Task) -> dict[str, Any]:
         "status": task.status,
         "priority": task.priority,
         "due_at": task.due_at.isoformat() if task.due_at is not None else None,
+        "local_due_at": task.local_due_at.isoformat() if task.local_due_at is not None else None,
         "timezone": task.timezone,
+        "timezone_source": task.timezone_source,
     }
 
 

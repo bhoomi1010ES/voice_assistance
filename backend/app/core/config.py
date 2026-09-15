@@ -186,9 +186,8 @@ class Settings(BaseSettings):
     voice_queue_capacity_frames: int = 100
     voice_reconnect_grace_seconds: int = 30
     voice_confirmation_ttl_seconds: int = Field(default=120, ge=1, le=3600)
-    # Used when a legacy client does not provide its IANA timezone in session
-    # metadata. New Android clients send their device timezone explicitly.
-    voice_default_timezone: str = "Asia/Kolkata"
+    # Used only when a legacy client does not provide a valid IANA timezone.
+    voice_default_timezone: str = "UTC"
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",

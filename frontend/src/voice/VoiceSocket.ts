@@ -306,6 +306,10 @@ const EVENTS_ALLOWED_DURING_CONNECTION_TRANSITION =
     'voice.session.stale.reaped',
   ]);
 const TERMINAL_SESSION_ERROR_CODES = new Set(['session_not_available']);
+const AUTH_EXPIRY_ERROR_CODES = new Set([
+  'authentication_expired_or_revoked',
+  'invalid_or_revoked_token',
+]);
 
 const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
   connect: connectVoiceGateway,
@@ -1104,6 +1108,10 @@ export class VoiceSocket {
     }
 
     if (nativeState === 'ERROR') {
+      if (isAuthenticationExpiredError(status.lastError)) {
+        this.handleAuthenticationExpired();
+        return;
+      }
       this.setSnapshot({
         connection: 'failed',
         error: safeVoiceError(status.lastError),
@@ -1402,6 +1410,10 @@ export class VoiceSocket {
         });
         break;
       case 'server.error':
+        if (isAuthenticationExpiredError(event.errorCode)) {
+          this.handleAuthenticationExpired();
+          break;
+        }
         if (isTerminalSessionError(event.errorCode)) {
           this.handleUnavailableSession();
           break;
@@ -1463,6 +1475,52 @@ export class VoiceSocket {
 
     if (shouldReconnect && !this.reconnectTimer) {
       this.scheduleReconnect('stale-session');
+    }
+  }
+
+  /**
+   * An authenticated WebSocket cannot refresh its JWT in place. Drop the
+   * expired session correlation, let prepareConnection refresh HTTP auth, and
+   * create a fresh voice session after reconnecting instead of resuming a
+   * session the backend has already released.
+   */
+  private handleAuthenticationExpired(): void {
+    if (this.snapshot.connection === 'reconnecting' && this.reconnectTimer) {
+      return;
+    }
+    this.retireCorrelation(
+      this.snapshot.sessionId,
+      this.snapshot.turnId,
+      this.snapshot.responseId,
+    );
+    this.clearConversationState();
+    this.sessionStartInFlight = false;
+    this.turnStartedAtMs = null;
+    this.speechEndedAtMs = null;
+    this.stopMicrophoneSafely().catch(() => undefined);
+
+    const shouldReconnect = this.desiredConnection && !this.explicitStop;
+    this.desiredSession = shouldReconnect;
+    this.allowAutoReconnect = shouldReconnect;
+    this.setSnapshot({
+      connection: shouldReconnect ? 'reconnecting' : 'failed',
+      session: 'idle',
+      turn: 'idle',
+      heartbeat: 'unknown',
+      sessionId: null,
+      turnId: null,
+      responseId: null,
+      speechDetected: false,
+      transcriptMessages: [],
+      transcriptError: null,
+      lastHeartbeatAtMs: null,
+      error: shouldReconnect
+        ? 'Voice authentication expired. Refreshing and reconnecting.'
+        : 'Voice authentication expired. Start a new session.',
+    });
+
+    if (shouldReconnect && !this.reconnectTimer) {
+      this.scheduleReconnect('authentication-expired');
     }
   }
 
@@ -2289,6 +2347,16 @@ function isTransportConnected(status: VoiceGatewayStatus): boolean {
 
 function isTerminalSessionError(code: string | undefined): boolean {
   return Boolean(code && TERMINAL_SESSION_ERROR_CODES.has(code.toLowerCase()));
+}
+
+function isAuthenticationExpiredError(
+  value: string | null | undefined,
+): boolean {
+  if (!value) {
+    return false;
+  }
+  const normalized = value.toLowerCase();
+  return [...AUTH_EXPIRY_ERROR_CODES].some(code => normalized.includes(code));
 }
 
 const MAX_TRANSCRIPT_LENGTH = 16 * 1024;

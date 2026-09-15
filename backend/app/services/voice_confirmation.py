@@ -112,6 +112,7 @@ class PendingConfirmation:
         status: ConfirmationStatus = "PENDING",
         result_content: str | None = None,
         user_timezone: str = "UTC",
+        timezone_source: str = "device",
     ) -> None:
         self.confirmation_id = confirmation_id
         self.authenticated_user_id = authenticated_user_id
@@ -128,6 +129,7 @@ class PendingConfirmation:
         self.status = status
         self.result_content = result_content
         self.user_timezone = user_timezone
+        self.timezone_source = timezone_source
 
     @classmethod
     def new(
@@ -144,6 +146,7 @@ class PendingConfirmation:
         idempotency_key: IdempotencyKey,
         ttl_seconds: int,
         user_timezone: str = "UTC",
+        timezone_source: str = "device",
     ) -> PendingConfirmation:
         created_at = _utc_now()
         return cls(
@@ -160,6 +163,7 @@ class PendingConfirmation:
             created_at=created_at,
             expires_at=created_at + timedelta(seconds=ttl_seconds),
             user_timezone=user_timezone,
+            timezone_source=timezone_source,
         )
 
     def is_expired(self, now: datetime | None = None) -> bool:
@@ -187,6 +191,7 @@ class PendingConfirmation:
             "status": self.status,
             "result_content": self.result_content,
             "user_timezone": self.user_timezone,
+            "timezone_source": self.timezone_source,
         }
 
     @classmethod
@@ -225,6 +230,7 @@ class PendingConfirmation:
             status=status,
             result_content=value.get("result_content"),
             user_timezone=str(value.get("user_timezone", "UTC")),
+            timezone_source=str(value.get("timezone_source", "device")),
         )
 
 

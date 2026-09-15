@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import httpx
@@ -20,6 +22,16 @@ from app.tts.base import (
 from app.tts.wav import WavPcmStreamParser
 
 
+@dataclass(frozen=True, slots=True)
+class TTSStreamMetrics:
+    """Monotonic provider/request metrics for one synthesized sentence."""
+
+    generation_ms: float
+    pcm_bytes: int
+    audio_duration_ms: float
+    rtf: float | None
+
+
 class RemoteTTSEngine:
     """Stream provider PCM without buffering a complete assistant response."""
 
@@ -33,6 +45,7 @@ class RemoteTTSEngine:
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
         self._info: TTSEngineInfo | None = None
+        self._last_stream_metrics: TTSStreamMetrics | None = None
 
     async def initialize(self) -> TTSEngineInfo:
         if self._info is not None:
@@ -87,6 +100,10 @@ class RemoteTTSEngine:
             "sample_rate_hz": self.settings.tts_api_sample_rate_hz,
         }
         received = 0
+        pcm_bytes = 0
+        request_started = time.monotonic()
+        self._last_stream_metrics = None
+        pending_pcm: bytes | None = None
         try:
             async with client.stream(
                 "POST",
@@ -119,8 +136,23 @@ class RemoteTTSEngine:
                     if received > self.settings.tts_api_max_response_bytes:
                         raise TTSProviderError("TTS response exceeded the configured size limit")
                     for pcm_chunk in parser.feed(chunk):
-                        yield pcm_chunk
+                        pcm_bytes += len(pcm_chunk)
+                        if pending_pcm is not None:
+                            yield pending_pcm
+                        pending_pcm = pcm_chunk
                 parser.finish()
+                generation_ms = round((time.monotonic() - request_started) * 1000, 3)
+                audio_duration_ms = pcm_bytes * 1000 / (
+                    self.settings.tts_api_sample_rate_hz * 1 * 2
+                )
+                self._last_stream_metrics = TTSStreamMetrics(
+                    generation_ms=generation_ms,
+                    pcm_bytes=pcm_bytes,
+                    audio_duration_ms=audio_duration_ms,
+                    rtf=(generation_ms / audio_duration_ms if audio_duration_ms > 0 else None),
+                )
+                if pending_pcm is not None:
+                    yield pending_pcm
         except TTSError:
             raise
         except asyncio.CancelledError as error:
@@ -134,6 +166,10 @@ class RemoteTTSEngine:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+
+    @property
+    def last_stream_metrics(self) -> TTSStreamMetrics | None:
+        return self._last_stream_metrics
 
     def _credentials(self):
         return self.settings.tts_api_key or self.settings.stt_api_key

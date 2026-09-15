@@ -162,7 +162,9 @@ class TaskResponse(BaseModel):
     status: str
     priority: str
     due_at: datetime | None
+    local_due_at: datetime | None
     timezone: str
+    timezone_source: str
     source_turn_id: uuid.UUID | None
     created_at: datetime
     updated_at: datetime
@@ -238,7 +240,9 @@ class ReminderResponse(BaseModel):
     title: str
     body: str | None
     trigger_at: datetime
+    local_trigger_at: datetime | None
     timezone: str
+    timezone_source: str
     recurrence_rule: str | None
     status: str
     delivery_channel: str
