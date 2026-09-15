@@ -588,12 +588,13 @@ export type VoiceOutputPreferences = {
   enabled: boolean;
 };
 
-/** Native VAD transitions used only to label the active UI turn. */
+/** Native VAD transitions label the active turn and gate full barge-in. */
 export type VoiceVadEvent = {
   event: string;
   timestampMs?: number | null;
   frameIndex?: number | null;
   inferenceIndex?: number | null;
+  probability?: number | null;
   speechDurationMs?: number | null;
   reason?: string | null;
 };
@@ -645,7 +646,10 @@ type NativeVoiceModule = {
   startVoiceSession: (
     resumeSessionId?: string | null,
   ) => Promise<VoiceGatewayStatus>;
-  startVoiceTurn: (clientTurnId?: string | null) => Promise<VoiceGatewayStatus>;
+  startVoiceTurn: (
+    clientTurnId?: string | null,
+    includePreRoll?: boolean,
+  ) => Promise<VoiceGatewayStatus>;
   commitVoiceAudio: (durationMs: number) => Promise<VoiceGatewayStatus>;
   cancelVoiceResponse: (reason?: string | null) => Promise<VoiceGatewayStatus>;
   stopVoicePlayback: () => Promise<VoiceGatewayStatus>;
@@ -818,8 +822,12 @@ export async function startVoiceSession(
 
 export async function startVoiceTurn(
   clientTurnId?: string | null,
+  includePreRoll = false,
 ): Promise<VoiceGatewayStatus> {
-  return requireNativeVoiceModule().startVoiceTurn(clientTurnId);
+  return requireNativeVoiceModule().startVoiceTurn(
+    clientTurnId,
+    includePreRoll,
+  );
 }
 
 export async function commitVoiceAudio(
@@ -918,6 +926,7 @@ export function subscribeVoiceVadEvent(
     'VAD_SPEECH_STOPPED',
     'SILERO_VAD_SPEECH_STARTED',
     'SILERO_VAD_SPEECH_STOPPED',
+    'SILERO_VAD_SPEECH_ACTIVITY',
   ];
   const subscriptions = eventNames.map(eventName =>
     DeviceEventEmitter.addListener(eventName, listener),

@@ -108,6 +108,16 @@ class SileroVadStateMachine(
         decisionsProcessed = decisionsProcessed,
     )
 
+    /** Returns the duration of the current confirmed speech segment. */
+    @Synchronized
+    fun currentSpeechDurationMs(inferenceIndex: Long): Long {
+        return if (state == State.SPEECH || state == State.SPEECH_STOP_PENDING) {
+            speechDurationMs(inferenceIndex)
+        } else {
+            0L
+        }
+    }
+
     private fun handleSilence(
         speech: Boolean,
         probability: Float,

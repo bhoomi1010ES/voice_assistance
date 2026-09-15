@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -182,8 +184,12 @@ async def dense_retrieve(
     plan: MemoryQueryPlan,
     provider: RemoteEmbeddingProvider,
     limit: int,
+    trace: Callable[[str, float, dict[str, Any]], None] | None = None,
 ) -> list[MemoryCandidate]:
+    embedding_started = time.monotonic()
     embedding = (await provider.embed((plan.normalized_query,))).vectors[0]
+    if trace is not None:
+        trace("embedding", (time.monotonic() - embedding_started) * 1000, {})
     distance = MemoryChunk.embedding.cosine_distance(list(embedding))
     minimum_distance = func.min(distance).label("distance")
     query = (
@@ -349,6 +355,7 @@ class MemoryRetrievalService:
         user_id: uuid.UUID,
         query: str,
         now: datetime | None = None,
+        trace: Callable[[str, float, dict[str, Any]], None] | None = None,
     ) -> MemoryRetrievalResult:
         plan = build_memory_query_plan(
             query,
@@ -369,18 +376,22 @@ class MemoryRetrievalService:
                 plan=plan,
                 limit=self.settings.memory_candidate_count,
             )
+        fts_started = time.monotonic()
         fts = await fts_retrieve(
             session,
             user_id=user_id,
             plan=plan,
             limit=self.settings.memory_candidate_count,
         )
+        if trace is not None:
+            trace("fts", (time.monotonic() - fts_started) * 1000, {"count": len(fts)})
         sources: list[Sequence[MemoryCandidate]] = [fts]
         if structured:
             sources.insert(0, structured)
         provider_error: str | None = None
         if self.embedding_provider is not None:
             try:
+                vector_started = time.monotonic()
                 sources.append(
                     await dense_retrieve(
                         session,
@@ -388,23 +399,40 @@ class MemoryRetrievalService:
                         plan=plan,
                         provider=self.embedding_provider,
                         limit=self.settings.memory_candidate_count,
+                        trace=trace,
                     )
                 )
+                if trace is not None:
+                    trace(
+                        "vector_search",
+                        (time.monotonic() - vector_started) * 1000,
+                        {"count": len(sources[-1])},
+                    )
             except MemoryProviderError as error:
                 provider_error = error.code
+        rrf_started = time.monotonic()
         fused = fuse_candidates(
             sources,
             k=self.settings.memory_rrf_k,
             limit=self.settings.memory_candidate_count,
         )
+        if trace is not None:
+            trace("rrf", (time.monotonic() - rrf_started) * 1000, {"count": len(fused)})
         if self.reranker is not None and fused:
             try:
+                rerank_started = time.monotonic()
                 fused = await rerank_fused(
                     fused,
                     query=plan.normalized_query,
                     provider=self.reranker,
                     limit=self.settings.memory_final_context_count,
                 )
+                if trace is not None:
+                    trace(
+                        "rerank",
+                        (time.monotonic() - rerank_started) * 1000,
+                        {"count": len(fused)},
+                    )
                 fused = apply_relevance_boundary(
                     fused,
                     minimum_score=self.settings.memory_min_rerank_score,

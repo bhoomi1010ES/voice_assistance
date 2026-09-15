@@ -22,7 +22,18 @@ class CancellationGuard:
     def can_emit(self, response_id: uuid.UUID) -> bool:
         return response_id == self._active and response_id not in self._cancelled
 
-    def clear(self) -> None:
-        if self._active is not None:
-            self._cancelled.discard(self._active)
-        self._active = None
+    def is_cancelled(self, response_id: uuid.UUID) -> bool:
+        return response_id in self._cancelled
+
+    def clear(self, response_id: uuid.UUID | None = None) -> None:
+        """Clear only the expected generation when one is supplied.
+
+        A cancelled response can finish after a replacement response has been
+        activated.  In that case stale cleanup must not clear the replacement
+        generation.
+        """
+
+        expected = self._active if response_id is None else response_id
+        self._cancelled.discard(expected)
+        if response_id is None or self._active == response_id:
+            self._active = None

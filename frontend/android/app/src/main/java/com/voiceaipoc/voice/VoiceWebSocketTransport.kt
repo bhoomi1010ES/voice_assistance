@@ -142,6 +142,15 @@ class VoiceWebSocketTransport(
     private var status = Status()
     private var turnFrameCount = 0L
     private var turnByteCount = 0L
+    private var turnGeneration = 0L
+    private var awaitingTurnReadyGeneration: Long? = null
+    private var pendingCommitDurationMs: Int? = null
+    private var cancelledBargeInResponseId: String? = null
+    @Volatile
+    private var bargeInTurn = false
+    @Volatile
+    private var bargeInLivePcmLogged = false
+    private var bargeInState = BargeInState.IDLE
     private val ttsSequenceTracker = TtsFrameSequenceTracker()
     private var localCloseRequested = false
     private var localCloseReason: String? = null
@@ -160,6 +169,14 @@ class VoiceWebSocketTransport(
     private var ttsSequenceGaps = 0L
     private var ttsDuplicateFrames = 0L
     private var ttsStaleFrames = 0L
+
+    private enum class BargeInState {
+        IDLE,
+        NEW_TURN_STARTING,
+        NEW_TURN_READY,
+        NEW_TURN_RECORDING,
+        NEW_TURN_COMMITTING,
+    }
     private val ttsAudioPlayer = TtsAudioPlayer(
         listener = object : TtsAudioPlayer.Listener {
             override fun onPlaybackStarted(responseId: java.util.UUID) =
@@ -320,6 +337,12 @@ class VoiceWebSocketTransport(
             status = status.copy(state = State.CLOSING, connected = false, turnActive = false)
         }
         sendQueue.clear()
+        sendQueue.clearPreRoll()
+        bargeInTurn = false
+        awaitingTurnReadyGeneration = null
+        pendingCommitDurationMs = null
+        cancelledBargeInResponseId = null
+        bargeInState = BargeInState.IDLE
         ttsAudioPlayer.cancel()
         notifyStatus()
         socketToClose?.close(1000, "client_disconnect")
@@ -332,6 +355,12 @@ class VoiceWebSocketTransport(
             }
             status = status.copy(state = State.SESSION_STARTING)
         }
+        sendQueue.clearPreRoll()
+        bargeInTurn = false
+        awaitingTurnReadyGeneration = null
+        pendingCommitDurationMs = null
+        cancelledBargeInResponseId = null
+        bargeInState = BargeInState.IDLE
         Log.i(
             TAG,
             "VOICE session start requested resume=${resumeSessionId != null} " +
@@ -364,22 +393,59 @@ class VoiceWebSocketTransport(
         return Result(true)
     }
 
-    fun startTurn(clientTurnId: String? = null): Result {
+    fun startTurn(
+        clientTurnId: String? = null,
+        includePreRoll: Boolean = false,
+    ): Result {
+        val preRoll = if (includePreRoll) sendQueue.takePreRoll() else emptyList()
+        val nextGeneration: Long
         synchronized(stateLock) {
             if (status.state != State.SESSION_READY) {
                 return Result(false, "E_VOICE_STATE", "Start a voice session first.")
             }
-            sendQueue.clear()
-            sendQueue.resetSequence()
+            nextGeneration = turnGeneration + 1L
+            turnGeneration = nextGeneration
             turnFrameCount = 0
             turnByteCount = 0
-            status = status.copy(state = State.TURN_STARTING, turnActive = true)
+            awaitingTurnReadyGeneration = nextGeneration
+            pendingCommitDurationMs = null
+            bargeInTurn = includePreRoll
+            bargeInLivePcmLogged = false
+            bargeInState = if (includePreRoll) {
+                BargeInState.NEW_TURN_STARTING
+            } else {
+                BargeInState.IDLE
+            }
+            status = status.copy(
+                state = State.TURN_STARTING,
+                turnActive = true,
+                turnId = null,
+                responseId = null,
+            )
         }
+        sendQueue.prepareTurn(nextGeneration, preRoll)
         Log.i(
             TAG,
             "VOICE turn start requested clientTurnId=${clientTurnId ?: "NONE"} " +
+                "includePreRoll=$includePreRoll " +
                 "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
         )
+        if (includePreRoll) {
+            if (preRoll.isNotEmpty()) {
+                val bytes = preRoll.sumOf { it.payload.size }
+                Log.i(
+                    TAG,
+                    "BARGE_IN_PREROLL_ATTACHED bytes=$bytes " +
+                        "duration_ms=${preRoll.size * 20} " +
+                        "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
+            }
+            Log.i(
+                TAG,
+                "BARGE_IN_NEW_TURN_REQUESTED generation=$nextGeneration " +
+                    "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
+        }
         notifyStatus()
         val message = JSONObject()
             .put("type", "client.turn.start")
@@ -391,23 +457,72 @@ class VoiceWebSocketTransport(
 
     /** Called from the native PCM consumer; never blocks on network I/O. */
     fun offerPcmFrame(buffer: ShortArray, samplesRead: Int): Boolean {
-        synchronized(stateLock) {
+        val timestampMs = SystemClock.elapsedRealtime()
+        val turn = synchronized(stateLock) {
             if (!status.turnActive || status.state !in setOf(State.TURN_STARTING, State.STREAMING_AUDIO)) {
-                return false
+                null
+            } else {
+                Triple(status.turnId, turnGeneration, bargeInTurn)
             }
         }
-        val accepted = sendQueue.offer(buffer, samplesRead, SystemClock.elapsedRealtime())
-        if (accepted) scheduleDrain()
+        sendQueue.rememberForPreRoll(buffer, samplesRead, timestampMs)
+        if (turn == null) {
+            return false
+        }
+        val (turnId, generation, _) = turn
+        val accepted = if (turnId == null) {
+            sendQueue.offerPending(buffer, samplesRead, timestampMs, generation)
+        } else {
+            sendQueue.offerForTurn(buffer, samplesRead, timestampMs, generation)
+        }
+        if (accepted && turnId != null) {
+            synchronized(stateLock) {
+                if (bargeInTurn && bargeInState == BargeInState.NEW_TURN_READY) {
+                    transitionBargeInStateLocked(BargeInState.NEW_TURN_RECORDING)
+                }
+            }
+            scheduleDrain()
+        } else if (accepted && turnId == null) {
+            val pending = sendQueue.pendingSnapshot()
+            if (pending.depth == 1 || pending.depth % 50 == 0) {
+                Log.i(
+                    TAG,
+                    "BARGE_IN_PCM_BUFFERING frames=${pending.depth} " +
+                        "bytes=${pending.depth * PcmSendQueue.FRAME_SAMPLES * PcmSendQueue.BYTES_PER_SAMPLE} " +
+                        "generation=$generation wallMs=${System.currentTimeMillis()} " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
+            }
+        } else if (!accepted && turnId == null) {
+            val pending = sendQueue.pendingSnapshot()
+            if (pending.overflowed) {
+                Log.e(
+                    TAG,
+                    "ERROR_PENDING_TURN_BUFFER_OVERFLOW generation=$generation " +
+                        "frames=${pending.depth} dropped=${pending.droppedFrames} " +
+                        "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
+            }
+        }
         notifyStatus()
         return accepted
     }
 
     fun commitAudio(durationMs: Int): Result {
+        val normalizedDuration = durationMs.coerceAtLeast(0)
+        val waitForTurnReady: Boolean
         synchronized(stateLock) {
             if (!status.turnActive) {
                 return Result(false, "E_VOICE_STATE", "No active voice turn.")
             }
             status = status.copy(turnActive = false)
+            waitForTurnReady = status.turnId == null && awaitingTurnReadyGeneration != null
+            if (waitForTurnReady) {
+                pendingCommitDurationMs = normalizedDuration
+                if (bargeInTurn) {
+                    transitionBargeInStateLocked(BargeInState.NEW_TURN_COMMITTING)
+                }
+            }
         }
         Log.i(
             TAG,
@@ -415,6 +530,14 @@ class VoiceWebSocketTransport(
                 "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
         )
         notifyStatus()
+        if (waitForTurnReady) {
+            Log.i(
+                TAG,
+                "BARGE_IN_COMMIT_WAITING_FOR_TURN_READY wallMs=${System.currentTimeMillis()} " +
+                    "elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
+            return Result(true)
+        }
         networkExecutor.execute {
             drainQueue()
             val committed = synchronized(stateLock) {
@@ -426,7 +549,7 @@ class VoiceWebSocketTransport(
                     .put("last_sequence_no", committed.third)
                     .put("frame_count", committed.first)
                     .put("byte_count", committed.second)
-                    .put("duration_ms", durationMs.coerceAtLeast(0)),
+                    .put("duration_ms", normalizedDuration),
             )
             Log.i(
                 TAG,
@@ -434,6 +557,19 @@ class VoiceWebSocketTransport(
                     "lastSequence=${committed.third} wallMs=${System.currentTimeMillis()} " +
                     "elapsedMs=${SystemClock.elapsedRealtime()}",
             )
+            synchronized(stateLock) {
+                if (bargeInTurn) {
+                    Log.i(
+                        TAG,
+                        "BARGE_IN_NEW_TURN_COMMIT_SENT frames=${committed.first} bytes=${committed.second} " +
+                            "lastSequence=${committed.third} wallMs=${System.currentTimeMillis()} " +
+                            "elapsedMs=${SystemClock.elapsedRealtime()}",
+                    )
+                    transitionBargeInStateLocked(BargeInState.IDLE)
+                    bargeInTurn = false
+                    bargeInLivePcmLogged = false
+                }
+            }
         }
         return Result(true)
     }
@@ -442,7 +578,15 @@ class VoiceWebSocketTransport(
         val responseId = synchronized(stateLock) { status.responseId }
             ?: return Result(false, "E_VOICE_STATE", "No active response.")
         synchronized(stateLock) {
-            status = status.copy(turnActive = false)
+            status = status.copy(
+                state = State.SESSION_READY,
+                turnActive = false,
+                turnId = null,
+                responseId = null,
+            )
+            if (reason == "barge_in") {
+                cancelledBargeInResponseId = responseId
+            }
         }
         Log.i(
             TAG,
@@ -450,6 +594,7 @@ class VoiceWebSocketTransport(
                 "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
         )
         sendQueue.clear()
+        ttsAudioPlayer.cancel(runCatching { java.util.UUID.fromString(responseId) }.getOrNull())
         notifyStatus()
         postControl(
             JSONObject()
@@ -522,13 +667,15 @@ class VoiceWebSocketTransport(
             status = status.copy(turnActive = false)
         }
         sendQueue.clear()
+        sendQueue.clearPreRoll()
+        bargeInTurn = false
         notifyStatus()
         postControl(JSONObject().put("type", "client.session.end").put("reason", reason.take(128)))
         return Result(true)
     }
 
     fun getStatus(): Status = synchronized(stateLock) {
-        status.copyFromQueue(sendQueue.snapshot())
+        status.copyFromQueue(sendQueue.snapshot(), sendQueue.pendingSnapshot())
     }
 
     fun stopTtsPlayback() {
@@ -593,6 +740,12 @@ class VoiceWebSocketTransport(
             )
             stopHeartbeat()
             ttsAudioPlayer.cancel()
+            sendQueue.clear()
+            sendQueue.clearPreRoll()
+            bargeInTurn = false
+            awaitingTurnReadyGeneration = null
+            pendingCommitDurationMs = null
+            bargeInState = BargeInState.IDLE
             synchronized(stateLock) {
                 status = status.copy(state = State.CLOSING, connected = false, turnActive = false)
             }
@@ -617,6 +770,12 @@ class VoiceWebSocketTransport(
                 status = status.copy(state = State.DISCONNECTED, connected = false, turnActive = false)
             }
             sendQueue.clear()
+            sendQueue.clearPreRoll()
+            bargeInTurn = false
+            awaitingTurnReadyGeneration = null
+            pendingCommitDurationMs = null
+            cancelledBargeInResponseId = null
+            bargeInState = BargeInState.IDLE
             ttsAudioPlayer.cancel()
             notifyStatus()
         }
@@ -643,6 +802,13 @@ class VoiceWebSocketTransport(
             Log.e(TAG, "WS_FAILURE stacktrace", t)
             stopHeartbeat()
             ttsAudioPlayer.cancel()
+            sendQueue.clear()
+            sendQueue.clearPreRoll()
+            bargeInTurn = false
+            awaitingTurnReadyGeneration = null
+            pendingCommitDurationMs = null
+            cancelledBargeInResponseId = null
+            bargeInState = BargeInState.IDLE
             synchronized(stateLock) {
                 if (this@VoiceWebSocketTransport.webSocket === webSocket) {
                     this@VoiceWebSocketTransport.webSocket = null
@@ -673,13 +839,16 @@ class VoiceWebSocketTransport(
     }
 
     private fun sendControlNow(message: JSONObject) {
+        val messageType = message.optString("type", "unknown")
         Log.i(
             TAG,
-            "VOICE control sent type=${message.optString("type", "unknown")} " +
+            "VOICE control sent type=$messageType " +
                 "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
         )
         val sent = webSocket?.send(message.toString()) == true
-        if (!sent) recordError("E_VOICE_SEND", "Voice gateway message could not be sent.")
+        if (!sent) {
+            recordError("E_VOICE_SEND", "Voice gateway message could not be sent.")
+        }
     }
 
     /**
@@ -705,7 +874,27 @@ class VoiceWebSocketTransport(
 
     private fun drainQueue() {
         while (true) {
-            val frame = sendQueue.poll() ?: return
+            val frame = sendQueue.poll() ?: break
+            if (frame.ownerTurnId.isNullOrBlank()) {
+                Log.e(
+                    TAG,
+                    "ERROR_PCM_WITHOUT_TURN generation=${frame.generation} " +
+                        "sequence=${frame.sequenceNo} wallMs=${System.currentTimeMillis()} " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
+                continue
+            }
+            val currentTurnId = synchronized(stateLock) { status.turnId }
+            if (currentTurnId != frame.ownerTurnId) {
+                Log.e(
+                    TAG,
+                    "ERROR_PCM_TO_OLD_TURN frameTurnId=${frame.ownerTurnId} " +
+                        "currentTurnId=${currentTurnId ?: "NONE"} generation=${frame.generation} " +
+                        "sequence=${frame.sequenceNo} wallMs=${System.currentTimeMillis()} " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
+                continue
+            }
             val sent = webSocket?.send(ByteString.of(*VoiceBinaryFrame.encode(frame))) == true
             if (!sent) {
                 recordError("E_VOICE_SEND", "Voice gateway audio frame could not be sent.")
@@ -727,6 +916,60 @@ class VoiceWebSocketTransport(
                         "bytes=${frame.payload.size} clientTimestampMs=${frame.clientTimestampMs} " +
                         "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
+                if (bargeInTurn) {
+                    if (!bargeInLivePcmLogged) {
+                        Log.i(
+                            TAG,
+                            "BARGE_IN_LIVE_PCM_STARTED turnId=${frame.ownerTurnId} " +
+                                "generation=${frame.generation} wallMs=${System.currentTimeMillis()} " +
+                                "elapsedMs=${SystemClock.elapsedRealtime()}",
+                        )
+                        bargeInLivePcmLogged = true
+                    }
+                    Log.i(
+                        TAG,
+                        "BARGE_IN_PCM_FORWARDING turnId=${frame.ownerTurnId} " +
+                            "seq=${frame.sequenceNo} bytes=${frame.payload.size} " +
+                            "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+                    )
+                }
+            }
+        }
+        maybeSendPendingCommit()
+    }
+
+    private fun maybeSendPendingCommit() {
+        val durationMs = synchronized(stateLock) {
+            if (pendingCommitDurationMs != null && status.turnId != null && !status.turnActive) {
+                val value = pendingCommitDurationMs
+                pendingCommitDurationMs = null
+                value
+            } else {
+                null
+            }
+        } ?: return
+        val committed = synchronized(stateLock) {
+            Triple(turnFrameCount, turnByteCount, maxOf(0L, turnFrameCount - 1))
+        }
+        sendControlNow(
+            JSONObject()
+                .put("type", "client.audio.commit")
+                .put("last_sequence_no", committed.third)
+                .put("frame_count", committed.first)
+                .put("byte_count", committed.second)
+                .put("duration_ms", durationMs),
+        )
+        Log.i(
+            TAG,
+            "BARGE_IN_NEW_TURN_COMMIT_SENT frames=${committed.first} bytes=${committed.second} " +
+                "lastSequence=${committed.third} wallMs=${System.currentTimeMillis()} " +
+                "elapsedMs=${SystemClock.elapsedRealtime()}",
+        )
+        synchronized(stateLock) {
+            if (bargeInTurn) {
+                transitionBargeInStateLocked(BargeInState.IDLE)
+                bargeInTurn = false
+                bargeInLivePcmLogged = false
             }
         }
     }
@@ -776,34 +1019,107 @@ class VoiceWebSocketTransport(
                 runCatching { java.util.UUID.fromString(it) }.getOrNull()
             })
         }
+        val readyGeneration = if (eventType == "server.turn.ready" && !turnId.isNullOrBlank()) {
+            synchronized(stateLock) { awaitingTurnReadyGeneration }
+        } else {
+            null
+        }
+        val binding = if (readyGeneration != null && turnId != null) {
+            Log.i(
+                TAG,
+                "SERVER_TURN_READY turnId=$turnId responseId=${responseId ?: "NONE"} " +
+                    "generation=$readyGeneration wallMs=${System.currentTimeMillis()} " +
+                    "elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
+            sendQueue.bindTurn(turnId, readyGeneration)
+        } else {
+            null
+        }
+        val wasBargeInTurn = synchronized(stateLock) { bargeInTurn }
+        val delayedOldBargeInCancellation = eventType == "response.cancelled" &&
+            responseId != null &&
+            responseId == cancelledBargeInResponseId &&
+            synchronized(stateLock) {
+                awaitingTurnReadyGeneration != null || status.turnId != null
+            }
         synchronized(stateLock) {
-            status = status.copy(
-                state = when (eventType) {
-                    "server.session.ready" -> State.SESSION_READY
-                    "server.turn.ready" -> State.STREAMING_AUDIO
-                    "server.turn.completed", "response.cancelled" -> State.SESSION_READY
-                    "server.session.ended" -> State.DISCONNECTED
-                    "server.error" -> State.ERROR
-                    else -> status.state
-                },
-                connected = eventType != "server.session.ended" &&
-                    eventType != "server.error" && status.connected,
-                sessionStarted = !terminalSessionEvent &&
-                    (status.sessionStarted || eventType == "server.session.ready"),
-                turnActive = when (eventType) {
-                    "server.turn.completed", "response.cancelled", "server.error" -> false
-                    else -> status.turnActive
-                },
-                sessionId = if (terminalSessionEvent) null else sessionId ?: status.sessionId,
-                turnId = if (terminalSessionEvent) null else turnId ?: status.turnId,
-                responseId = if (terminalSessionEvent) null else responseId ?: status.responseId,
-                lastServerEvent = eventType,
-                lastServerEventTimestampMs = System.currentTimeMillis(),
-                lastError = if (eventType == "server.error") {
-                    payload?.errorCode?.let { "E_VOICE_SERVER: $it" } ?: status.lastError
-                } else {
-                    status.lastError
-                },
+            status = if (delayedOldBargeInCancellation) {
+                status.copy(
+                    lastServerEvent = eventType,
+                    lastServerEventTimestampMs = System.currentTimeMillis(),
+                )
+            } else {
+                status.copy(
+                    state = when (eventType) {
+                        "server.session.ready" -> State.SESSION_READY
+                        "server.turn.ready" -> State.STREAMING_AUDIO
+                        "server.turn.completed" -> State.SESSION_READY
+                        "response.cancelled" -> State.SESSION_READY
+                        "server.session.ended" -> State.DISCONNECTED
+                        "server.error" -> State.ERROR
+                        else -> status.state
+                    },
+                    connected = eventType != "server.session.ended" &&
+                        eventType != "server.error" && status.connected,
+                    sessionStarted = !terminalSessionEvent &&
+                        (status.sessionStarted || eventType == "server.session.ready"),
+                    turnActive = when (eventType) {
+                        "server.turn.completed", "server.error", "response.cancelled" -> false
+                        else -> status.turnActive
+                    },
+                    sessionId = if (terminalSessionEvent) null else sessionId ?: status.sessionId,
+                    turnId = if (terminalSessionEvent) null else turnId ?: status.turnId,
+                    responseId = if (terminalSessionEvent) null else responseId ?: status.responseId,
+                    lastServerEvent = eventType,
+                    lastServerEventTimestampMs = System.currentTimeMillis(),
+                    lastError = if (eventType == "server.error") {
+                        payload?.errorCode?.let { "E_VOICE_SERVER: $it" } ?: status.lastError
+                    } else {
+                        status.lastError
+                    },
+                )
+            }
+        }
+        if (binding != null) {
+            if (wasBargeInTurn) {
+                Log.i(
+                    TAG,
+                    "BARGE_IN_BUFFER_FLUSH_STARTED frames=${binding.frames} bytes=${binding.bytes} " +
+                        "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
+            }
+            synchronized(stateLock) {
+                awaitingTurnReadyGeneration = null
+                if (bargeInTurn) {
+                    transitionBargeInStateLocked(BargeInState.NEW_TURN_READY)
+                }
+            }
+            Log.i(
+                TAG,
+                "BARGE_IN_NEW_TURN_BOUND turnId=$turnId frames=${binding.frames} " +
+                    "bytes=${binding.bytes} wallMs=${System.currentTimeMillis()} " +
+                    "elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
+            Log.i(
+                TAG,
+                "BARGE_IN_BUFFER_FLUSH_COMPLETED frames=${binding.frames} bytes=${binding.bytes} " +
+                    "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
+            scheduleDrain()
+        } else if (eventType == "server.turn.ready" && readyGeneration != null) {
+            Log.e(
+                TAG,
+                "ERROR_TURN_BINDING_FAILED turnId=${turnId ?: "NONE"} " +
+                    "generation=$readyGeneration wallMs=${System.currentTimeMillis()} " +
+                    "elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
+        }
+        if (binding != null && wasBargeInTurn) {
+            Log.i(
+                TAG,
+                "BARGE_IN_NEW_TURN_CREATED turnId=${turnId ?: "NONE"} " +
+                    "responseId=${responseId ?: "NONE"} " +
+                    "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
             )
         }
         notifyStatus()
@@ -898,6 +1214,16 @@ class VoiceWebSocketTransport(
                     "channels=1 encoding=PCM16 elapsedMs=${activeTtsFirstAudioElapsedMs}",
             )
         }
+        if (frame.sequence == 0L) {
+            logLatency(
+                sessionId = synchronized(stateLock) { status.sessionId },
+                turnId = synchronized(stateLock) { status.turnId },
+                responseId = frame.responseId.toString(),
+                component = "android",
+                event = "tts_first_chunk_received",
+                metadata = mapOf("bytes" to frame.payload.size),
+            )
+        }
         if (!isTtsOutputEnabled()) return
         if (frame.startsResponse) {
             if (!ttsAudioPlayer.start(frame.responseId, frame.sampleRateHz)) {
@@ -905,6 +1231,14 @@ class VoiceWebSocketTransport(
             }
         }
         if (!ttsAudioPlayer.write(frame.responseId, frame.sequence, frame.payload)) {
+            if (!ttsAudioPlayer.isActive(frame.responseId)) {
+                Log.w(
+                    TAG,
+                    "TTS_STALE_FRAME response_id=${frame.responseId} sequence=${frame.sequence} " +
+                        "reason=playback_inactive",
+                )
+                return
+            }
             recordError("E_TTS_PLAYBACK", "TTS PCM could not be queued for playback.")
             return
         }
@@ -915,6 +1249,13 @@ class VoiceWebSocketTransport(
 
     private fun notifyTtsPlayback(eventType: String, responseId: java.util.UUID) {
         val current = synchronized(stateLock) { status }
+        logLatency(
+            sessionId = current.sessionId,
+            turnId = current.turnId,
+            responseId = responseId.toString(),
+            component = "android",
+            event = eventType.replace('.', '_'),
+        )
         listener.onTtsPlayback(
             eventType,
             current.sessionId,
@@ -922,6 +1263,32 @@ class VoiceWebSocketTransport(
             responseId.toString(),
             System.currentTimeMillis(),
         )
+    }
+
+    private fun logLatency(
+        sessionId: String?,
+        turnId: String?,
+        responseId: String?,
+        component: String,
+        event: String,
+        metadata: Map<String, Any?> = emptyMap(),
+    ) {
+        val record = JSONObject()
+            .put("timestamp", java.time.Instant.now().toString())
+            .put("timestamp_ms", System.currentTimeMillis())
+            .put("monotonic_ms", SystemClock.elapsedRealtime())
+            .put("clock_domain", "android")
+            .put("session_id", sessionId ?: JSONObject.NULL)
+            .put("turn_id", turnId ?: JSONObject.NULL)
+            .put("response_id", responseId ?: JSONObject.NULL)
+            .put("component", component)
+            .put("event", event)
+        if (metadata.isNotEmpty()) {
+            val safe = JSONObject()
+            metadata.forEach { (key, value) -> safe.put(key, value ?: JSONObject.NULL) }
+            record.put("metadata", safe)
+        }
+        Log.i(TAG, "LATENCY_TRACE $record")
     }
 
     private fun extractServerEventPayload(
@@ -1064,11 +1431,27 @@ class VoiceWebSocketTransport(
             )
         }
         sendQueue.clear()
+        sendQueue.clearPreRoll()
+        bargeInTurn = false
+        awaitingTurnReadyGeneration = null
+        pendingCommitDurationMs = null
+        cancelledBargeInResponseId = null
+        bargeInState = BargeInState.IDLE
         notifyStatus()
     }
 
     private fun notifyStatus() {
         listener.onStatus(getStatus())
+    }
+
+    private fun transitionBargeInStateLocked(next: BargeInState) {
+        if (bargeInState == next) return
+        Log.i(
+            TAG,
+            "BARGE_IN_STATE from=${bargeInState.name} to=${next.name} " +
+                "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
+        )
+        bargeInState = next
     }
 
     /**
@@ -1114,10 +1497,13 @@ class VoiceWebSocketTransport(
         }
     }
 
-    private fun Status.copyFromQueue(snapshot: PcmSendQueue.Snapshot): Status = copy(
-        framesQueued = snapshot.depth,
-        queueHighWaterMark = snapshot.highWaterMark,
-        droppedFrames = snapshot.droppedFrames,
+    private fun Status.copyFromQueue(
+        snapshot: PcmSendQueue.Snapshot,
+        pending: PcmSendQueue.PendingSnapshot,
+    ): Status = copy(
+        framesQueued = snapshot.depth + pending.depth,
+        queueHighWaterMark = maxOf(snapshot.highWaterMark, pending.highWaterMark),
+        droppedFrames = snapshot.droppedFrames + pending.droppedFrames,
         invalidFrames = snapshot.invalidFrames,
     )
 

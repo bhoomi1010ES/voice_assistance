@@ -457,3 +457,159 @@ def test_stt_gateway_cancels_finalization_without_blocking_protocol(stt_client) 
         next_turn = socket.receive_json()
         assert next_turn["type"] == "server.turn.ready"
         assert next_turn["turn_id"] != turn["turn_id"]
+
+
+@pytest.mark.slow_stt_gateway(1.5)
+def test_stt_gateway_queues_turn_start_until_delayed_cancel_finishes(stt_client) -> None:
+    """A barge-in start may arrive before the old STT/response cleanup ends."""
+
+    client, settings, emails = stt_client
+    email = _email("barge-in-start-before-cancel")
+    emails.add(email)
+    tokens = _create_account(client, email)
+
+    with client.websocket_connect(
+        "/v1/voice", headers={"Authorization": f"Bearer {tokens['access_token']}"}
+    ) as socket:
+        socket.send_json(_session_start())
+        assert socket.receive_json()["type"] == "server.session.ready"
+        socket.send_json({"type": "client.turn.start"})
+        first = socket.receive_json()
+
+        socket.send_bytes(
+            encode_pcm_frame(
+                sequence_no=0,
+                client_timestamp_ms=4000,
+                payload=b"\x00\x10" * 320,
+            )
+        )
+        socket.send_json(
+            {
+                "type": "client.audio.commit",
+                "last_sequence_no": 0,
+                "frame_count": 1,
+                "byte_count": settings.voice_frame_bytes,
+                "duration_ms": 20,
+            }
+        )
+        time.sleep(0.1)
+
+        # This is the physical ordering: the replacement request is queued
+        # while the old turn is still cancelling, then the old cancellation
+        # arrives without requiring the client to resend turn.start.
+        socket.send_json({"type": "client.turn.start"})
+        socket.send_json(
+            {
+                "type": "client.response.cancel",
+                "response_id": first["response_id"],
+                "reason": "barge_in",
+            }
+        )
+
+        cancelled = socket.receive_json()
+        ready = socket.receive_json()
+        assert cancelled["type"] == "response.cancelled"
+        assert ready["type"] == "server.turn.ready"
+        assert ready["turn_id"] != first["turn_id"]
+        assert ready["response_id"] != first["response_id"]
+
+        for sequence_no in range(3):
+            socket.send_bytes(
+                encode_pcm_frame(
+                    sequence_no=sequence_no,
+                    client_timestamp_ms=5000 + sequence_no * 20,
+                    payload=b"\x00\x10" * 320,
+                )
+            )
+        socket.send_json(
+            {
+                "type": "client.audio.commit",
+                "last_sequence_no": 2,
+                "frame_count": 3,
+                "byte_count": settings.voice_frame_bytes * 3,
+                "duration_ms": 60,
+            }
+        )
+        final = socket.receive_json()
+        assert final["type"] == "transcript.final"
+        assert final["turn_id"] == ready["turn_id"]
+        assert final["response_id"] == ready["response_id"]
+
+        completed, _ = _receive_turn_completed(
+            socket,
+            session_id=final["session_id"],
+            turn_id=final["turn_id"],
+            response_id=final["response_id"],
+        )
+        assert completed["turn_id"] == ready["turn_id"]
+
+
+@pytest.mark.slow_stt_gateway(1.5)
+def test_stt_gateway_delayed_old_cleanup_does_not_remove_replacement_turn(stt_client) -> None:
+    """Late old-response cleanup must not clear the replacement registry state."""
+
+    client, settings, emails = stt_client
+    email = _email("barge-in-late-cleanup")
+    emails.add(email)
+    tokens = _create_account(client, email)
+
+    with client.websocket_connect(
+        "/v1/voice", headers={"Authorization": f"Bearer {tokens['access_token']}"}
+    ) as socket:
+        socket.send_json(_session_start())
+        assert socket.receive_json()["type"] == "server.session.ready"
+        socket.send_json({"type": "client.turn.start"})
+        first = socket.receive_json()
+        socket.send_bytes(
+            encode_pcm_frame(
+                sequence_no=0,
+                client_timestamp_ms=6000,
+                payload=b"\x00\x10" * 320,
+            )
+        )
+        socket.send_json(
+            {
+                "type": "client.audio.commit",
+                "last_sequence_no": 0,
+                "frame_count": 1,
+                "byte_count": settings.voice_frame_bytes,
+                "duration_ms": 20,
+            }
+        )
+        time.sleep(0.1)
+        socket.send_json(
+            {
+                "type": "client.response.cancel",
+                "response_id": first["response_id"],
+                "reason": "barge_in",
+            }
+        )
+        assert socket.receive_json()["type"] == "response.cancelled"
+
+        socket.send_json({"type": "client.turn.start"})
+        second = socket.receive_json()
+        assert second["type"] == "server.turn.ready"
+        assert second["turn_id"] != first["turn_id"]
+
+        # The delayed finalizer has already been cancelled by the gateway.
+        # Keep the replacement turn alive long enough to prove old cleanup
+        # cannot remove it from the same session.
+        socket.send_bytes(
+            encode_pcm_frame(
+                sequence_no=0,
+                client_timestamp_ms=7000,
+                payload=b"\x00\x10" * 320,
+            )
+        )
+        socket.send_json(
+            {
+                "type": "client.audio.commit",
+                "last_sequence_no": 0,
+                "frame_count": 1,
+                "byte_count": settings.voice_frame_bytes,
+                "duration_ms": 20,
+            }
+        )
+        final = socket.receive_json()
+        assert final["type"] == "transcript.final"
+        assert final["turn_id"] == second["turn_id"]

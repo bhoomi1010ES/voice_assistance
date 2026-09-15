@@ -33,6 +33,8 @@ class SileroVadEngine(
         fun onEngineStopped(status: Status)
         fun onSpeechStarted(event: Event)
         fun onSpeechStopped(event: Event)
+        /** Periodic metadata while a confirmed speech segment remains active. */
+        fun onSpeechActivity(event: Event) = Unit
         fun onEngineError(status: Status)
     }
 
@@ -112,6 +114,7 @@ class SileroVadEngine(
     companion object {
         const val EVENT_SPEECH_STARTED = "SILERO_VAD_SPEECH_STARTED"
         const val EVENT_SPEECH_STOPPED = "SILERO_VAD_SPEECH_STOPPED"
+        const val EVENT_SPEECH_ACTIVITY = "SILERO_VAD_SPEECH_ACTIVITY"
         const val EVENT_ERROR = "SILERO_VAD_ERROR"
 
         const val SELECTED_RUNTIME = "ONNX_RUNTIME_ANDROID_CPU"
@@ -136,6 +139,7 @@ class SileroVadEngine(
         private const val QUEUE_WAIT_TIMEOUT_MS = 50L
         private const val OVERFLOW_LOG_INTERVAL = 100L
         private const val MALFORMED_LOG_INTERVAL = 100L
+        private const val ACTIVITY_EVENT_INTERVAL_INFERENCES = 5L
         private const val NANOS_PER_MILLISECOND = 1_000_000.0
     }
 
@@ -600,11 +604,23 @@ class SileroVadEngine(
                 )
             }
             val transition = stateMachine.onProbability(probability, inferenceIndex)
+            val state = stateMachine.getStatus().state
             synchronized(lock) {
                 successfulInferenceCount += 1L
             }
             successful = true
             transition?.let(::emitTransition)
+            if (
+                (state == SileroVadStateMachine.State.SPEECH ||
+                    state == SileroVadStateMachine.State.SPEECH_STOP_PENDING) &&
+                inferenceIndex % ACTIVITY_EVENT_INTERVAL_INFERENCES == 0L
+            ) {
+                emitSpeechActivity(
+                    probability = probability,
+                    inferenceIndex = inferenceIndex,
+                    speechDurationMs = stateMachine.currentSpeechDurationMs(inferenceIndex),
+                )
+            }
         } catch (exception: SileroVadRuntimeException) {
             throw exception
         } catch (exception: RuntimeException) {
@@ -653,6 +669,27 @@ class SileroVadEngine(
                 listener?.onSpeechStopped(event)
             }
         }
+    }
+
+    private fun emitSpeechActivity(
+        probability: Float,
+        inferenceIndex: Long,
+        speechDurationMs: Long,
+    ) {
+        val event = Event(
+            event = EVENT_SPEECH_ACTIVITY,
+            timestampMs = wallClockMs(),
+            probability = probability,
+            inferenceIndex = inferenceIndex,
+            speechDurationMs = speechDurationMs,
+            reason = "SPEECH_CONTINUING",
+        )
+        Log.i(
+            AudioEngine.TAG,
+            "SILERO_VAD_SPEECH_ACTIVITY probability=${event.probability} " +
+                "durationMs=${event.speechDurationMs} inference=${event.inferenceIndex}",
+        )
+        listener?.onSpeechActivity(event)
     }
 
     private fun releaseRuntime(runtime: SileroVadRuntime?) {

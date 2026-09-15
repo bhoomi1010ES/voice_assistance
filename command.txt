@@ -39,3 +39,10 @@ adb reverse tcp:8081 tcp:8081
 
 cd C:\Users\lenovo\Desktop\voice_assistance\frontend
 npm.cmd start -- --reset-cache
+
+
+Use one command before starting a voice turn:
+python backend/scripts/live_latency.py --clear-logcat --metro-log scratch/verify_metro.out.log
+
+After the turn:
+python backend/scripts/analyze_latency.py logs/live_latency_trace.jsonl --turn-id <turn_id>

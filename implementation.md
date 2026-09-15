@@ -3209,21 +3209,24 @@ Evidence: `docs/20260910_171441_phase8_tts.md` and `docs/evidence/phase8/`.
 
 ### Steps
 
-- [ ] Keep microphone active during TTS.
-- [ ] Enable AEC where available.
-- [ ] Enable NS where available.
-- [ ] Tune Silero VAD for playback conditions.
-- [ ] Detect sustained user speech.
-- [ ] Stop local TTS playback first.
-- [ ] Send `client.response.cancel`.
-- [ ] Cancel server response.
-- [ ] Start new turn.
-- [ ] Ignore stale chunks.
+- [x] Keep microphone active during TTS.
+- [x] Enable AEC where available.
+- [x] Enable NS where available.
+- [x] Tune Silero VAD for playback conditions.
+- [x] Detect sustained user speech.
+- [x] Stop local TTS playback first.
+- [x] Send `client.response.cancel`.
+- [x] Cancel server response.
+- [x] Start new turn.
+- [x] Ignore stale chunks.
 - [ ] Test with loudspeaker volume at several levels.
 
 ### Gate
 
 Assistant playback does not repeatedly trigger false barge-in, and real user interruptions are detected reliably.
+
+Implementation status: the software flow and automated coverage are complete. The
+physical-device loudspeaker volume matrix and the final gate remain pending.
 
 ---
 

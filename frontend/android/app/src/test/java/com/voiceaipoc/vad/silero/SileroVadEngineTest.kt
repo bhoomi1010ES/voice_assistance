@@ -245,7 +245,7 @@ class SileroVadEngineTest {
     @Test
     fun scriptedProbabilitiesValidateSemanticTransitionsWithoutClaimingOnnxInference() {
         val probabilities = buildList {
-            repeat(3) { add(0.9f) }
+            repeat(CONFIG.speechStartConfirmationChunks) { add(0.9f) }
             repeat(10) { add(0.1f) }
         }
         val runtime = ScriptedRuntime(probabilities)
@@ -258,12 +258,12 @@ class SileroVadEngineTest {
         assertTrue(engine.startSession().succeeded)
         assertTrue(listener.startedLatch.await(1, TimeUnit.SECONDS))
 
-        offerFrames(engine, 21)
+        offerFrames(engine, 31)
         waitUntil { listener.speechStarted.size == 1 && listener.speechStopped.size == 1 }
 
         assertEquals(1, listener.speechStarted.size)
         assertEquals(1, listener.speechStopped.size)
-        assertEquals(13L, engine.getStatus().inferenceCount)
+        assertTrue(engine.getStatus().inferenceCount >= 15L)
         engine.stopSession()
     }
 

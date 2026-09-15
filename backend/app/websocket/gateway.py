@@ -57,6 +57,7 @@ from app.services.device_time import (
     timezone_for_request,
     valid_timezone,
 )
+from app.services.latency_trace import LatencyTracer
 from app.services.task_due_dates import format_local_due_at
 from app.services.tool_idempotency import PostgresToolIdempotencyStore
 from app.services.voice_confirmation import (
@@ -157,6 +158,7 @@ class VoiceGatewayStats:
 class TurnTimingState:
     points: dict[str, TimingPoint]
     tts: dict[str, Any] | None = None
+    response_id: uuid.UUID | None = None
 
 
 class VoiceGateway:
@@ -236,7 +238,11 @@ class VoiceGateway:
         self._stt_finalize_task: asyncio.Task[None] | None = None
         self._retry_response_task: asyncio.Task[None] | None = None
         self._tts_tasks: dict[uuid.UUID, asyncio.Task[None]] = {}
+        self._pending_turn_start: TurnStartMessage | None = None
+        self._turn_start_event_ids: set[uuid.UUID] = set()
+        self._cancelled_response_ids: set[uuid.UUID] = set()
         self._turn_timings: dict[uuid.UUID, TurnTimingState] = {}
+        self.latency_tracer = LatencyTracer()
         self._stt_finalize_cancel_requested = False
         self._stt_enabled = False
         self._stt_language: str | None = None
@@ -604,6 +610,44 @@ class VoiceGateway:
 
     async def _handle_turn_start(self, message: TurnStartMessage) -> None:
         self._require_session()
+        self._trace_latency(
+            component="gateway",
+            event="turn_received",
+            metadata={
+                "client_turn_id": str(message.client_turn_id) if message.client_turn_id else None
+            },
+        )
+        if message.event_id in self._turn_start_event_ids:
+            LOGGER.info(
+                "Duplicate voice turn start ignored",
+                extra={
+                    "event": "NEW_TURN_START_DUPLICATE_IGNORED",
+                    "session_id": str(self._active_session_id()),
+                    "event_id": str(message.event_id),
+                    "turn_id": str(self.active_turn.id) if self.active_turn else None,
+                    "response_id": str(self._last_response_id) if self._last_response_id else None,
+                },
+            )
+            return
+        self._turn_start_event_ids.add(message.event_id)
+        LOGGER.info(
+            "New voice turn start received",
+            extra={
+                "event": "NEW_TURN_START_RECEIVED",
+                "session_id": str(self._active_session_id()),
+                "previous_turn_id": (
+                    str(self.active_turn.id)
+                    if self.active_turn is not None
+                    else str(self._response_turn_id)
+                    if self._response_turn_id
+                    else None
+                ),
+                "previous_response_id": (
+                    str(self._last_response_id) if self._last_response_id else None
+                ),
+                "client_turn_id": str(message.client_turn_id) if message.client_turn_id else None,
+            },
+        )
         if message.device_time_context is not None:
             self._refresh_device_time_context(message.device_time_context)
             if self.voice_session is not None:
@@ -618,10 +662,36 @@ class VoiceGateway:
                 metadata["locale"] = self._device_time_context.locale
                 self.voice_session.client_metadata = metadata
         if self._stt_finalize_task is not None or self._response_turn_id is not None:
-            await self._send_error("response_in_progress")
+            if self._pending_turn_start is None:
+                self._pending_turn_start = message
+                LOGGER.info(
+                    "New voice turn start pending old response cleanup",
+                    extra={
+                        "event": "NEW_TURN_PENDING",
+                        "session_id": str(self._active_session_id()),
+                        "reason": "old_response_cancelling",
+                        "old_turn_id": (
+                            str(self._response_turn_id) if self._response_turn_id else None
+                        ),
+                        "old_response_id": (
+                            str(self._last_response_id) if self._last_response_id else None
+                        ),
+                    },
+                )
             return
         if self.active_turn is not None:
-            raise StateTransitionError("a turn is already active")
+            await self._send_error("turn_in_progress")
+            return
+        await self._create_turn(message)
+
+    async def _create_turn(self, message: TurnStartMessage) -> None:
+        """Allocate and announce one fresh server-owned user turn."""
+
+        if self.active_turn is not None:
+            await self._send_error("turn_in_progress")
+            return
+        if self._stt_finalize_task is not None or self._response_turn_id is not None:
+            raise StateTransitionError("turn allocation attempted before old response cleanup")
         response_id = uuid.uuid4()
         turn = await self.persistence.create_turn(
             self.db,
@@ -634,9 +704,20 @@ class VoiceGateway:
         await self.registry.set_turn(self.owner, self._active_session_id(), turn.id, response_id)
         self.active_turn = turn
         self._last_response_id = response_id
+        self._timing_state(turn.id).response_id = response_id
         self._turn_started = time.monotonic()
         self._capture_turn_timing(turn.id, "turn_started_at", monotonic=self._turn_started)
         self.cancel_guard.activate(response_id)
+        LOGGER.info(
+            "New voice turn created",
+            extra={
+                "event": "NEW_TURN_CREATED",
+                "session_id": str(self._active_session_id()),
+                "turn_id": str(turn.id),
+                "response_id": str(response_id),
+                "previous_turn_id": str(self._response_turn_id) if self._response_turn_id else None,
+            },
+        )
         LOGGER.info(
             "Voice turn started",
             extra={
@@ -676,6 +757,41 @@ class VoiceGateway:
                 sequence_start=0,
             )
         )
+        self._trace_latency(
+            turn_id=turn.id,
+            response_id=response_id,
+            component="gateway",
+            event="server_turn_ready",
+            metadata={"turn_number": turn.turn_number},
+        )
+        LOGGER.info(
+            "Server turn ready sent",
+            extra={
+                "event": "SERVER_TURN_READY_SENT",
+                "session_id": str(self._active_session_id()),
+                "turn_id": str(turn.id),
+                "response_id": str(response_id),
+            },
+        )
+
+    async def _create_pending_turn_if_ready(self) -> None:
+        pending = self._pending_turn_start
+        if (
+            pending is None
+            or self.active_turn is not None
+            or self._stt_finalize_task is not None
+            or self._response_turn_id is not None
+        ):
+            return
+        self._pending_turn_start = None
+        LOGGER.info(
+            "Creating pending voice turn after old response cleanup",
+            extra={
+                "event": "NEW_TURN_PENDING_RELEASED",
+                "session_id": str(self._active_session_id()),
+            },
+        )
+        await self._create_turn(pending)
 
     async def _handle_binary(self, frame: BinaryPcmFrame) -> None:
         self._require_session()
@@ -688,6 +804,14 @@ class VoiceGateway:
         self.stats.frames_accepted += 1
         self.stats.bytes_received += frame.payload_length
         self.voice_session.last_activity_at = self._now_datetime()
+        if frame.sequence_no == 0:
+            self._trace_latency(
+                turn_id=self.active_turn.id if self.active_turn else None,
+                response_id=self.active_turn.response_id if self.active_turn else None,
+                component="gateway",
+                event="first_pcm_received",
+                metadata={"bytes": frame.payload_length},
+            )
         if frame.sequence_no == 0 or frame.sequence_no % 50 == 0:
             LOGGER.info(
                 "Voice PCM frame accepted",
@@ -712,6 +836,13 @@ class VoiceGateway:
         if self.active_turn is None:
             raise StateTransitionError("no active turn")
         self._capture_turn_timing(self.active_turn.id, "speech_ended_at")
+        self._trace_latency(
+            turn_id=self.active_turn.id,
+            response_id=self.active_turn.response_id,
+            component="gateway",
+            event="turn_commit_received",
+            metadata={"frame_count": message.frame_count, "byte_count": message.byte_count},
+        )
         LOGGER.info(
             "Voice audio commit received",
             extra={
@@ -747,32 +878,61 @@ class VoiceGateway:
         stt_result: STTTranscriptResult | None = None
         stt_error: STTError | None = None
         persisted_user_message = None
+        turn = self.active_turn
+        if turn is None:
+            LOGGER.info(
+                "Voice turn finalization abandoned because ownership was replaced",
+                extra={
+                    "event": "OLD_RESPONSE_CLEANUP_COMPLETED",
+                    "session_id": str(self._active_session_id()),
+                    "did_not_touch_new_turn": True,
+                },
+            )
+            return
+        turn_id = turn.id
+        response_id = turn.response_id
         try:
             LOGGER.info(
                 "Voice turn finalization started",
                 extra={
                     "event": "voice.turn.finalization.started",
                     "session_id": str(self._active_session_id()),
-                    "turn_id": str(self.active_turn.id) if self.active_turn else None,
-                    "response_id": str(self.active_turn.response_id) if self.active_turn else None,
+                    "turn_id": str(turn_id),
+                    "response_id": str(response_id),
                     "timestamp_ms": int(time.time() * 1000),
                 },
             )
             if stt_turn is not None:
                 try:
                     stt_result = await stt_turn.finalize()
-                    self._capture_turn_timing(self.active_turn.id, "stt_completed_at")
+                    self._capture_turn_timing(turn_id, "stt_completed_at")
                     if not stt_result.event.text.strip():
                         raise STTEmptyTranscriptError("STT returned an empty transcript")
                 except STTCancelledError:
-                    self._capture_turn_timing(self.active_turn.id, "stt_completed_at")
+                    self._capture_turn_timing(turn_id, "stt_completed_at")
                     if self._stt_finalize_cancel_requested or self._closing.is_set():
+                        return
+                    if self._response_was_cancelled(response_id):
                         return
                     await self._fail_active_turn("stt_cancelled", status="cancelled")
                     return
                 except STTError as error:
                     stt_error = error
-                    self._capture_turn_timing(self.active_turn.id, "stt_completed_at")
+                    self._capture_turn_timing(turn_id, "stt_completed_at")
+            if self.state.current_turn_id != turn_id:
+                if self._response_was_cancelled(response_id):
+                    LOGGER.info(
+                        "Cancelled old turn finalization discarded after state handoff",
+                        extra={
+                            "event": "OLD_RESPONSE_CLEANUP_COMPLETED",
+                            "session_id": str(self._active_session_id()),
+                            "old_turn_id": str(turn_id),
+                            "old_response_id": str(response_id),
+                            "did_not_touch_new_turn": True,
+                        },
+                    )
+                    return
+                raise StateTransitionError("turn ownership changed during finalization")
             counters = self.state.commit(
                 last_sequence_no=message.last_sequence_no,
                 frame_count=message.frame_count,
@@ -829,7 +989,11 @@ class VoiceGateway:
             self.active_turn = None
             self._response_turn_id = counters.turn_id
             self._turn_started = None
-            await self.registry.clear_turn(self.owner, self._active_session_id())
+            await self.registry.clear_turn(
+                self.owner,
+                self._active_session_id(),
+                turn_id=counters.turn_id,
+            )
             await self.registry.refresh(self.owner, self._active_session_id())
             await self.db.commit()
             if stt_result is not None:
@@ -916,6 +1080,30 @@ class VoiceGateway:
             )
         except asyncio.CancelledError:
             return
+        except StateTransitionError as error:
+            if self._response_was_cancelled(response_id):
+                LOGGER.info(
+                    "Cancelled old response completion ignored",
+                    extra={
+                        "event": "OLD_RESPONSE_CLEANUP_COMPLETED",
+                        "session_id": str(self._active_session_id()),
+                        "old_turn_id": str(turn_id),
+                        "old_response_id": str(response_id),
+                        "exception": type(error).__name__,
+                        "did_not_touch_new_turn": True,
+                    },
+                )
+                return
+            LOGGER.exception(
+                "VOICE_TURN_COMPLETION_FAILED",
+                extra=self._completion_error_context(
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    exception=error,
+                ),
+            )
+            self.stats.error_count += 1
+            await self._protocol_failure("voice_turn_completion_failed", close_code=1011)
         except (VoiceRegistryError, VoiceSessionConflict):
             await self._protocol_failure("voice_registry_unavailable", close_code=1013)
         except SQLAlchemyError:
@@ -923,17 +1111,15 @@ class VoiceGateway:
             self.stats.error_count += 1
             await self._protocol_failure("voice_persistence_unavailable", close_code=1011)
         except Exception as error:  # noqa: BLE001 - isolate background turn completion failures
-            self.stats.error_count += 1
             LOGGER.exception(
-                "Voice turn completion failed",
-                extra={
-                    "event": "voice.turn.completion.failed",
-                    "session_id": str(self._active_session_id()),
-                    "turn_id": str(counters.turn_id) if "counters" in locals() else None,
-                    "response_id": (str(counters.response_id) if "counters" in locals() else None),
-                    "error_type": type(error).__name__,
-                },
+                "VOICE_TURN_COMPLETION_FAILED",
+                extra=self._completion_error_context(
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    exception=error,
+                ),
             )
+            self.stats.error_count += 1
             await self._protocol_failure("voice_turn_completion_failed", close_code=1011)
         finally:
             if self._stt_finalize_task is asyncio.current_task():
@@ -949,6 +1135,13 @@ class VoiceGateway:
         transcript: str,
     ) -> dict[str, Any]:
         started = time.monotonic()
+        self._trace_latency(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            component="orchestration",
+            event="orchestration_start",
+        )
         first_event_at: float | None = None
         first_text_at: float | None = None
         text_parts: list[str] = []
@@ -957,6 +1150,7 @@ class VoiceGateway:
         failure_code: str | None = None
         attempt_count = 0
         request_started_times: list[float] = []
+        first_token_traced = False
         tool_call_at: float | None = None
         tool_execution_started_at: float | None = None
         tool_execution_finished_at: float | None = None
@@ -982,6 +1176,15 @@ class VoiceGateway:
         async def on_tool_execution_started(call, timestamp: float) -> None:
             nonlocal tool_execution_started_at
             tool_execution_started_at = tool_execution_started_at or timestamp
+            self._trace_latency(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                component="tool",
+                event="tool_start",
+                monotonic_ms=timestamp * 1000,
+                metadata={"tool_name": call.name, "tool_call_id": call.tool_call_id},
+            )
             await self._send_tool_status(
                 session_id=session_id,
                 turn_id=turn_id,
@@ -994,6 +1197,15 @@ class VoiceGateway:
         def on_tool_execution_finished(_call, timestamp: float) -> None:
             nonlocal tool_execution_finished_at
             tool_execution_finished_at = timestamp
+            self._trace_latency(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                component="tool",
+                event="tool_end",
+                monotonic_ms=timestamp * 1000,
+                metadata={"tool_name": _call.name, "tool_call_id": _call.tool_call_id},
+            )
 
         try:
             tool_registry = getattr(self, "tool_registry", None)
@@ -1117,6 +1329,15 @@ class VoiceGateway:
                         "llm_started_at",
                         monotonic=event.monotonic_seconds,
                     )
+                    self._trace_latency(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        response_id=response_id,
+                        component="llm",
+                        event="llm_request_start",
+                        monotonic_ms=event.monotonic_seconds * 1000,
+                        metadata={"attempt": event.attempt},
+                    )
                     continue
                 first_event_at = first_event_at or event.monotonic_seconds
                 if event.event_type == "text_delta" and event.delta:
@@ -1126,6 +1347,16 @@ class VoiceGateway:
                         "llm_first_token_at",
                         monotonic=event.monotonic_seconds,
                     )
+                    if not first_token_traced:
+                        first_token_traced = True
+                        self._trace_latency(
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            response_id=response_id,
+                            component="llm",
+                            event="llm_first_token",
+                            monotonic_ms=event.monotonic_seconds * 1000,
+                        )
                     text_parts.append(event.delta)
                     if tts_queue is not None and tts_segmenter is not None:
                         tts_input_started = True
@@ -1192,6 +1423,15 @@ class VoiceGateway:
                         "llm_completed_at",
                         monotonic=event.monotonic_seconds,
                     )
+                    self._trace_latency(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        response_id=response_id,
+                        component="llm",
+                        event="llm_complete",
+                        monotonic_ms=event.monotonic_seconds * 1000,
+                        metadata={"status": "failed"},
+                    )
                     break
                 if event.event_type == "response_completed":
                     terminal_event = event
@@ -1199,6 +1439,15 @@ class VoiceGateway:
                         turn_id,
                         "llm_completed_at",
                         monotonic=event.monotonic_seconds,
+                    )
+                    self._trace_latency(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        response_id=response_id,
+                        component="llm",
+                        event="llm_complete",
+                        monotonic_ms=event.monotonic_seconds * 1000,
+                        metadata={"status": "completed"},
                     )
                     if event.text is not None:
                         text_parts = [event.text]
@@ -2052,6 +2301,7 @@ class VoiceGateway:
         await self.db.commit()
 
     async def _complete_response_state(self, response_id: uuid.UUID) -> None:
+        owns_current_response = response_id == self._last_response_id
         if self.voice_session is not None:
             await self.registry.clear_response(
                 self.owner,
@@ -2059,8 +2309,56 @@ class VoiceGateway:
                 response_id,
             )
             await self.registry.refresh(self.owner, self._active_session_id())
-        self.cancel_guard.clear()
-        self._response_turn_id = None
+        if owns_current_response:
+            self.cancel_guard.clear(response_id)
+            self._response_turn_id = None
+        else:
+            LOGGER.info(
+                "Late old response cleanup left replacement turn state intact",
+                extra={
+                    "event": "OLD_RESPONSE_CLEANUP_COMPLETED",
+                    "session_id": str(self._active_session_id()),
+                    "old_response_id": str(response_id),
+                    "current_response_id": (
+                        str(self._last_response_id) if self._last_response_id else None
+                    ),
+                    "current_turn_id": (
+                        str(self.active_turn.id)
+                        if self.active_turn is not None
+                        else str(self._response_turn_id)
+                        if self._response_turn_id
+                        else None
+                    ),
+                    "did_not_touch_new_turn": True,
+                },
+            )
+
+    def _response_was_cancelled(self, response_id: uuid.UUID) -> bool:
+        return response_id in self._cancelled_response_ids or self.cancel_guard.is_cancelled(
+            response_id
+        )
+
+    def _completion_error_context(
+        self,
+        *,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        exception: Exception,
+    ) -> dict[str, Any]:
+        return {
+            "event": "VOICE_TURN_COMPLETION_FAILED",
+            "session_id": str(self._active_session_id()),
+            "turn_id": str(turn_id),
+            "response_id": str(response_id),
+            "exception": type(exception).__name__,
+            "exception_message": str(exception),
+            "active_turn_id": str(self.active_turn.id) if self.active_turn else None,
+            "active_response_id": str(self._last_response_id) if self._last_response_id else None,
+            "response_turn_id": str(self._response_turn_id) if self._response_turn_id else None,
+            "stt_finalize_task": self._stt_finalize_task is not None,
+            "voice_queue_depth": self.queue.qsize(),
+            "cancelled_response": self._response_was_cancelled(response_id),
+        }
 
     @staticmethod
     def _duration_ms(started: float, ended: float | None) -> float | None:
@@ -2092,6 +2390,56 @@ class VoiceGateway:
         state.points[event_name] = TimingPoint(
             wall=self._now_datetime(),
             monotonic=time.monotonic() if monotonic is None else monotonic,
+        )
+        event_map = {
+            "turn_started_at": "turn_started",
+            "speech_started_at": "speech_start",
+            "speech_ended_at": "speech_end",
+            "stt_started_at": "stt_processing_start",
+            "stt_completed_at": "stt_final",
+            "llm_started_at": "llm_request_start",
+            "llm_first_token_at": "llm_first_token",
+            "llm_completed_at": "llm_complete",
+            "tts_requested_at": "tts_request_start",
+            "tts_first_audio_at": "tts_first_audio_chunk",
+            "turn_completed_at": "turn_complete",
+        }
+        trace_event = event_map.get(event_name)
+        if trace_event:
+            point = state.points[event_name]
+            self._trace_latency(
+                turn_id=turn_id,
+                response_id=state.response_id,
+                component="gateway",
+                event=trace_event,
+                timestamp=point.wall.isoformat().replace("+00:00", "Z"),
+                monotonic_ms=point.monotonic * 1000,
+            )
+
+    def _trace_latency(
+        self,
+        *,
+        component: str,
+        event: str,
+        session_id: uuid.UUID | None = None,
+        turn_id: uuid.UUID | None = None,
+        response_id: uuid.UUID | None = None,
+        monotonic_ms: float | None = None,
+        timestamp: str | None = None,
+        duration_ms: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        tracer = getattr(self, "latency_tracer", None) or LatencyTracer()
+        tracer.emit(
+            session_id=session_id or getattr(self, "_session_id", None),
+            turn_id=turn_id,
+            response_id=response_id,
+            component=component,
+            event=event,
+            monotonic_ms=monotonic_ms,
+            timestamp=timestamp,
+            duration_ms=duration_ms,
+            metadata=metadata,
         )
 
     def _tts_timing_state(self, turn_id: uuid.UUID) -> TurnTimingState:
@@ -2220,7 +2568,11 @@ class VoiceGateway:
         self._turn_started = None
         self.cancel_guard.clear()
         await self._close_stt_turn(cancel=True)
-        await self.registry.clear_turn(self.owner, self._active_session_id())
+        await self.registry.clear_turn(
+            self.owner,
+            self._active_session_id(),
+            turn_id=turn_id,
+        )
         await self.registry.clear_response(
             self.owner,
             self._active_session_id(),
@@ -2390,6 +2742,10 @@ class VoiceGateway:
 
     async def _handle_response_cancel(self, message: ResponseCancelMessage) -> None:
         self._require_session()
+        active_turn = getattr(self, "active_turn", None)
+        old_turn_id = (
+            active_turn.id if active_turn is not None else getattr(self, "_response_turn_id", None)
+        )
         LOGGER.info(
             "Voice response cancellation received",
             extra={
@@ -2398,6 +2754,16 @@ class VoiceGateway:
                 "response_id": str(message.response_id),
                 "reason": message.reason,
                 "timestamp_ms": int(time.time() * 1000),
+            },
+        )
+        LOGGER.info(
+            "Barge-in cancellation received",
+            extra={
+                "event": "BARGE_IN_CANCEL_RECEIVED",
+                "session_id": str(self._active_session_id()),
+                "old_turn_id": str(old_turn_id) if old_turn_id else None,
+                "old_response_id": str(message.response_id),
+                "reason": message.reason,
             },
         )
         confirmation_store = getattr(self, "confirmation_store", None)
@@ -2452,6 +2818,9 @@ class VoiceGateway:
             await self._send_error("response_not_active")
             return
 
+        self._cancelled_response_ids.add(message.response_id)
+        if len(self._cancelled_response_ids) > 64:
+            self._cancelled_response_ids = set(list(self._cancelled_response_ids)[-32:])
         self.stats.cancellation_count += 1
         await self._cancel_tts_response(message.response_id)
         await self.registry.cancel_response(
@@ -2483,7 +2852,11 @@ class VoiceGateway:
             self._add_session_totals(counters.frame_count, counters.byte_count)
             self.active_turn = None
             self._turn_started = None
-            await self.registry.clear_turn(self.owner, self._active_session_id())
+            await self.registry.clear_turn(
+                self.owner,
+                self._active_session_id(),
+                turn_id=counters.turn_id,
+            )
         elif cancelled_turn_id is not None:
             provider_info = self.llm_service.provider_info
             await self.persistence.merge_turn_metadata(
@@ -2503,7 +2876,7 @@ class VoiceGateway:
                 },
             )
         self._response_turn_id = None
-        self.cancel_guard.clear()
+        self.cancel_guard.clear(message.response_id)
         await self.db.commit()
         if cancelled_turn_id is not None:
             await self._persist_conversation_log(cancelled_turn_id, status="cancelled")
@@ -2516,6 +2889,16 @@ class VoiceGateway:
                 reason=message.reason,
             )
         )
+        LOGGER.info(
+            "Old voice response cancelled",
+            extra={
+                "event": "OLD_RESPONSE_CANCELLED",
+                "session_id": str(self._active_session_id()),
+                "old_turn_id": str(cancelled_turn_id) if cancelled_turn_id else None,
+                "old_response_id": str(message.response_id),
+            },
+        )
+        await self._create_pending_turn_if_ready()
 
     async def _handle_ping(self, message: ClientPingMessage) -> None:
         self.stats.heartbeat_count += 1
@@ -2944,6 +3327,7 @@ class VoiceGateway:
     ) -> None:
         sequence = 0
         started = False
+        first_audio_traced = False
         sent_pcm_bytes = 0
         pacing_started_at: float | None = None
         generation_ms_total = 0.0
@@ -2956,6 +3340,14 @@ class VoiceGateway:
                 if not self.cancel_guard.can_emit(response_id):
                     raise TTSCancelledError("TTS response is no longer current")
                 self._capture_turn_timing(turn_id, "tts_requested_at")
+                self._trace_latency(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    component="tts",
+                    event="tts_request_start",
+                    metadata={"sentence_bytes": len(sentence.encode("utf-8"))},
+                )
                 async for chunk in self.tts_service.stream(
                     text=sentence,
                     response_id=str(response_id),
@@ -2983,8 +3375,17 @@ class VoiceGateway:
                             turn_id=turn_id,
                             response_id=response_id,
                         )
-                    if chunk:
+                    if chunk and not first_audio_traced:
+                        first_audio_traced = True
                         self._capture_turn_timing(turn_id, "tts_first_audio_at")
+                        self._trace_latency(
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            response_id=response_id,
+                            component="tts",
+                            event="tts_first_audio_chunk",
+                            metadata={"chunk_bytes": len(chunk)},
+                        )
                     await self._send_tts_audio(
                         session_id=session_id,
                         turn_id=turn_id,
@@ -3058,6 +3459,13 @@ class VoiceGateway:
                     session_id=session_id,
                     turn_id=turn_id,
                     response_id=response_id,
+                )
+                self._trace_latency(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    component="tts",
+                    event="tts_generation_complete",
                 )
         except TTSCancelledError:
             if started:
@@ -3265,17 +3673,53 @@ class VoiceGateway:
             or self._memory_excluded_for_session()
         ):
             return None
+        rag_started = time.monotonic()
+        self._trace_latency(
+            turn_id=self.active_turn.id if self.active_turn else None,
+            response_id=self.active_turn.response_id if self.active_turn else None,
+            component="rag",
+            event="rag_start",
+        )
+
+        def trace_retrieval_stage(stage: str, duration_ms: float, metadata: dict[str, Any]) -> None:
+            ended = time.monotonic()
+            started = ended - max(0.0, duration_ms) / 1000
+            self._trace_latency(
+                turn_id=self.active_turn.id if self.active_turn else None,
+                response_id=self.active_turn.response_id if self.active_turn else None,
+                component="rag",
+                event=f"{stage}_start",
+                monotonic_ms=started * 1000,
+            )
+            self._trace_latency(
+                turn_id=self.active_turn.id if self.active_turn else None,
+                response_id=self.active_turn.response_id if self.active_turn else None,
+                component="rag",
+                event=f"{stage}_end",
+                monotonic_ms=ended * 1000,
+                duration_ms=duration_ms,
+                metadata=metadata,
+            )
+
         try:
             result = await service.retrieve(
                 self.db,
                 user_id=self.principal.user_id,
                 query=transcript,
                 now=self._now_datetime(),
+                trace=trace_retrieval_stage,
             )
         except MemoryProviderError:
             # Memory is an enhancement; a provider outage must not prevent
             # the committed transcript from reaching the configured LLM.
             return None
+        self._trace_latency(
+            turn_id=self.active_turn.id if self.active_turn else None,
+            response_id=self.active_turn.response_id if self.active_turn else None,
+            component="rag",
+            event="rag_end",
+            duration_ms=(time.monotonic() - rag_started) * 1000,
+        )
         if self.settings.memory_retrieval_mode == "shadow" or not result.memories:
             return None
         return (

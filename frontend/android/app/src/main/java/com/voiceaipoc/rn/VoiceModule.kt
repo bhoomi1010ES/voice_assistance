@@ -197,6 +197,10 @@ class VoiceModule(
                 emitSileroVadEvent(EVENT_SILERO_VAD_SPEECH_STOPPED, event)
             }
 
+            override fun onSpeechActivity(event: SileroVadEngine.Event) {
+                emitSileroVadEvent(EVENT_SILERO_VAD_SPEECH_ACTIVITY, event)
+            }
+
             override fun onEngineError(status: SileroVadEngine.Status) {
                 emitSileroVadError(status)
             }
@@ -313,8 +317,12 @@ class VoiceModule(
     }
 
     @ReactMethod
-    fun startVoiceTurn(clientTurnId: String?, promise: Promise) {
-        resolveVoiceResult(voiceGateway.startTurn(clientTurnId), promise)
+    fun startVoiceTurn(
+        clientTurnId: String?,
+        includePreRoll: Boolean,
+        promise: Promise,
+    ) {
+        resolveVoiceResult(voiceGateway.startTurn(clientTurnId, includePreRoll), promise)
     }
 
     @ReactMethod
@@ -1536,6 +1544,7 @@ class VoiceModule(
         const val EVENT_VAD_SPEECH_STOPPED = VadEngine.EVENT_SPEECH_STOPPED
         const val EVENT_SILERO_VAD_SPEECH_STARTED = SileroVadEngine.EVENT_SPEECH_STARTED
         const val EVENT_SILERO_VAD_SPEECH_STOPPED = SileroVadEngine.EVENT_SPEECH_STOPPED
+        const val EVENT_SILERO_VAD_SPEECH_ACTIVITY = SileroVadEngine.EVENT_SPEECH_ACTIVITY
         const val EVENT_SILERO_VAD_ERROR = SileroVadEngine.EVENT_ERROR
         const val EVENT_WAKE_WORD_DETECTED = WakeWordEngine.EVENT_WAKE_WORD_DETECTED
         const val EVENT_WAKE_ENGINE_STARTED = WakeWordEngine.EVENT_ENGINE_STARTED
