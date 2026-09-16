@@ -39,6 +39,7 @@ class MemoryJobType(StrEnum):
     EMBED_MEMORY = "embed_memory"
     REEMBED_MEMORY = "reembed_memory"
     PURGE_SESSION = "purge_session"
+    INDEX_MEMORY_GRAPH = "index_memory_graph"
 
 
 class MemoryJobStatus(StrEnum):

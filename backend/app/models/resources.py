@@ -18,7 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
+from sqlalchemy.dialects.postgresql import JSONB, REAL, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -262,6 +262,145 @@ class MemoryEntity(Base):
     )
 
 
+class EntityAlias(Base):
+    """User-owned exact alias and optional memory provenance for one entity."""
+
+    __tablename__ = "entity_aliases"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    alias: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_alias: Mapped[str] = mapped_column(Text, nullable=False)
+    source_memory_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    source_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["entity_id", "user_id"],
+            ["entities.id", "entities.user_id"],
+            ondelete="CASCADE",
+            name="fk_entity_aliases_entity_user",
+        ),
+        ForeignKeyConstraint(
+            ["source_memory_id", "user_id"],
+            ["memory_items.id", "memory_items.user_id"],
+            ondelete="CASCADE",
+            name="fk_entity_aliases_source_memory_user",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "entity_id",
+            "normalized_alias",
+            name="uq_entity_aliases_user_entity_normalized",
+        ),
+        CheckConstraint(
+            "source_kind IN ('canonical', 'memory', 'manual', 'legacy')",
+            name="ck_entity_aliases_source_kind",
+        ),
+        Index("ix_entity_aliases_user_normalized", "user_id", "normalized_alias"),
+        Index("ix_entity_aliases_user_entity", "user_id", "entity_id"),
+    )
+
+
+class EntityRelationship(Base):
+    """One user-owned, memory-supported entity-to-entity relationship."""
+
+    __tablename__ = "entity_relationships"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    relationship_type: Mapped[str] = mapped_column(Text, nullable=False)
+    target_entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_memory_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    confidence: Mapped[float] = mapped_column(REAL, nullable=False)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    extraction_policy_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["source_entity_id", "user_id"],
+            ["entities.id", "entities.user_id"],
+            ondelete="CASCADE",
+            name="fk_entity_relationships_source_entity_user",
+        ),
+        ForeignKeyConstraint(
+            ["target_entity_id", "user_id"],
+            ["entities.id", "entities.user_id"],
+            ondelete="CASCADE",
+            name="fk_entity_relationships_target_entity_user",
+        ),
+        ForeignKeyConstraint(
+            ["source_memory_id", "user_id"],
+            ["memory_items.id", "memory_items.user_id"],
+            ondelete="CASCADE",
+            name="fk_entity_relationships_source_memory_user",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "source_entity_id",
+            "relationship_type",
+            "target_entity_id",
+            "source_memory_id",
+            name="uq_entity_relationships_evidence",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'superseded')",
+            name="ck_entity_relationships_status",
+        ),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1",
+            name="ck_entity_relationships_confidence",
+        ),
+        CheckConstraint(
+            "valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from",
+            name="ck_entity_relationships_validity",
+        ),
+        CheckConstraint(
+            "source_entity_id <> target_entity_id",
+            name="ck_entity_relationships_no_self_edge",
+        ),
+        Index(
+            "ix_entity_relationships_source_status",
+            "user_id",
+            "source_entity_id",
+            "status",
+        ),
+        Index(
+            "ix_entity_relationships_target_status",
+            "user_id",
+            "target_entity_id",
+            "status",
+        ),
+        Index(
+            "ix_entity_relationships_type_status",
+            "user_id",
+            "relationship_type",
+            "status",
+        ),
+        Index(
+            "ix_entity_relationships_user_memory",
+            "user_id",
+            "source_memory_id",
+        ),
+    )
+
+
 class MemoryJob(Base):
     __tablename__ = "memory_jobs"
 
@@ -318,7 +457,8 @@ class MemoryJob(Base):
         ),
         UniqueConstraint("user_id", "idempotency_key", name="uq_memory_jobs_user_idempotency"),
         CheckConstraint(
-            "job_type IN ('extract_turn', 'embed_memory', 'reembed_memory', 'purge_session')",
+            "job_type IN ('extract_turn', 'embed_memory', 'reembed_memory', 'purge_session', "
+            "'index_memory_graph')",
             name="ck_memory_jobs_type",
         ),
         CheckConstraint(

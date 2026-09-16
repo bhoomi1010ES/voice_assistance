@@ -3,6 +3,8 @@
 from app.models.auth import AuditLog, AuthSession, Device, User
 from app.models.resources import (
     Entity,
+    EntityAlias,
+    EntityRelationship,
     MemoryChunk,
     MemoryEntity,
     MemoryItem,
@@ -20,6 +22,8 @@ __all__ = [
     "ConversationTurn",
     "Device",
     "Entity",
+    "EntityAlias",
+    "EntityRelationship",
     "MemoryChunk",
     "MemoryEntity",
     "MemoryItem",

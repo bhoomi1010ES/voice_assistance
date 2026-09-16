@@ -116,6 +116,16 @@ class Settings(BaseSettings):
     # retrieval/write stages and their acceptance evidence are complete.
     memory_retrieval_mode: Literal["off", "shadow", "inject"] = "off"
     memory_write_enabled: bool = False
+    # Phase 6A GraphRAG rollout controls. These are configuration-only until
+    # the graph schema, retrieval, and write stages are separately accepted.
+    graph_rag_mode: Literal["off", "shadow", "inject"] = "off"
+    graph_write_enabled: bool = False
+    graph_max_depth: int = Field(default=2, ge=1, le=3)
+    graph_max_query_entities: int = Field(default=3, ge=1, le=10)
+    graph_max_edges_per_entity: int = Field(default=10, ge=1, le=100)
+    graph_max_paths: int = Field(default=20, ge=1, le=100)
+    graph_max_memories: int = Field(default=10, ge=1, le=50)
+    graph_rag_timeout_ms: int = Field(default=50, ge=1, le=5_000)
     embedding_api_url: str | None = None
     rerank_api_url: str | None = None
     memory_expected_embedding_model: str = "BAAI/bge-m3"

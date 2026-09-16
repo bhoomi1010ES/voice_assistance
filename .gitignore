@@ -133,3 +133,9 @@ logs/latency_trace.jsonl
 logs/live_latency_trace.jsonl
 logs/latency/
 docs/latency_runs/
+
+# Keep the requested Phase 6 reports visible to git
+!/docs/phase6_hybrid_rag_current_implementation_audit.md
+!/docs/20260916T015744Z_phase6a_stage4_async_graph_indexing.md
+# Keep the accepted local Phase 6A baseline artifact outside Git
+/scratch/phase6a_stage0_hybrid_baseline_20260915.json

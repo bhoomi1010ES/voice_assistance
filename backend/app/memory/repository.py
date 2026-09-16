@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ConversationTurn, MemoryItem, MemoryJob, Message, User, VoiceSession
@@ -160,6 +161,45 @@ class MemoryRepository:
         session.add(job)
         await session.flush()
         return job, True
+
+    async def enqueue_graph_index(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        memory_id: uuid.UUID,
+        policy_version: str,
+    ) -> tuple[MemoryJob, bool]:
+        """Enqueue one graph index operation per owner, memory and policy version."""
+
+        idempotency_key = f"graph:{user_id}:{memory_id}:{policy_version}"
+        statement = (
+            pg_insert(MemoryJob)
+            .values(
+                user_id=user_id,
+                job_type="index_memory_graph",
+                memory_id=memory_id,
+                idempotency_key=idempotency_key,
+                status="pending",
+                attempts=0,
+                available_at=datetime.now(UTC),
+                policy_version=policy_version,
+            )
+            .on_conflict_do_nothing(constraint="uq_memory_jobs_user_idempotency")
+            .returning(MemoryJob.id)
+        )
+        async with session.begin_nested():
+            inserted_id = await session.scalar(statement)
+
+        job = await session.scalar(
+            select(MemoryJob).where(
+                MemoryJob.user_id == user_id,
+                MemoryJob.idempotency_key == idempotency_key,
+            )
+        )
+        if job is None:
+            raise MemoryRepositoryConflict("graph index job could not be read after enqueue")
+        return job, inserted_id is not None
 
     async def bump_memory_version(self, session: AsyncSession, *, user_id: uuid.UUID) -> None:
         """Advance the per-user invalidation version without loading content."""

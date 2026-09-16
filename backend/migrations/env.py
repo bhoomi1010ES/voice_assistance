@@ -15,6 +15,8 @@ from app.models import (  # noqa: F401
     ConversationTurn,
     Device,
     Entity,
+    EntityAlias,
+    EntityRelationship,
     MemoryChunk,
     MemoryEntity,
     MemoryItem,

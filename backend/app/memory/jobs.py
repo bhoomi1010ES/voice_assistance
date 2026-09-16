@@ -10,6 +10,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.graph.indexing import GraphIndexingService
 from app.models import MemoryChunk, MemoryItem, MemoryJob, Message, User, VoiceSession
 
 from .extraction import extract_explicit_candidates
@@ -81,11 +82,13 @@ class MemoryJobWorker:
         *,
         embedding_provider: RemoteEmbeddingProvider | None = None,
         writer: MemoryWriter | None = None,
+        graph_indexer: GraphIndexingService | None = None,
     ) -> None:
         self.settings = settings
         self.repository = MemoryJobRepository(settings)
         self.embedding_provider = embedding_provider
         self.writer = writer or MemoryWriter(settings)
+        self.graph_indexer = graph_indexer or GraphIndexingService(settings)
 
     async def run_once(self, session: AsyncSession) -> bool:
         job = await self.repository.claim_next(session)
@@ -95,6 +98,7 @@ class MemoryJobWorker:
         job_uuid = job.id
         job_id = _short_id(job.id)
         user_id = _short_id(job.user_id)
+        memory_id = _short_id(job.memory_id) if job.memory_id else None
         job_type = job.job_type
         attempted_count = job.attempts
         LOGGER.info(
@@ -114,6 +118,8 @@ class MemoryJobWorker:
                 await self._embed_memory(session, job)
             elif job.job_type == "purge_session":
                 await self._purge_session(session, job)
+            elif job.job_type == "index_memory_graph":
+                await self._index_memory_graph(session, job)
             else:
                 raise ValueError("memory_job_type_unsupported")
             await self.repository.complete(session, job)
@@ -178,7 +184,89 @@ class MemoryJobWorker:
                     "duration_ms": round((time.perf_counter() - started) * 1000, 3),
                 },
             )
+            if job_type == "index_memory_graph":
+                LOGGER.warning(
+                    "memory graph index job retry scheduled"
+                    if status == "retry_wait"
+                    else "memory graph index job dead-lettered",
+                    extra={
+                        "event": (
+                            "memory.graph.job_retry"
+                            if status == "retry_wait"
+                            else "memory.graph.job_dead"
+                        ),
+                        "job_id": job_id,
+                        "memory_id": memory_id,
+                        "user_id": user_id,
+                        "attempt": attempted_count,
+                        "status": status,
+                        "error_code": _error_code(error),
+                        "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+                    },
+                )
         return True
+
+    async def _index_memory_graph(self, session: AsyncSession, job: MemoryJob) -> None:
+        started = time.perf_counter()
+        job_id = _short_id(job.id)
+        memory_id = _short_id(job.memory_id) if job.memory_id else None
+        user_id = _short_id(job.user_id)
+        LOGGER.info(
+            "memory graph index job started",
+            extra={
+                "event": "memory.graph.job_started",
+                "job_id": job_id,
+                "memory_id": memory_id,
+                "user_id": user_id,
+                "policy_version": job.policy_version,
+                "attempt": job.attempts,
+            },
+        )
+        if job.memory_id is None:
+            LOGGER.info(
+                "memory graph index job skipped",
+                extra={
+                    "event": "memory.graph.job_skipped",
+                    "job_id": job_id,
+                    "memory_id": None,
+                    "user_id": user_id,
+                    "reason_code": "memory_missing",
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+                },
+            )
+            return
+
+        result = await self.graph_indexer.index_memory(
+            session,
+            user_id=job.user_id,
+            memory_id=job.memory_id,
+            policy_version=job.policy_version,
+        )
+        event = (
+            "memory.graph.job_skipped"
+            if result.status == "skipped"
+            else "memory.graph.job_completed"
+        )
+        LOGGER.info(
+            "memory graph index job %s",
+            result.status,
+            extra={
+                "event": event,
+                "job_id": job_id,
+                "memory_id": memory_id,
+                "user_id": user_id,
+                "status": result.status,
+                "reason_code": result.reason_code,
+                "entity_count": result.entities_created + result.entities_reused,
+                "entities_created": result.entities_created,
+                "entities_reused": result.entities_reused,
+                "edge_count": result.edges_created,
+                "alias_count": result.aliases_created,
+                "policy_version": job.policy_version,
+                "timings_ms": dict(result.timings_ms),
+                "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+            },
+        )
 
     async def _extract_turn(self, session: AsyncSession, job: MemoryJob) -> None:
         if job.source_message_id is None:

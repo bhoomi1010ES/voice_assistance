@@ -1,20 +1,33 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.models import Entity, MemoryChunk, MemoryEntity, MemoryItem, MemoryJob
+from app.graph.policy import GRAPH_INDEX_POLICY_VERSION, derive_relationship_spec
+from app.models import (
+    Entity,
+    EntityRelationship,
+    MemoryChunk,
+    MemoryEntity,
+    MemoryItem,
+    MemoryJob,
+    User,
+    VoiceSession,
+)
 
 from .chunking import chunk_text
 from .policy import ExtractionCandidate, validate_safe_json
 from .repository import MemoryRepository
 from .types import MemorySourceKind, MemoryStatus, MemoryType, normalize_memory_text
+
+LOGGER = logging.getLogger("voice-assistance-backend")
 
 
 class MemoryWriteConflict(RuntimeError):
@@ -71,6 +84,16 @@ class MemoryWriter:
             if old is not None:
                 old.status = MemoryStatus.SUPERSEDED
                 supersedes_id = old.id
+                if self.settings.graph_write_enabled:
+                    await session.execute(
+                        update(EntityRelationship)
+                        .where(
+                            EntityRelationship.user_id == user_id,
+                            EntityRelationship.source_memory_id == old.id,
+                            EntityRelationship.status == "active",
+                        )
+                        .values(status="superseded")
+                    )
 
         item = MemoryItem(
             user_id=user_id,
@@ -161,6 +184,48 @@ class MemoryWriter:
                 available_at=datetime.now(UTC),
             )
         )
+        if self.settings.graph_write_enabled and source_kind != MemorySourceKind.LEGACY:
+            graph_spec, _reason = derive_relationship_spec(
+                memory_type=item.memory_type,
+                subject=item.subject,
+                predicate=item.predicate,
+                object_json=item.object_json,
+            )
+            if graph_spec is not None:
+                owner_memory_enabled = await session.scalar(
+                    select(User.memory_enabled).where(User.id == user_id)
+                )
+                session_included = True
+                if source_session_id is not None:
+                    source_session = await session.scalar(
+                        select(VoiceSession).where(
+                            VoiceSession.id == source_session_id,
+                            VoiceSession.user_id == user_id,
+                        )
+                    )
+                    if (
+                        source_session
+                        and (source_session.client_metadata or {}).get("memory_excluded") is True
+                    ):
+                        session_included = False
+                if owner_memory_enabled and session_included:
+                    graph_job, enqueued = await self.repository.enqueue_graph_index(
+                        session,
+                        user_id=user_id,
+                        memory_id=item.id,
+                        policy_version=GRAPH_INDEX_POLICY_VERSION,
+                    )
+                    if enqueued:
+                        LOGGER.info(
+                            "memory graph index job enqueued",
+                            extra={
+                                "event": "memory.graph.job_enqueued",
+                                "job_id": _short_id(graph_job.id),
+                                "memory_id": _short_id(item.id),
+                                "user_id": _short_id(user_id),
+                                "policy_version": GRAPH_INDEX_POLICY_VERSION,
+                            },
+                        )
         return item, True
 
     async def write_many(
@@ -187,3 +252,7 @@ class MemoryWriter:
             )
             written.append(item)
         return written
+
+
+def _short_id(value: object) -> str:
+    return str(value).replace("-", "")[:12]

@@ -160,3 +160,91 @@ def test_environment_overrides_dotenv_values(tmp_path, monkeypatch) -> None:
     assert settings.log_level == "ERROR"
     assert settings.database_url.endswith("/environment")
     assert settings.redis_url == "redis://localhost:6379/5"
+
+
+def test_graph_feature_flags_default_to_safe_bounded_values() -> None:
+    settings = Settings(
+        _env_file=None,
+        memory_retrieval_mode="off",
+        memory_write_enabled=False,
+    )
+
+    assert settings.graph_rag_mode == "off"
+    assert settings.graph_write_enabled is False
+    assert settings.graph_max_depth == 2
+    assert settings.graph_max_query_entities == 3
+    assert settings.graph_max_edges_per_entity == 10
+    assert settings.graph_max_paths == 20
+    assert settings.graph_max_memories == 10
+    assert settings.graph_rag_timeout_ms == 50
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow", "inject"])
+def test_graph_retrieval_mode_accepts_supported_values(mode: str) -> None:
+    settings = Settings(
+        _env_file=None,
+        memory_retrieval_mode="off",
+        memory_write_enabled=False,
+        graph_rag_mode=mode,
+    )
+
+    assert settings.graph_rag_mode == mode
+
+
+def test_graph_retrieval_mode_rejects_unknown_values() -> None:
+    with pytest.raises(ValueError, match="graph_rag_mode"):
+        Settings(
+            _env_file=None,
+            memory_retrieval_mode="off",
+            memory_write_enabled=False,
+            graph_rag_mode="enabled",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("graph_max_depth", 0),
+        ("graph_max_depth", 4),
+        ("graph_max_query_entities", 0),
+        ("graph_max_query_entities", 11),
+        ("graph_max_edges_per_entity", 0),
+        ("graph_max_edges_per_entity", 101),
+        ("graph_max_paths", 0),
+        ("graph_max_paths", 101),
+        ("graph_max_memories", 0),
+        ("graph_max_memories", 51),
+        ("graph_rag_timeout_ms", 0),
+        ("graph_rag_timeout_ms", 5_001),
+    ],
+)
+def test_graph_integer_limits_are_positive_and_bounded(field_name: str, invalid_value: int) -> None:
+    with pytest.raises(ValueError, match=field_name):
+        Settings(
+            _env_file=None,
+            memory_retrieval_mode="off",
+            memory_write_enabled=False,
+            **{field_name: invalid_value},
+        )
+
+
+def test_graph_feature_flags_load_from_dotenv(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "GRAPH_RAG_MODE=shadow\n"
+        "GRAPH_WRITE_ENABLED=true\n"
+        "GRAPH_MAX_DEPTH=3\n"
+        "GRAPH_RAG_TIMEOUT_MS=125\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings(
+        _env_file=env_file,
+        memory_retrieval_mode="off",
+        memory_write_enabled=False,
+    )
+
+    assert settings.graph_rag_mode == "shadow"
+    assert settings.graph_write_enabled is True
+    assert settings.graph_max_depth == 3
+    assert settings.graph_rag_timeout_ms == 125
