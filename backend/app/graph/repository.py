@@ -5,7 +5,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import Select, and_, func, or_, select, union_all
+from sqlalchemy import Select, and_, delete, exists, func, or_, select, union_all
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,7 +29,7 @@ from app.graph.types import (
     entity_from_row,
 )
 from app.memory.types import normalize_memory_text
-from app.models import Entity, EntityAlias, EntityRelationship, MemoryItem
+from app.models import Entity, EntityAlias, EntityRelationship, MemoryEntity, MemoryItem
 
 
 def normalize_graph_name(value: str, *, max_length: int | None = None) -> str:
@@ -68,6 +68,69 @@ class GraphRepository:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings()
+
+    async def cleanup_orphaned_entities(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        limit: int = 100,
+    ) -> int:
+        """Delete a bounded batch of graph entities with no retained evidence.
+
+        Manual and canonical aliases are retained by policy. Memory-backed
+        aliases and all graph edges may be removed once their source evidence
+        is gone. The operation is owner-scoped and safe to replay; concurrent
+        writers either retain the entity through a link or retry their insert
+        after the delete transaction completes.
+        """
+
+        if not 1 <= limit <= 1_000:
+            raise ValueError("orphan cleanup limit must be between 1 and 1000")
+        retained_alias = exists(
+            select(EntityAlias.id).where(
+                EntityAlias.user_id == user_id,
+                EntityAlias.entity_id == Entity.id,
+                EntityAlias.source_kind.in_(("manual", "canonical")),
+            )
+        )
+        memory_link = exists(
+            select(MemoryEntity.memory_id).where(
+                MemoryEntity.user_id == user_id,
+                MemoryEntity.entity_id == Entity.id,
+            )
+        )
+        active_edge = exists(
+            select(EntityRelationship.id).where(
+                EntityRelationship.user_id == user_id,
+                EntityRelationship.status == "active",
+                or_(
+                    EntityRelationship.source_entity_id == Entity.id,
+                    EntityRelationship.target_entity_id == Entity.id,
+                ),
+            )
+        )
+        candidate_ids = list(
+            (
+                await session.scalars(
+                    select(Entity.id)
+                    .where(
+                        Entity.user_id == user_id,
+                        ~retained_alias,
+                        ~memory_link,
+                        ~active_edge,
+                    )
+                    .order_by(Entity.id.asc())
+                    .limit(limit)
+                )
+            ).all()
+        )
+        if not candidate_ids:
+            return 0
+        result = await session.execute(
+            delete(Entity).where(Entity.user_id == user_id, Entity.id.in_(candidate_ids))
+        )
+        return int(result.rowcount or 0)
 
     async def get_owned_entity(
         self,

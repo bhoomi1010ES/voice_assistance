@@ -22,6 +22,10 @@ from .writer import MemoryWriter
 LOGGER = logging.getLogger("voice-assistance-backend")
 
 
+class UnsupportedMemoryJobError(ValueError):
+    code = "memory_job_type_unsupported"
+
+
 class MemoryJobHandler(Protocol):
     async def __call__(self, session: AsyncSession, job: MemoryJob) -> None: ...
 
@@ -114,14 +118,14 @@ class MemoryJobWorker:
         try:
             if job.job_type == "extract_turn":
                 await self._extract_turn(session, job)
-            elif job.job_type == "embed_memory":
+            elif job.job_type in {"embed_memory", "reembed_memory"}:
                 await self._embed_memory(session, job)
             elif job.job_type == "purge_session":
                 await self._purge_session(session, job)
             elif job.job_type == "index_memory_graph":
                 await self._index_memory_graph(session, job)
             else:
-                raise ValueError("memory_job_type_unsupported")
+                raise UnsupportedMemoryJobError("memory_job_type_unsupported")
             await self.repository.complete(session, job)
             await session.commit()
             LOGGER.info(
@@ -152,8 +156,12 @@ class MemoryJobWorker:
             await session.rollback()
             # The rollback expires the claimed object, so reload it by ID before updating.
             current = datetime.now(UTC)
+            error_code = _error_code(error)
             status = (
-                "dead" if attempted_count >= self.settings.memory_job_max_attempts else "retry_wait"
+                "dead"
+                if error_code == "memory_job_type_unsupported"
+                or attempted_count >= self.settings.memory_job_max_attempts
+                else "retry_wait"
             )
             await session.execute(
                 update(MemoryJob)
@@ -162,7 +170,7 @@ class MemoryJobWorker:
                     status=status,
                     attempts=attempted_count,
                     locked_at=None,
-                    last_error_code=_error_code(error),
+                    last_error_code=error_code,
                     available_at=(
                         current
                         if status == "dead"
@@ -180,7 +188,7 @@ class MemoryJobWorker:
                     "job_type": job_type,
                     "attempt": attempted_count,
                     "status": status,
-                    "error_code": _error_code(error),
+                    "error_code": error_code,
                     "duration_ms": round((time.perf_counter() - started) * 1000, 3),
                 },
             )
@@ -200,7 +208,7 @@ class MemoryJobWorker:
                         "user_id": user_id,
                         "attempt": attempted_count,
                         "status": status,
-                        "error_code": _error_code(error),
+                        "error_code": error_code,
                         "duration_ms": round((time.perf_counter() - started) * 1000, 3),
                     },
                 )
@@ -271,6 +279,8 @@ class MemoryJobWorker:
     async def _extract_turn(self, session: AsyncSession, job: MemoryJob) -> None:
         if job.source_message_id is None:
             raise ValueError("memory_source_message_missing")
+        if not self.settings.memory_write_enabled:
+            return
         message = await session.scalar(
             select(Message).where(
                 Message.id == job.source_message_id, Message.user_id == job.user_id
@@ -310,8 +320,19 @@ class MemoryJobWorker:
     async def _embed_memory(self, session: AsyncSession, job: MemoryJob) -> None:
         if job.memory_id is None or self.embedding_provider is None:
             raise ValueError("memory_embedding_provider_unavailable")
+        if not self.settings.memory_write_enabled:
+            return
         user = await session.get(User, job.user_id)
         if user is None or not user.memory_enabled:
+            return
+        memory = await session.scalar(
+            select(MemoryItem).where(
+                MemoryItem.id == job.memory_id,
+                MemoryItem.user_id == job.user_id,
+                MemoryItem.status == "active",
+            )
+        )
+        if memory is None:
             return
         chunks = list(
             (

@@ -47,7 +47,7 @@ def test_tts_pacing_does_not_delay_when_network_is_already_behind() -> None:
 @pytest.mark.asyncio
 async def test_tts_timing_captures_first_valid_pcm_without_android_playback_claim() -> None:
     class FakeTTS:
-        async def stream(self, *, text: str, response_id: str):
+        async def stream(self, *, text: str, response_id: str, **kwargs):
             assert text == "hello."
             assert response_id
             yield b"\x00\x00" * 4_800

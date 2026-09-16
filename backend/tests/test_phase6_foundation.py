@@ -94,6 +94,13 @@ def test_phase6_metadata_tables_and_ownership_constraints_exist() -> None:
         constraint.name == "uq_messages_turn_role_sequence"
         for constraint in Message.__table__.constraints
     )
+    supersession = next(
+        constraint
+        for constraint in MemoryItem.__table__.foreign_key_constraints
+        if constraint.name == "fk_memory_items_supersedes_user"
+    )
+    assert [column.name for column in supersession.columns] == ["supersedes_id", "user_id"]
+    assert [column.name for column in supersession.elements[0].column.table.primary_key] == ["id"]
 
 
 @pytest.mark.asyncio

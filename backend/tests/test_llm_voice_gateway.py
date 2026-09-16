@@ -57,9 +57,20 @@ class FakePersistence:
         return None
 
 
+class _NestedTransaction:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+
 class FakeDatabase:
     def __init__(self) -> None:
         self.commits = 0
+
+    def begin_nested(self):
+        return _NestedTransaction()
 
     async def scalar(self, _statement):
         return SimpleNamespace(memory_enabled=False)
@@ -116,6 +127,29 @@ def _gateway(event_factory):
 
     gateway._send = send
     return gateway, outbound
+
+
+@pytest.mark.asyncio
+async def test_live_memory_exclusion_lookup_refreshes_cached_gateway_metadata() -> None:
+    class ExclusionDatabase:
+        def begin_nested(self):
+            return _NestedTransaction()
+
+        async def execute(self, _statement):
+            return SimpleNamespace(first=lambda: ({"memory_excluded": True},))
+
+    gateway = object.__new__(VoiceGateway)
+    gateway.db = ExclusionDatabase()
+    gateway.principal = SimpleNamespace(user_id=uuid.uuid4())
+    gateway._session_id = uuid.uuid4()
+    gateway._session_client_metadata = {"memory_excluded": False}
+    gateway.voice_session = SimpleNamespace(
+        client_metadata={"memory_excluded": False, "timezone": "UTC"}
+    )
+
+    assert await gateway._memory_excluded_for_session() is True
+    assert gateway._session_client_metadata == {"memory_excluded": True}
+    assert gateway.voice_session.client_metadata == {"memory_excluded": True, "timezone": "UTC"}
 
 
 def test_gateway_session_identity_does_not_read_expired_orm_state() -> None:

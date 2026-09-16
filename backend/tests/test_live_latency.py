@@ -4,7 +4,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from scripts.live_latency import FileTail, build_logcat_command, parse_log_line, record_key
+from scripts.live_latency import (
+    FileTail,
+    LiveCollector,
+    build_logcat_command,
+    parse_log_line,
+    record_key,
+)
 
 
 def test_parse_log_line_extracts_trace_without_logging_pcm() -> None:
@@ -77,3 +83,47 @@ def test_logcat_command_starts_at_current_device_time_without_clearing() -> None
         "-v",
         "threadtime",
     ]
+
+
+def test_collector_rejects_wrong_response_and_turn_ids(tmp_path: Path) -> None:
+    collector = LiveCollector(
+        backend_trace=tmp_path / "backend.jsonl",
+        output=tmp_path / "live.jsonl",
+        metro_log=None,
+        adb_command="adb",
+        clear_logcat=False,
+        from_start=False,
+        once=False,
+    )
+    try:
+        collector.accept(
+            {
+                "event": "turn_ready_received",
+                "turn_id": "turn-1",
+                "response_id": "response-1",
+            },
+            source="backend",
+        )
+        collector.accept(
+            {
+                "event": "llm_first_token_received",
+                "turn_id": "turn-1",
+                "response_id": "response-old",
+            },
+            source="android",
+        )
+        collector.accept(
+            {
+                "event": "tts_playback_completed",
+                "turn_id": "turn-2",
+                "response_id": "response-1",
+            },
+            source="android",
+        )
+        assert len(collector.records["turn-1"]) == 1
+        assert collector.rejected_records[0]["metadata"]["collector_rejection"] == (
+            "wrong_response_id"
+        )
+        assert collector.rejected_records[1]["metadata"]["collector_rejection"] == ("wrong_turn_id")
+    finally:
+        collector.close()

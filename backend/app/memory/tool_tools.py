@@ -10,10 +10,11 @@ from sqlalchemy import select
 from app.llm.errors import LLMToolError
 from app.llm.tool_loop import ToolExecutionContext, ToolRegistry
 from app.llm.types import LLMToolCall
-from app.models import MemoryItem, User
+from app.models import MemoryItem, Message, User
 
 from .extraction import extract_explicit_tool_candidate
 from .policy import ExtractionCandidate
+from .repository import MemoryRepository
 from .types import MemorySourceKind, MemoryType
 from .writer import MemoryWriter
 
@@ -104,11 +105,25 @@ async def memory_save_handler(
         confidence=1.0,
         salience=1.0,
     )
+    source_message_id = await context.db.scalar(
+        select(Message.id)
+        .where(
+            Message.turn_id == context.turn_id,
+            Message.user_id == context.user_id,
+            Message.role == "user",
+            Message.is_final.is_(True),
+        )
+        .order_by(Message.sequence_no.asc(), Message.id.asc())
+        .limit(1)
+    )
     item, created = await MemoryWriter(context.memory_settings).write_candidate(
         context.db,
         user_id=context.user_id,
         candidate=candidate,
         source_kind=MemorySourceKind.EXPLICIT_TOOL,
+        source_message_id=source_message_id,
+        source_turn_id=context.turn_id,
+        source_session_id=context.session_id,
     )
     return {"memory_id": str(item.id), "created": created}
 
@@ -129,6 +144,7 @@ async def memory_forget_handler(
     if item is None:
         return {"deleted": False}
     await context.db.delete(item)
+    await MemoryRepository().bump_memory_version(context.db, user_id=context.user_id)
     return {"deleted": True, "memory_id": str(item.id)}
 
 

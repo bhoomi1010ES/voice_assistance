@@ -115,6 +115,8 @@ Exit gate: all mandatory remediation is green; the GraphRAG migration has not ye
 
 ---
 
+
+
 # Part 2 — GraphRAG implementation plan
 
 ## 5. Why add GraphRAG here

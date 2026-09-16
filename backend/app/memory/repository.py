@@ -201,6 +201,55 @@ class MemoryRepository:
             raise MemoryRepositoryConflict("graph index job could not be read after enqueue")
         return job, inserted_id is not None
 
+    async def enqueue_reembed_memory(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        memory_id: uuid.UUID,
+        model_version: str,
+        policy_version: str,
+    ) -> tuple[MemoryJob, bool]:
+        """Enqueue one idempotent re-embedding operation for an owned memory."""
+
+        owned_memory = await session.scalar(
+            select(MemoryItem.id).where(
+                MemoryItem.id == memory_id,
+                MemoryItem.user_id == user_id,
+                MemoryItem.status == "active",
+            )
+        )
+        if owned_memory is None:
+            raise MemoryRepositoryConflict("memory is not owned or active")
+        idempotency_key = f"reembed_memory:{memory_id}:{model_version}"
+        statement = (
+            pg_insert(MemoryJob)
+            .values(
+                user_id=user_id,
+                job_type="reembed_memory",
+                memory_id=memory_id,
+                idempotency_key=idempotency_key,
+                status="pending",
+                attempts=0,
+                available_at=datetime.now(UTC),
+                policy_version=policy_version,
+                model_version=model_version,
+            )
+            .on_conflict_do_nothing(constraint="uq_memory_jobs_user_idempotency")
+            .returning(MemoryJob.id)
+        )
+        async with session.begin_nested():
+            inserted_id = await session.scalar(statement)
+        job = await session.scalar(
+            select(MemoryJob).where(
+                MemoryJob.user_id == user_id,
+                MemoryJob.idempotency_key == idempotency_key,
+            )
+        )
+        if job is None:
+            raise MemoryRepositoryConflict("reembed job could not be read after enqueue")
+        return job, inserted_id is not None
+
     async def bump_memory_version(self, session: AsyncSession, *, user_id: uuid.UUID) -> None:
         """Advance the per-user invalidation version without loading content."""
 

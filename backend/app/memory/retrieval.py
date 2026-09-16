@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Select, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -382,16 +383,49 @@ class MemoryRetrievalService:
         user_id: uuid.UUID,
         query: str,
         now: datetime | None = None,
+        limit: int | None = None,
         trace: Callable[[str, float, dict[str, Any]], None] | None = None,
     ) -> MemoryRetrievalResult:
+        requested_limit = self.settings.memory_final_context_count
+        if limit is not None:
+            requested_limit = min(
+                self.settings.memory_final_context_count,
+                max(1, int(limit)),
+            )
         plan = build_memory_query_plan(
             query,
             now=now,
-            limit=self.settings.memory_final_context_count,
+            limit=requested_limit,
         )
         if self.settings.memory_retrieval_mode == "off":
             return MemoryRetrievalResult(status="disabled", plan=plan)
 
+        # Retrieval is optional context. Keep all database reads inside a
+        # savepoint so a provider/database failure cannot poison the gateway's
+        # transaction that is persisting the voice turn.
+        try:
+            async with session.begin_nested():
+                return await self._retrieve_in_savepoint(
+                    session,
+                    user_id=user_id,
+                    plan=plan,
+                    trace=trace,
+                )
+        except SQLAlchemyError:
+            return MemoryRetrievalResult(
+                status="degraded",
+                plan=plan,
+                provider_error="memory_database_error",
+            )
+
+    async def _retrieve_in_savepoint(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        plan: MemoryQueryPlan,
+        trace: Callable[[str, float, dict[str, Any]], None] | None = None,
+    ) -> MemoryRetrievalResult:
         # An AsyncSession is intentionally not used concurrently. This keeps
         # the retrieval boundary safe for the gateway's request transaction;
         # providers can still run independently when they are enabled.
@@ -466,6 +500,14 @@ class MemoryRetrievalService:
                 {"count": len(fused), "started_monotonic_ns": rrf_started_ns},
             )
         if self.reranker is not None and fused:
+            fallback_memory_ids = {candidate.memory_id for candidate in fts} | {
+                candidate.memory_id for candidate in structured
+            }
+            boundary_trusted_memory_ids = {candidate.memory_id for candidate in fts} | (
+                {candidate.memory_id for candidate in structured}
+                if plan.intent == MemoryIntent.TIME_RANGE
+                else set()
+            )
             try:
                 rerank_started_ns = time.perf_counter_ns()
                 fused = await rerank_fused(
@@ -483,18 +525,18 @@ class MemoryRetrievalService:
                 fused = apply_relevance_boundary(
                     fused,
                     minimum_score=self.settings.memory_min_rerank_score,
-                    trusted_memory_ids={candidate.memory_id for candidate in fts}
-                    | (
-                        {candidate.memory_id for candidate in structured}
-                        if plan.intent == MemoryIntent.TIME_RANGE
-                        else set()
-                    ),
+                    trusted_memory_ids=boundary_trusted_memory_ids,
                 )
             except MemoryProviderError as error:
                 provider_error = provider_error or error.code
+                # RRF scores are not reranker scores, so applying the
+                # relevance threshold here would be meaningless. Preserve
+                # only lexical/structured evidence and never expose a
+                # dense-only nearest neighbour when reranking is unavailable.
+                fused = tuple(item for item in fused if item.memory_id in fallback_memory_ids)
         return MemoryRetrievalResult(
             status="degraded" if provider_error else "ready",
             plan=plan,
-            memories=tuple(fused[: self.settings.memory_final_context_count]),
+            memories=tuple(fused[: plan.limit]),
             provider_error=provider_error,
         )

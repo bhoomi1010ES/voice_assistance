@@ -61,3 +61,22 @@ def test_latency_trace_is_best_effort_when_parent_directory_is_unwritable(tmp_pa
     tracer = LatencyTracer(tmp_path / "trace.jsonl")
     tracer.emit(component="gateway", event="turn_received")
     assert (tmp_path / "trace.jsonl").exists()
+
+
+def test_latency_trace_records_explicit_process_domain_and_negative_without_clamping(
+    tmp_path,
+) -> None:
+    path = tmp_path / "trace.jsonl"
+    LatencyTracer(path).emit(
+        session_id="session",
+        turn_id="turn",
+        response_id="response",
+        component="test",
+        event="invalid_duration",
+        duration_ms=-3.5,
+    )
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["process"].startswith("backend:")
+    assert record["clock_domain"] == "backend_python_perf_counter"
+    assert record["wall_time_utc"] == record["timestamp"]
+    assert record["duration_ms"] == -3.5

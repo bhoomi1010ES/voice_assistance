@@ -442,7 +442,33 @@ class RemoteTranscriptionEngine(STTEngine):
             event="stt_response_received",
             monotonic_ns=response_received_ns,
             duration_ms=duration_ms,
-            metadata={"status_code": response.status_code},
+            metadata={
+                "status_code": response.status_code,
+                "duration_basis": "stt_local_http_request",
+            },
+        )
+        self._latency_tracer.emit(
+            session_id=state.handle.session_id,
+            turn_id=state.handle.turn_id,
+            response_id=state.handle.response_id,
+            component="stt",
+            event="stt_request_completed",
+            monotonic_ns=response_received_ns,
+            duration_ms=duration_ms,
+            metadata={
+                "status_code": response.status_code,
+                "duration_basis": "stt_local_http_request",
+            },
+        )
+        self._latency_tracer.emit(
+            session_id=state.handle.session_id,
+            turn_id=state.handle.turn_id,
+            response_id=state.handle.response_id,
+            component="stt",
+            event="stt_request_duration",
+            monotonic_ns=response_received_ns,
+            duration_ms=duration_ms,
+            metadata={"duration_basis": "stt_local_http_request"},
         )
         self._latency_tracer.emit(
             session_id=state.handle.session_id,
@@ -543,6 +569,6 @@ class RemoteTranscriptionEngine(STTEngine):
             language=turn.language,
             confidence=None,
             timestamp_ms=int(time.time() * 1000),
-            monotonic_timestamp=time.monotonic(),
+            monotonic_timestamp=time.perf_counter(),
             inference_duration_ms=0.0,
         )

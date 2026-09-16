@@ -9,6 +9,7 @@ from sqlalchemy import delete, select, update
 
 from app.api.dependencies import DatabaseSessionDependency, get_current_principal
 from app.memory.policy import ExtractionCandidate, validate_candidate
+from app.memory.repository import MemoryRepository
 from app.memory.types import MemorySourceKind, MemoryType
 from app.memory.writer import MemoryWriteConflict, MemoryWriter
 from app.models import MemoryItem, MemoryJob, User
@@ -81,7 +82,7 @@ async def update_memory_settings(
         user.timezone = payload.timezone
     if payload.locale is not None:
         user.locale = payload.locale
-    user.memory_version += 1
+    await MemoryRepository().bump_memory_version(session, user_id=user.id)
     await session.commit()
     await session.refresh(user)
     return user
@@ -94,8 +95,9 @@ async def delete_all_memories(
     principal: Annotated[AuthPrincipal, Depends(get_current_principal)],
 ) -> None:
     user = await _owned_user(session, principal)
-    await session.execute(delete(MemoryItem).where(MemoryItem.user_id == user.id))
-    user.memory_version += 1
+    result = await session.execute(delete(MemoryItem).where(MemoryItem.user_id == user.id))
+    if result.rowcount:
+        await MemoryRepository().bump_memory_version(session, user_id=user.id)
     await session.commit()
 
 
@@ -109,6 +111,8 @@ async def create_memory(
     user = await _owned_user(session, principal)
     if not user.memory_enabled:
         raise memory_disabled()
+    # Product decision: the operator write flag gates voice/tool/worker writes;
+    # user-controlled REST memory management remains available while enabled.
     candidate = ExtractionCandidate(
         content=payload.content,
         memory_type=MemoryType(payload.memory_type),
@@ -183,6 +187,7 @@ async def _search_memories(
         session,
         user_id=user.id,
         query=query_text,
+        limit=limit,
     )
     if not result.memories:
         return []
@@ -191,6 +196,7 @@ async def _search_memories(
             await session.scalars(
                 select(MemoryItem).where(
                     MemoryItem.user_id == user.id,
+                    MemoryItem.status == "active",
                     MemoryItem.id.in_([memory.memory_id for memory in result.memories]),
                 )
             )
@@ -250,6 +256,11 @@ async def update_memory(
     session: DatabaseSessionDependency,
     principal: Annotated[AuthPrincipal, Depends(get_current_principal)],
 ) -> MemoryItem:
+    user = await _owned_user(session, principal)
+    if not user.memory_enabled:
+        raise memory_disabled()
+    # Keep manual REST edits under the same account guard while preserving the
+    # operator-vs-user control decision documented for memory creation.
     old = await get_owned_memory(session, user_id=principal.user_id, memory_id=memory_id)
     if old is None:
         await record_ownership_denial(
@@ -310,4 +321,5 @@ async def delete_memory(
         )
         raise not_found()
     await session.delete(memory)
+    await MemoryRepository().bump_memory_version(session, user_id=principal.user_id)
     await session.commit()

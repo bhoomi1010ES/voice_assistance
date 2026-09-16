@@ -1094,7 +1094,7 @@ class VoiceGateway:
                             memory_write_user_enabled = await self._memory_user_enabled()
                         if memory_write_user_enabled and (
                             self.settings.memory_write_enabled
-                            and not self._memory_excluded_for_session()
+                            and not await self._memory_excluded_for_session()
                         ):
                             with latency_span(
                                 self._trace_latency,
@@ -1369,7 +1369,6 @@ class VoiceGateway:
                 response_id=response_id,
                 component="tool",
                 event="tool_start",
-                monotonic_ms=timestamp * 1000,
                 metadata={"tool_name": call.name, "tool_call_id": call.tool_call_id},
             )
             await self._send_tool_status(
@@ -1390,7 +1389,6 @@ class VoiceGateway:
                 response_id=response_id,
                 component="tool",
                 event="tool_end",
-                monotonic_ms=timestamp * 1000,
                 metadata={"tool_name": _call.name, "tool_call_id": _call.tool_call_id},
             )
 
@@ -1408,7 +1406,7 @@ class VoiceGateway:
             memory_write_allowed = (
                 self.settings.memory_write_enabled
                 and memory_user_enabled
-                and not self._memory_excluded_for_session()
+                and not await self._memory_excluded_for_session()
             )
             allowed_tools = (
                 tuple(
@@ -1552,9 +1550,11 @@ class VoiceGateway:
                         turn_id=turn_id,
                         response_id=response_id,
                         component="llm",
-                        event="llm_request_start",
-                        monotonic_ms=event.monotonic_seconds * 1000,
-                        metadata={"attempt": event.attempt},
+                        event="gateway_llm_request_observed",
+                        metadata={
+                            "attempt": event.attempt,
+                            "duration_basis": "correlation_only",
+                        },
                     )
                     continue
                 first_event_at = first_event_at or event.monotonic_seconds
@@ -1573,11 +1573,13 @@ class VoiceGateway:
                             turn_id=turn_id,
                             response_id=response_id,
                             component="llm",
-                            event="llm_first_token",
-                            monotonic_ms=event.monotonic_seconds * 1000,
+                            event="gateway_llm_first_token_observed",
+                            metadata={
+                                "attempt": event.attempt,
+                                "duration_basis": "correlation_only",
+                            },
                         )
                         observed_ns = time.perf_counter_ns()
-                        provider_token_ns = int(event.monotonic_seconds * 1_000_000_000)
                         self._trace_latency(
                             session_id=session_id,
                             turn_id=turn_id,
@@ -1585,10 +1587,8 @@ class VoiceGateway:
                             component="orchestration",
                             event="llm_first_token_observed_by_gateway",
                             monotonic_ns=observed_ns,
-                            duration_ms=(observed_ns - provider_token_ns) / 1_000_000,
                             metadata={
-                                "provider_to_gateway_delay_ms": (observed_ns - provider_token_ns)
-                                / 1_000_000,
+                                "duration_basis": "correlation_only",
                                 "tool_loop_enabled": (
                                     getattr(self, "tool_registry", None) is not None
                                 ),
@@ -1676,18 +1676,8 @@ class VoiceGateway:
                         turn_id=turn_id,
                         response_id=response_id,
                         component="llm",
-                        event="llm_complete",
-                        monotonic_ms=event.monotonic_seconds * 1000,
-                        metadata={"status": "failed"},
-                    )
-                    self._trace_latency(
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        response_id=response_id,
-                        component="llm",
-                        event="llm_completed",
-                        monotonic_ns=int(event.monotonic_seconds * 1_000_000_000),
-                        metadata={"status": "failed"},
+                        event="gateway_llm_complete_observed",
+                        metadata={"status": "failed", "duration_basis": "correlation_only"},
                     )
                     break
                 if event.event_type == "response_completed":
@@ -1702,18 +1692,11 @@ class VoiceGateway:
                         turn_id=turn_id,
                         response_id=response_id,
                         component="llm",
-                        event="llm_complete",
-                        monotonic_ms=event.monotonic_seconds * 1000,
-                        metadata={"status": "completed"},
-                    )
-                    self._trace_latency(
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        response_id=response_id,
-                        component="llm",
-                        event="llm_completed",
-                        monotonic_ns=int(event.monotonic_seconds * 1_000_000_000),
-                        metadata={"status": "completed"},
+                        event="gateway_llm_complete_observed",
+                        metadata={
+                            "status": "completed",
+                            "duration_basis": "correlation_only",
+                        },
                     )
                     if event.text is not None:
                         text_parts = [event.text]
@@ -2661,13 +2644,16 @@ class VoiceGateway:
             "turn_started_at": "turn_started",
             "speech_started_at": "speech_start",
             "speech_ended_at": "speech_end",
-            "stt_started_at": "stt_processing_start",
-            "stt_completed_at": "stt_final",
-            "llm_started_at": "llm_request_start",
-            "llm_first_token_at": "llm_first_token",
-            "llm_completed_at": "llm_complete",
-            "tts_requested_at": "tts_request_start",
-            "tts_first_audio_at": "tts_first_audio_chunk",
+            "stt_started_at": "gateway_stt_processing_start",
+            "stt_completed_at": "gateway_stt_final_observed",
+            # Provider and TTS adapters own these lifecycle measurements. The
+            # gateway copies are correlation observations only and must never
+            # be selected as duration endpoints.
+            "llm_started_at": "gateway_llm_request_observed",
+            "llm_first_token_at": "gateway_llm_first_token_observed",
+            "llm_completed_at": "gateway_llm_complete_observed",
+            "tts_requested_at": "gateway_tts_request_observed",
+            "tts_first_audio_at": "gateway_tts_first_audio_observed",
             "turn_completed_at": "turn_complete",
         }
         trace_event = event_map.get(event_name)
@@ -2679,7 +2665,10 @@ class VoiceGateway:
                 component="gateway",
                 event=trace_event,
                 timestamp=point.wall.isoformat().replace("+00:00", "Z"),
-                monotonic_ns=int(point.monotonic * 1_000_000_000),
+                # ``TimingPoint.monotonic`` is the application lifecycle clock
+                # used by conversation logging. Trace records use the explicit
+                # backend perf-counter domain and are timestamped at emission.
+                metadata={"timing_point_clock": "gateway_application_monotonic"},
             )
 
     def _trace_latency(
@@ -3648,12 +3637,17 @@ class VoiceGateway:
                     turn_id=turn_id,
                     response_id=response_id,
                     component="tts",
-                    event="tts_request_start",
-                    metadata={"sentence_bytes": len(sentence.encode("utf-8"))},
+                    event="gateway_tts_request_observed",
+                    metadata={
+                        "sentence_bytes": len(sentence.encode("utf-8")),
+                        "duration_basis": "correlation_only",
+                    },
                 )
                 async for chunk in self.tts_service.stream(
                     text=sentence,
                     response_id=str(response_id),
+                    session_id=str(session_id),
+                    turn_id=str(turn_id),
                 ):
                     if not self.cancel_guard.can_emit(response_id):
                         raise TTSCancelledError("TTS response is no longer current")
@@ -3686,8 +3680,11 @@ class VoiceGateway:
                             turn_id=turn_id,
                             response_id=response_id,
                             component="tts",
-                            event="tts_first_audio_chunk",
-                            metadata={"chunk_bytes": len(chunk)},
+                            event="gateway_tts_first_audio_observed",
+                            metadata={
+                                "chunk_bytes": len(chunk),
+                                "duration_basis": "correlation_only",
+                            },
                         )
                     await self._send_tts_audio(
                         session_id=session_id,
@@ -3768,7 +3765,8 @@ class VoiceGateway:
                     turn_id=turn_id,
                     response_id=response_id,
                     component="tts",
-                    event="tts_generation_complete",
+                    event="gateway_tts_generation_observed",
+                    metadata={"duration_basis": "correlation_only"},
                 )
         except TTSCancelledError:
             if started:
@@ -3955,16 +3953,52 @@ class VoiceGateway:
         self._tts_tasks.pop(response_id, None)
 
     async def _memory_user_enabled(self) -> bool:
-        user = await self.db.scalar(select(User).where(User.id == self.principal.user_id))
+        try:
+            async with self.db.begin_nested():
+                user = await self.db.scalar(select(User).where(User.id == self.principal.user_id))
+        except SQLAlchemyError:
+            return False
         return bool(user is not None and user.memory_enabled)
 
-    def _memory_excluded_for_session(self) -> bool:
-        if hasattr(self, "_session_client_metadata"):
-            metadata = self._session_client_metadata
-        else:
-            voice_session = getattr(self, "voice_session", None)
-            metadata = getattr(voice_session, "client_metadata", None)
-        return isinstance(metadata, dict) and metadata.get("memory_excluded") is True
+    async def _memory_excluded_for_session(self) -> bool:
+        """Read exclusion from the owner-scoped row, not a stale gateway cache."""
+
+        session_id = self._active_session_id()
+        if session_id is None:
+            metadata = getattr(self, "_session_client_metadata", None)
+            if metadata is None:
+                voice_session = getattr(self, "voice_session", None)
+                metadata = getattr(voice_session, "client_metadata", None)
+            return isinstance(metadata, dict) and metadata.get("memory_excluded") is True
+        try:
+            async with self.db.begin_nested():
+                row = (
+                    await self.db.execute(
+                        select(VoiceSession.client_metadata).where(
+                            VoiceSession.id == session_id,
+                            VoiceSession.user_id == self.principal.user_id,
+                        )
+                    )
+                ).first()
+        except SQLAlchemyError:
+            # A failed policy lookup must fail closed for memory reads/writes.
+            return True
+        if row is None:
+            return True
+        metadata = row[0]
+        fresh_metadata = metadata if isinstance(metadata, dict) else {}
+        self._session_client_metadata = fresh_metadata
+        # Keep the ORM object aligned for the next gateway commit while
+        # preserving locally staged device/time metadata from this connection.
+        voice_session = getattr(self, "voice_session", None)
+        if voice_session is not None:
+            local_metadata = dict(voice_session.client_metadata or {})
+            if "memory_excluded" in fresh_metadata:
+                local_metadata["memory_excluded"] = fresh_metadata["memory_excluded"]
+            else:
+                local_metadata.pop("memory_excluded", None)
+            voice_session.client_metadata = local_metadata
+        return fresh_metadata.get("memory_excluded") is True
 
     async def _memory_context_for_transcript(
         self,
@@ -3977,7 +4011,7 @@ class VoiceGateway:
         if self.settings.memory_retrieval_mode == "off":
             return None
         service = getattr(self.websocket.app.state, "memory_service", None)
-        if service is None or self._memory_excluded_for_session():
+        if service is None or await self._memory_excluded_for_session():
             return None
         with latency_span(
             self._trace_latency,
@@ -3990,14 +4024,6 @@ class VoiceGateway:
             memory_enabled = await self._memory_user_enabled()
         if not memory_enabled:
             return None
-        rag_started = time.monotonic()
-        self._trace_latency(
-            session_id=session_id,
-            turn_id=turn_id,
-            response_id=response_id,
-            component="rag",
-            event="rag_start",
-        )
 
         def trace_retrieval_stage(stage: str, duration_ms: float, metadata: dict[str, Any]) -> None:
             ended_ns = time.perf_counter_ns()
@@ -4031,7 +4057,7 @@ class VoiceGateway:
             with latency_span(
                 self._trace_latency,
                 component="rag",
-                event="rag_decision",
+                event="memory_context_pipeline",
                 session_id=session_id,
                 turn_id=turn_id,
                 response_id=response_id,
@@ -4043,19 +4069,10 @@ class VoiceGateway:
                     now=self._now_datetime(),
                     trace=trace_retrieval_stage,
                 )
-        except MemoryProviderError:
+        except (MemoryProviderError, SQLAlchemyError):
             # Memory is an enhancement; a provider outage must not prevent
             # the committed transcript from reaching the configured LLM.
             return None
-        self._trace_latency(
-            session_id=session_id,
-            turn_id=turn_id,
-            response_id=response_id,
-            component="rag",
-            event="rag_end",
-            monotonic_ns=time.perf_counter_ns(),
-            duration_ms=(time.monotonic() - rag_started) * 1000,
-        )
         if self.settings.memory_retrieval_mode == "shadow" or not result.memories:
             return None
         return (

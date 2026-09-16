@@ -532,7 +532,7 @@ class WindowsSpeechEngine(STTEngine):
                 or not response.text.strip()
             ):
                 return
-            received_monotonic = time.monotonic()
+            received_monotonic = time.perf_counter()
             try:
                 await state.handle.on_partial(
                     STTEnginePartial(
@@ -554,7 +554,7 @@ class WindowsSpeechEngine(STTEngine):
         if response.type == "FINAL":
             if state.cancelled or response.generation != state.generation:
                 return
-            received_monotonic = time.monotonic()
+            received_monotonic = time.perf_counter()
             final = STTEngineFinal(
                 session_id=state.handle.session_id,
                 turn_id=state.handle.turn_id,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import math
 import os
 import threading
 import time
@@ -24,6 +25,7 @@ _WRITE_LOCK = threading.Lock()
 _PREVIOUS_WRITE: dict[str, Any] | None = None
 _TRACE_HANDLES: weakref.WeakSet[TextIO] = weakref.WeakSet()
 _SENSITIVE_PARTS = ("token", "secret", "password", "authorization", "api_key", "credential")
+BACKEND_CLOCK_DOMAIN = "backend_python_perf_counter"
 
 
 def _close_trace_handles() -> None:
@@ -86,6 +88,8 @@ class LatencyTracer:
         response_id: Any = None,
         component: str,
         event: str,
+        process: str | None = None,
+        clock_domain: str | None = None,
         monotonic_ms: float | None = None,
         monotonic_ns: int | None = None,
         timestamp: str | None = None,
@@ -107,17 +111,23 @@ class LatencyTracer:
         )
         record: dict[str, Any] = {
             "timestamp": wall,
+            "wall_time_utc": wall,
             "timestamp_ms": wall_ms,
             "monotonic_ns": event_monotonic_ns,
             "monotonic_ms": round(event_monotonic_ns / 1_000_000, 3),
-            "clock_domain": "backend",
+            "process": process or f"backend:{os.getpid()}",
+            "clock_domain": clock_domain or BACKEND_CLOCK_DOMAIN,
             "session_id": str(session_id) if session_id is not None else None,
             "turn_id": str(turn_id) if turn_id is not None else None,
             "response_id": str(response_id) if response_id is not None else None,
             "component": component,
             "event": event,
+            # Preserve invalid negative values so the analyzer can reject the
+            # measurement explicitly. Never turn a clock error into zero.
             "duration_ms": (
-                round(max(0.0, float(duration_ms)), 3) if duration_ms is not None else None
+                round(float(duration_ms), 3)
+                if duration_ms is not None and math.isfinite(float(duration_ms))
+                else None
             ),
             "metadata": _safe_value(metadata or {}),
         }

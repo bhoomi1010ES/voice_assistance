@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import uuid
 import wave
 
@@ -37,7 +38,9 @@ async def _noop_partial(_partial) -> None:
 
 
 @pytest.mark.asyncio
-async def test_remote_engine_submits_exact_pcm_as_wav_and_returns_text() -> None:
+async def test_remote_engine_submits_exact_pcm_as_wav_and_returns_text(
+    tmp_path, monkeypatch
+) -> None:
     seen: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -46,6 +49,7 @@ async def test_remote_engine_submits_exact_pcm_as_wav_and_returns_text() -> None
         return httpx.Response(200, json={"text": " hello world "}, request=request)
 
     settings = _settings()
+    monkeypatch.setenv("LATENCY_TRACE_PATH", str(tmp_path / "stt-trace.jsonl"))
     engine = RemoteTranscriptionEngine(settings, transport=httpx.MockTransport(handler))
     session_id, turn_id, response_id = _ids()
     pcm = b"\x01\x02" * 320
@@ -73,6 +77,14 @@ async def test_remote_engine_submits_exact_pcm_as_wav_and_returns_text() -> None
     assert b"test-model" in body
     assert b"RIFF" in body
     assert b"WAVEfmt " in body
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "stt-trace.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    completed = next(record for record in records if record["event"] == "stt_request_completed")
+    assert completed["duration_ms"] >= 0
+    assert completed["clock_domain"] == "backend_python_perf_counter"
 
     wav_bytes = engine._to_wav(pcm)
     with wave.open(io.BytesIO(wav_bytes), "rb") as wav:

@@ -20,28 +20,28 @@ ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 sys.path.insert(0, str(BACKEND))
 
-from app.core.clock import SystemClock  # noqa: E402
-from app.core.config import Settings, get_settings  # noqa: E402
-from app.db.session import Database  # noqa: E402
-from app.llm.context import build_voice_llm_request  # noqa: E402
-from app.llm.service import LLMService  # noqa: E402
-from app.llm.tool_loop import (  # noqa: E402
+from app.core.clock import SystemClock
+from app.core.config import Settings, get_settings
+from app.db.session import Database
+from app.llm.context import build_voice_llm_request
+from app.llm.service import LLMService
+from app.llm.tool_loop import (
     InMemoryToolIdempotencyStore,
     LLMToolLoop,
     ToolExecutionContext,
     create_default_tool_registry,
 )
-from app.llm.types import LLMEvent  # noqa: E402
-from app.memory.context import assemble_context  # noqa: E402
-from app.memory.jobs import MemoryJobWorker  # noqa: E402
-from app.memory.providers import RemoteEmbeddingProvider, RemoteReranker  # noqa: E402
-from app.memory.retrieval import MemoryRetrievalService  # noqa: E402
-from app.memory.tool_tools import register_memory_tools  # noqa: E402
-from app.memory.types import MemorySourceKind, MemoryType  # noqa: E402
-from app.memory.writer import MemoryWriter  # noqa: E402
-from app.models import MemoryChunk, MemoryItem, MemoryJob, User  # noqa: E402
-from app.services.auth import AuthPrincipal, hash_password  # noqa: E402
-from app.memory.policy import ExtractionCandidate  # noqa: E402
+from app.llm.types import LLMEvent
+from app.memory.context import assemble_context
+from app.memory.jobs import MemoryJobWorker
+from app.memory.policy import ExtractionCandidate
+from app.memory.providers import RemoteEmbeddingProvider, RemoteReranker
+from app.memory.retrieval import MemoryRetrievalService
+from app.memory.tool_tools import register_memory_tools
+from app.memory.types import MemorySourceKind, MemoryType
+from app.memory.writer import MemoryWriter
+from app.models import MemoryChunk, MemoryItem, MemoryJob, User
+from app.services.auth import AuthPrincipal, hash_password
 
 EVIDENCE = ROOT / "docs" / "evidence" / "phase6"
 SECRET_PATTERNS = (
@@ -55,7 +55,8 @@ COMPLETED_ACTION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 FABRICATED_PREFERENCE_PATTERN = re.compile(
-    r"\b(?:your|my)\s+favorite\s+restaurant\s+(?:is|would be)\b",
+    r"\b(?:your|my)\s+favorite\s+restaurant\s+(?:is|would be)\s+"
+    r"(?!and\b|saved\b|unknown\b|not\b)[a-z0-9][^.!?]{1,80}",
     re.IGNORECASE,
 )
 
@@ -226,7 +227,15 @@ async def run_llm_case(
         user_id=user_id,
         llm_service=llm_service,
     )
-    memory_context = await probe._memory_context_for_transcript(query)
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    response_id = uuid.uuid4()
+    memory_context = await probe._memory_context_for_transcript(
+        query,
+        session_id=session_id,
+        turn_id=turn_id,
+        response_id=response_id,
+    )
     assembled = assemble_context(
         retrieval.memories,
         max_chars=settings.memory_context_max_chars,
@@ -239,9 +248,6 @@ async def run_llm_case(
 
     registry = create_default_tool_registry()
     register_memory_tools(registry, allow_write=settings.memory_write_enabled)
-    session_id = uuid.uuid4()
-    turn_id = uuid.uuid4()
-    response_id = uuid.uuid4()
     request = build_voice_llm_request(
         settings,
         session_id=session_id,

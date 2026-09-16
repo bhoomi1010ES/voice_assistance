@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from scripts.analyze_latency import (
+    correlation_errors,
     filter_turn_records,
+    incompatible_metric_keys,
     load_analysis_records,
     metrics_for_turn,
     pipeline_metrics_for_turn,
@@ -157,3 +159,124 @@ def test_pipeline_breakdown_uses_monotonic_ns_and_keeps_residual_explicit() -> N
     assert values["connection_acquisition"] == 1
     assert values["known_measured_stages_total"] == 57
     assert values["unaccounted_latency"] == 0
+
+
+def test_incompatible_clock_intervals_are_not_clamped_to_zero() -> None:
+    records = [
+        _record("stt_final_received", 9000, 10_000, "backend"),
+        _record("orchestration_started", 8000, 10_100, "backend"),
+        _record("llm_request_started", 7000, 10_200, "client"),
+    ]
+
+    values = pipeline_metrics_for_turn(records)
+
+    assert values["stt_final_to_orchestration"] is None
+    assert values["stt_final_to_request"] is None
+    assert "stt_final_to_orchestration" in incompatible_metric_keys(records)
+    assert "stt_final_to_request" in incompatible_metric_keys(records)
+
+
+def test_source_local_durations_are_authoritative_and_cross_process_is_n_a() -> None:
+    records = [
+        {
+            **_record("stt_request_started", 1000, 10_000),
+            "process": "backend:1",
+            "clock_domain": "backend_python_perf_counter",
+        },
+        {
+            **_record("stt_request_completed", 1125, 10_125),
+            "process": "backend:1",
+            "clock_domain": "backend_python_perf_counter",
+            "duration_ms": 125.0,
+        },
+        {
+            **_record("llm_request_started", 1200, 10_200),
+            "process": "backend:1",
+            "clock_domain": "backend_python_perf_counter",
+        },
+        {
+            **_record("llm_first_token_received", 1350, 10_350),
+            "process": "backend:1",
+            "clock_domain": "backend_python_perf_counter",
+            "duration_ms": 150.0,
+        },
+        {
+            **_record("llm_request_completed", 1500, 10_500),
+            "process": "backend:1",
+            "clock_domain": "backend_python_perf_counter",
+            "duration_ms": 300.0,
+        },
+        {
+            **_record("device_speech_end", 1000, 10_000, "android"),
+            "process": "android:com.voiceaipoc",
+        },
+        {
+            **_record("first_assistant_token_received", 2000, 10_000),
+            "process": "backend:1",
+        },
+    ]
+    values = metrics_for_turn(records)
+    assert values["stt_request_duration"] == 125.0
+    assert values["llm_ttft"] == 150.0
+    assert values["llm_total"] == 300.0
+    assert values["speech_end_to_first_token"] is None
+    assert "speech_end_to_first_token" in incompatible_metric_keys(records)
+
+
+def test_invalid_local_duration_is_not_clamped_to_zero() -> None:
+    records = [
+        {
+            **_record("llm_first_token_received", 1000, 10_000),
+            "duration_ms": -1.0,
+        }
+    ]
+    assert metrics_for_turn(records)["llm_ttft"] is None
+    assert "llm_ttft" in incompatible_metric_keys(records)
+
+
+def test_correlation_rejects_wrong_response_and_duplicate_tts() -> None:
+    records = [
+        {**_record("tts_request_started", 1000, 10_000), "response_id": "response-1"},
+        {**_record("tts_request_started", 1000, 10_001), "response_id": "other"},
+        {**_record("tts_playback_complete", 1100, 10_100), "response_id": "response-1"},
+        {**_record("tts_playback_complete", 1100, 10_101), "response_id": "response-1"},
+    ]
+    errors = correlation_errors(records)
+    assert "wrong_response_id" in errors
+    assert "duplicate_tts_playback_complete" in errors
+
+
+def test_non_rag_turn_has_no_fake_retrieval_zeroes_and_memory_pipeline_is_named() -> None:
+    records = [
+        {
+            **_record("memory_context_pipeline_completed", 1250, 10_250),
+            "duration_ms": 250.0,
+        }
+    ]
+    values = metrics_for_turn(records)
+    assert values["memory_context_pipeline"] == 250.0
+    assert values["embedding"] is None
+    assert values["vector_search"] is None
+    assert values["fts"] is None
+    assert values["rrf"] is None
+    assert values["rerank"] is None
+
+
+def test_optional_cross_process_metrics_do_not_reject_valid_local_turn() -> None:
+    records = [
+        {
+            **_record("llm_request_completed", 1200, 10_200),
+            "process": "backend:1",
+            "clock_domain": "backend_python_perf_counter",
+            "duration_ms": 200.0,
+            "response_id": "response-1",
+        },
+        {
+            **_record("tts_playback_complete", 1300, 10_300, "android"),
+            "process": "android:com.voiceaipoc",
+            "response_id": "response-1",
+            "duration_ms": 500.0,
+        },
+    ]
+    assert correlation_errors(records) == []
+    assert metrics_for_turn(records)["llm_total"] == 200.0

@@ -17,6 +17,7 @@ from sqlalchemy.pool import NullPool
 from app.core.config import Settings
 from app.graph.indexing import GraphIndexingService
 from app.graph.policy import GRAPH_INDEX_POLICY_VERSION
+from app.graph.repository import GraphRepository
 from app.graph.service import GraphService
 from app.memory.jobs import MemoryJobWorker
 from app.memory.policy import ExtractionCandidate
@@ -28,6 +29,7 @@ from app.models import (
     AuthSession,
     Device,
     Entity,
+    EntityAlias,
     EntityRelationship,
     MemoryEntity,
     MemoryItem,
@@ -1146,3 +1148,63 @@ def test_background_indexing_microbenchmark(graph_index_database, graph_user) ->
         f"p95_ms={p95:.3f} max_ms={max(timings):.3f}"
     )
     assert len(timings) == 30
+
+
+def test_orphan_entity_cleanup_is_bounded_idempotent_and_alias_aware(
+    graph_index_database, graph_user
+) -> None:
+    factory = graph_index_database
+    user_id = graph_user
+
+    async def run() -> None:
+        orphan_id = uuid.uuid4()
+        retained_id = uuid.uuid4()
+        async with factory() as session:
+            session.add_all(
+                [
+                    Entity(
+                        id=orphan_id,
+                        user_id=user_id,
+                        entity_type="other",
+                        canonical_name="Cleanup Orphan",
+                        normalized_name="cleanup orphan",
+                    ),
+                    Entity(
+                        id=retained_id,
+                        user_id=user_id,
+                        entity_type="other",
+                        canonical_name="Retained Alias",
+                        normalized_name="retained alias",
+                    ),
+                ]
+            )
+            await session.flush()
+            session.add(
+                EntityAlias(
+                    user_id=user_id,
+                    entity_id=retained_id,
+                    alias="Retained Alias",
+                    normalized_alias="retained alias",
+                    source_kind="manual",
+                )
+            )
+            await session.commit()
+
+        async with factory() as session:
+            removed = await GraphRepository().cleanup_orphaned_entities(
+                session,
+                user_id=user_id,
+                limit=1,
+            )
+            await session.commit()
+            assert removed == 1
+            assert await session.get(Entity, orphan_id) is None
+            assert await session.get(Entity, retained_id) is not None
+
+        async with factory() as session:
+            assert (
+                await GraphRepository().cleanup_orphaned_entities(session, user_id=user_id)
+            ) == 0
+            await session.rollback()
+
+    asyncio.run(run())

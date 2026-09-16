@@ -157,6 +157,8 @@ class VoiceWebSocketTransport(
     private var localCloseReason: String? = null
     private var activeTtsResponseId: String? = null
     private var activeTtsFirstAudioElapsedMs: Long? = null
+    private var activeTtsFirstAudioElapsedNs: Long? = null
+    private var activeTtsPlaybackStartedNs: Long? = null
     private var lastTtsFrameSequence: Long? = null
     private var lastTtsFrameBytes = 0
     private var lastTtsFrameReceivedElapsedMs: Long? = null
@@ -1193,6 +1195,7 @@ class VoiceWebSocketTransport(
         if (frame.startsResponse) {
             activeTtsResponseId = frame.responseId.toString()
             activeTtsFirstAudioElapsedMs = null
+            activeTtsFirstAudioElapsedNs = null
             lastTtsFrameSequence = null
             lastTtsFrameBytes = 0
             lastTtsFrameReceivedElapsedMs = null
@@ -1251,6 +1254,7 @@ class VoiceWebSocketTransport(
         lastTtsFrameReceivedElapsedMs = SystemClock.elapsedRealtime()
         if (frame.payload.isNotEmpty() && activeTtsFirstAudioElapsedMs == null) {
             activeTtsFirstAudioElapsedMs = lastTtsFrameReceivedElapsedMs
+            activeTtsFirstAudioElapsedNs = SystemClock.elapsedRealtimeNanos()
             Log.i(
                 TAG,
                 "TTS_FIRST_AUDIO_RECEIVED response_id=${frame.responseId} seq=${frame.sequence} " +
@@ -1266,6 +1270,19 @@ class VoiceWebSocketTransport(
                 component = "android",
                 event = "tts_first_chunk_received",
                 metadata = mapOf("bytes" to frame.payload.size),
+            )
+        }
+        if (frame.endsResponse && activeTtsFirstAudioElapsedNs != null) {
+            val streamDurationMs =
+                (SystemClock.elapsedRealtimeNanos() - activeTtsFirstAudioElapsedNs!!) / 1_000_000.0
+            logLatency(
+                sessionId = synchronized(stateLock) { status.sessionId },
+                turnId = synchronized(stateLock) { status.turnId },
+                responseId = frame.responseId.toString(),
+                component = "android",
+                event = "tts_stream_completed",
+                durationMs = streamDurationMs,
+                metadata = mapOf("duration_basis" to "android_elapsed_realtime"),
             )
         }
         if (!isTtsOutputEnabled()) return
@@ -1293,12 +1310,25 @@ class VoiceWebSocketTransport(
 
     private fun notifyTtsPlayback(eventType: String, responseId: java.util.UUID) {
         val current = synchronized(stateLock) { status }
+        val nowNs = SystemClock.elapsedRealtimeNanos()
+        val durationMs = if (eventType == "tts.playback.completed") {
+            activeTtsPlaybackStartedNs?.let { (nowNs - it) / 1_000_000.0 }
+        } else {
+            null
+        }
+        if (eventType == "tts.playback.started") {
+            activeTtsPlaybackStartedNs = nowNs
+        } else if (eventType == "tts.playback.completed" || eventType == "tts.playback.stopped") {
+            activeTtsPlaybackStartedNs = null
+        }
         logLatency(
             sessionId = current.sessionId,
             turnId = current.turnId,
             responseId = responseId.toString(),
             component = "android",
             event = eventType.replace('.', '_'),
+            durationMs = durationMs,
+            metadata = mapOf("duration_basis" to "android_elapsed_realtime"),
         )
         listener.onTtsPlayback(
             eventType,
@@ -1315,20 +1345,24 @@ class VoiceWebSocketTransport(
         responseId: String?,
         component: String,
         event: String,
+        durationMs: Double? = null,
         metadata: Map<String, Any?> = emptyMap(),
     ) {
+        val wallTimeUtc = java.time.Instant.now().toString()
         val record = JSONObject()
-            .put("timestamp", java.time.Instant.now().toString())
+            .put("timestamp", wallTimeUtc)
+            .put("wall_time_utc", wallTimeUtc)
             .put("timestamp_ms", System.currentTimeMillis())
             .put("monotonic_ns", SystemClock.elapsedRealtimeNanos())
             .put("monotonic_ms", SystemClock.elapsedRealtime())
-            .put("clock_domain", "android")
+            .put("clock_domain", "android_elapsed_realtime")
+            .put("process", "android:com.voiceaipoc")
             .put("session_id", sessionId ?: JSONObject.NULL)
             .put("turn_id", turnId ?: JSONObject.NULL)
             .put("response_id", responseId ?: JSONObject.NULL)
             .put("component", component)
             .put("event", event)
-            .put("duration_ms", JSONObject.NULL)
+            .put("duration_ms", durationMs ?: JSONObject.NULL)
             .put("metadata", JSONObject())
         if (metadata.isNotEmpty()) {
             val safe = JSONObject()

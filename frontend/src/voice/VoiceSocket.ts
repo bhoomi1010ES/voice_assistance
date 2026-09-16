@@ -1895,7 +1895,8 @@ export class VoiceSocket {
         event: 'microphone_speech_start',
         monotonicNs: nativeMonotonicNs,
         monotonicMs: nativeMonotonicMs,
-        clockDomain: nativeMonotonicNs == null ? 'client' : 'android',
+        clockDomain:
+          nativeMonotonicNs == null ? 'client' : 'android_elapsed_realtime',
         metadata: {
           probability: event.probability,
           speech_duration_ms: event.speechDurationMs,
@@ -1914,7 +1915,8 @@ export class VoiceSocket {
         event: 'vad_end',
         monotonicNs: nativeMonotonicNs,
         monotonicMs: nativeMonotonicMs,
-        clockDomain: nativeMonotonicNs == null ? 'client' : 'android',
+        clockDomain:
+          nativeMonotonicNs == null ? 'client' : 'android_elapsed_realtime',
         metadata: {
           speech_duration_ms: event.speechDurationMs,
           reason: event.reason,

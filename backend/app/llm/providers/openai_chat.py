@@ -246,6 +246,8 @@ class OpenAIChatProvider:
         event_data_bytes = 0
         saw_payload = False
         completed = False
+        http_started_ns: int | None = None
+        request_outcome = "failed"
         first_sse_event_traced = False
         first_content_token_traced = False
 
@@ -334,6 +336,25 @@ class OpenAIChatProvider:
                             monotonic_ns=token_ns,
                             delta_characters=len(text_delta),
                         )
+                        if http_started_ns is not None:
+                            trace(
+                                "llm_first_token_received",
+                                monotonic_ns=token_ns,
+                                duration_ms=(token_ns - http_started_ns) / 1_000_000,
+                                duration_basis="provider_local_http_request",
+                                delta_characters=len(text_delta),
+                            )
+                            trace(
+                                "llm_first_token",
+                                monotonic_ns=token_ns,
+                                metadata_basis="provider_local_http_request",
+                            )
+                            trace(
+                                "llm_ttft_local",
+                                monotonic_ns=token_ns,
+                                duration_ms=(token_ns - http_started_ns) / 1_000_000,
+                                duration_basis="provider_local_http_request",
+                            )
                     yield event(
                         "text_delta",
                         delta=text_delta,
@@ -352,6 +373,10 @@ class OpenAIChatProvider:
         http_started_ns = time.perf_counter_ns()
         trace("http_request_started", monotonic_ns=http_started_ns)
         trace("llm_request_started", monotonic_ns=http_started_ns)
+        # Keep the singular boundary names used by the timing contract as
+        # aliases; the *_started/*_completed names remain the canonical trace
+        # events consumed by the analyzer.
+        trace("llm_request_start", monotonic_ns=http_started_ns)
         try:
             async with client.stream(
                 "POST",
@@ -410,7 +435,9 @@ class OpenAIChatProvider:
                     completed = True
                 if not completed:
                     raise LLMProtocolError("The provider stream ended without a completion event.")
+                request_outcome = "completed"
         except asyncio.CancelledError:
+            request_outcome = "cancelled"
             raise
         except LLMError:
             raise
@@ -418,6 +445,31 @@ class OpenAIChatProvider:
             raise LLMTimeoutError("The provider request timed out.") from error
         except httpx.RequestError as error:
             raise LLMProviderError("The provider could not be reached.") from error
+        finally:
+            completed_ns = time.perf_counter_ns()
+            if http_started_ns is not None:
+                duration_ms = (completed_ns - http_started_ns) / 1_000_000
+                trace(
+                    "llm_request_completed",
+                    monotonic_ns=completed_ns,
+                    duration_ms=duration_ms,
+                    duration_basis="provider_local_http_request",
+                    status=request_outcome,
+                )
+                trace(
+                    "llm_request_complete",
+                    monotonic_ns=completed_ns,
+                    duration_ms=duration_ms,
+                    duration_basis="provider_local_http_request",
+                    status=request_outcome,
+                )
+                trace(
+                    "llm_completed",
+                    monotonic_ns=completed_ns,
+                    duration_ms=duration_ms,
+                    duration_basis="provider_local_http_request",
+                    status=request_outcome,
+                )
 
     async def close(self) -> None:
         if self._client is not None and self._owns_client:

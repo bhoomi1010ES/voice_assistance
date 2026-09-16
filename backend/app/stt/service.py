@@ -358,7 +358,7 @@ class STTTurn:
         if (self._audio_samples * 2) + len(pcm_bytes) > max_bytes:
             raise STTAudioTooLongError("STT turn audio limit exceeded")
         if self._audio_start is None:
-            self._audio_start = time.monotonic()
+            self._audio_start = time.perf_counter()
             self._speech_start = self._audio_start
             LOGGER.info(
                 "STT audio started",
@@ -396,7 +396,7 @@ class STTTurn:
             raise STTConfigurationError("STT engine turn is not initialized")
         self._finalized = True
         self._generation += 1
-        self._speech_end = time.monotonic()
+        self._speech_end = time.perf_counter()
         LOGGER.info(
             "STT finalization requested",
             extra={
@@ -407,7 +407,7 @@ class STTTurn:
                 "generation": self._generation,
                 "audio_duration_ms": self.audio_duration_ms,
                 "commit_received_timestamp_ms": int(time.time() * 1000),
-                "commit_received_monotonic_ms": round(time.monotonic() * 1000, 1),
+                "commit_received_monotonic_ms": round(time.perf_counter() * 1000, 1),
                 "speech_end_timestamp_ms": int(time.time() * 1000),
                 "speech_end_monotonic_ms": round(self._speech_end * 1000, 1),
             },
@@ -439,7 +439,10 @@ class STTTurn:
         if self._cancel_requested:
             raise STTCancelledError("STT turn was cancelled")
 
-        final_at = max(time.monotonic(), result.monotonic_timestamp)
+        # Engine final timestamps use the STT source's perf-counter domain.
+        # Do not combine them with the legacy monotonic clock or a previous
+        # turn; that was the source of the ~40 second false STT values.
+        final_at = result.monotonic_timestamp
         speech_end = self._speech_end or final_at
         audio_start = self._audio_start or speech_end
         metrics: dict[str, float | int | None] = {

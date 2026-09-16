@@ -232,7 +232,7 @@ class WhisperEngine(STTEngine):
                 language=turn.language,
                 confidence=None,
                 timestamp_ms=int(time.time() * 1000),
-                monotonic_timestamp=time.monotonic(),
+                monotonic_timestamp=time.perf_counter(),
                 inference_duration_ms=0.0,
             )
         state.final_task = asyncio.create_task(
@@ -353,7 +353,7 @@ class WhisperEngine(STTEngine):
                         len(snapshot) / 2 / self.settings.voice_sample_rate_hz * 1000
                     ),
                     timestamp_ms=int(time.time() * 1000),
-                    monotonic_timestamp=time.monotonic(),
+                    monotonic_timestamp=time.perf_counter(),
                 )
             )
         except (STTCancelledError, STTTimeoutError, STTInferenceError, asyncio.CancelledError):
@@ -386,10 +386,10 @@ class WhisperEngine(STTEngine):
             active_cancel_event,
             inference_kind,
         )
-        started = time.monotonic()
+        started = time.perf_counter()
         try:
             result = await asyncio.wait_for(future, timeout=self.settings.stt_timeout)
-            finished = time.monotonic()
+            finished = time.perf_counter()
             return STTEngineFinal(
                 session_id=state.handle.session_id,
                 turn_id=state.handle.turn_id,

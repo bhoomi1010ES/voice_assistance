@@ -5,6 +5,7 @@ export type LatencyTraceInput = {
   responseId?: string | null;
   component: string;
   event: string;
+  process?: string;
   monotonicNs?: number | null;
   monotonicMs?: number | null;
   clockDomain?: string;
@@ -62,19 +63,25 @@ export function emitLatencyTrace(input: LatencyTraceInput): void {
       : monotonicNs != null
       ? monotonicNs / 1_000_000
       : monotonic.monotonicMs;
+  const wallTimeUtc = new Date().toISOString();
   const record = {
-    timestamp: new Date().toISOString(),
+    timestamp: wallTimeUtc,
+    wall_time_utc: wallTimeUtc,
     timestamp_ms: Date.now(),
     monotonic_ns: monotonicNs,
     monotonic_ms: monotonicMs == null ? null : Number(monotonicMs.toFixed(3)),
-    clock_domain: input.clockDomain ?? 'client',
+    process:
+      input.process ??
+      (input.clockDomain?.startsWith('android')
+        ? 'android:com.voiceaipoc'
+        : 'react_native'),
+    clock_domain: input.clockDomain ?? 'react_native_performance',
     session_id: input.sessionId ?? null,
     turn_id: input.turnId ?? null,
     response_id: input.responseId ?? null,
     component: input.component,
     event: input.event,
-    duration_ms:
-      input.durationMs == null ? null : Math.max(0, input.durationMs),
+    duration_ms: input.durationMs == null ? null : input.durationMs,
     metadata: metadata ?? {},
   };
   // Logcat/Metro collectors use this stable prefix. Logging is best-effort and

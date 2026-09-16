@@ -7,24 +7,28 @@ import argparse
 import json
 import math
 import statistics
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+DIAGNOSTIC_DURATION_MAX_MS = 300_000.0
+
 METRICS = (
     ("Speech duration", "speech_duration"),
-    ("STT latency", "speech_end_to_stt_final"),
+    ("Speech-end → STT final", "speech_end_to_stt_final"),
+    ("STT request duration", "stt_request_duration"),
     ("Embedding latency", "embedding"),
     ("Vector retrieval", "vector_search"),
     ("FTS", "fts"),
     ("RRF", "rrf"),
     ("Reranking", "rerank"),
-    ("Complete RAG", "rag"),
+    ("Memory context pipeline", "memory_context_pipeline"),
     ("LLM TTFT", "llm_ttft"),
     ("LLM total", "llm_total"),
     ("Device speech-end -> first token received", "speech_end_to_first_token"),
     ("TTS TTFA", "tts_ttfa"),
-    ("TTS generation total", "tts_generation_total"),
+    ("TTS generation", "tts_generation_total"),
     ("Server -> client first audio", "server_to_client_audio"),
     ("Playback buffering", "playback_buffer"),
     ("Playback duration", "playback_duration"),
@@ -155,14 +159,211 @@ def _delta(events: dict[str, dict[str, Any]], start: str, end: str) -> float | N
         return None
     first = events[start]
     last = events[end]
-    if first.get("clock_domain") != last.get("clock_domain"):
+    if not _same_clock(first, last):
         return None
     first_value = _time(first)
     last_value = _time(last)
     if not isinstance(first_value, (int, float)) or not isinstance(last_value, (int, float)):
         return None
     delta = float(last_value) - float(first_value)
-    return round(max(0.0, delta), 3)
+    # A negative monotonic delta indicates that the records came from
+    # incompatible clock origins (or an invalidly ordered trace). Never clamp
+    # this to zero: doing so hides the measurement failure.
+    if delta < 0:
+        return None
+    return round(delta, 3)
+
+
+def _delta_is_incompatible(events: dict[str, dict[str, Any]], start: str, end: str) -> bool:
+    """Return whether a present interval cannot be measured safely."""
+
+    if start not in events or end not in events:
+        return False
+    first = events[start]
+    last = events[end]
+    if not _same_clock(first, last):
+        return True
+    first_value = _time(first)
+    last_value = _time(last)
+    if not isinstance(first_value, (int, float)) or not isinstance(last_value, (int, float)):
+        return True
+    return float(last_value) < float(first_value)
+
+
+def _same_clock(first: dict[str, Any], last: dict[str, Any]) -> bool:
+    """Return whether two timestamps can be subtracted safely."""
+
+    first_domain = first.get("clock_domain")
+    last_domain = last.get("clock_domain")
+    if first_domain is not None and last_domain is not None and first_domain != last_domain:
+        return False
+    first_process = first.get("process")
+    last_process = last.get("process")
+    return not (
+        first_process is not None and last_process is not None and first_process != last_process
+    )
+
+
+def _duration_value(record: dict[str, Any]) -> float | None:
+    value = record.get("duration_ms")
+    if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return None
+    value = float(value)
+    if value < 0 or value > DIAGNOSTIC_DURATION_MAX_MS:
+        return None
+    return round(value, 3)
+
+
+def _local_duration(
+    records: list[dict[str, Any]],
+    event_names: tuple[str, ...],
+    *,
+    aggregate: bool = False,
+) -> float | None:
+    """Read a duration calculated by its source process.
+
+    Source-local durations are authoritative. Endpoint subtraction is only a
+    compatibility fallback for historical traces that predate this contract.
+    """
+
+    values: list[float] = []
+    for event_name in event_names:
+        values = [
+            value
+            for record in records
+            if record.get("event") == event_name
+            for value in [_duration_value(record)]
+            if value is not None
+        ]
+        if values:
+            break
+    if not values:
+        return None
+    return round(sum(values), 3) if aggregate else values[0]
+
+
+def correlation_errors(records: list[dict[str, Any]]) -> list[str]:
+    """Reject stale, duplicate, or cross-response records explicitly."""
+
+    errors: list[str] = []
+    turn_ids = {str(record.get("turn_id")) for record in records if record.get("turn_id")}
+    if len(turn_ids) > 1:
+        errors.append("wrong_turn_id")
+    response_ids = {
+        str(record.get("response_id")) for record in records if record.get("response_id")
+    }
+    if len(response_ids) > 1:
+        errors.append("wrong_response_id")
+    tts_events = {
+        "tts_request_started",
+        "tts_first_audio_received",
+        "tts_generation_completed",
+        "tts_playback_complete",
+        "tts_playback_completed",
+    }
+    counts: dict[tuple[str, str | None, str], int] = {}
+    for record in records:
+        event = str(record.get("event", ""))
+        if event in tts_events:
+            metadata = json.dumps(record.get("metadata", {}), sort_keys=True, separators=(",", ":"))
+            key = (
+                event,
+                str(record.get("response_id")) if record.get("response_id") else None,
+                metadata,
+            )
+            counts[key] = counts.get(key, 0) + 1
+    errors.extend(
+        f"duplicate_{event}" for (event, _response, _metadata), count in counts.items() if count > 1
+    )
+    for record in records:
+        if "duration_ms" not in record:
+            continue
+        raw = record.get("duration_ms")
+        if isinstance(raw, (int, float)) and (
+            not math.isfinite(float(raw))
+            or float(raw) < 0
+            or float(raw) > DIAGNOSTIC_DURATION_MAX_MS
+        ):
+            errors.append(f"invalid_duration:{record.get('event')}")
+    return sorted(set(errors))
+
+
+def incompatible_metric_keys(records: list[dict[str, Any]]) -> set[str]:
+    """Return metric keys whose available endpoints use incompatible clocks."""
+
+    local_metrics = {
+        "stt_request_duration": (
+            "stt_request_completed",
+            "stt_request_duration",
+            "stt_response_received",
+        ),
+        "memory_context_pipeline": ("memory_context_pipeline_completed",),
+        "llm_ttft": ("llm_first_token_received", "llm_ttft_local"),
+        "llm_total": ("llm_request_completed", "llm_completed"),
+        "tts_ttfa": ("tts_first_audio_received",),
+        "tts_generation_total": ("tts_generation_completed",),
+        "playback_duration": ("tts_playback_complete", "tts_playback_completed"),
+    }
+    incompatible = {
+        key
+        for key, event_names in local_metrics.items()
+        if any(record.get("event") in event_names for record in records)
+        and _local_duration(records, event_names, aggregate=key == "tts_generation_total") is None
+    }
+    events = _events(records)
+    pairs: dict[str, tuple[tuple[str, str], ...]] = {
+        "speech_duration": (("speech_start", "speech_end"),),
+        "speech_end_to_stt_final": (
+            ("device_speech_end", "client_stt_final_received"),
+            ("speech_end", "stt_final"),
+        ),
+        "embedding": (("embedding_start", "embedding_end"),),
+        "vector_search": (("vector_search_start", "vector_search_end"),),
+        "fts": (("fts_start", "fts_end"),),
+        "rrf": (("rrf_start", "rrf_end"),),
+        "rerank": (("rerank_start", "rerank_end"),),
+        "rag": (("rag_start", "rag_end"),),
+        "llm_ttft": (("llm_request_start", "llm_first_token"),),
+        "llm_total": (("llm_request_start", "llm_complete"),),
+        "speech_end_to_first_token": (("device_speech_end", "first_assistant_token_received"),),
+        "tts_ttfa": (("tts_request_start", "tts_first_audio_chunk"),),
+        "tts_generation_total": (("tts_request_start", "tts_generation_complete"),),
+        "server_to_client_audio": (("tts_first_audio_chunk", "tts_first_chunk_received"),),
+        "playback_buffer": (
+            ("tts_first_chunk_received", "tts_playback_start"),
+            ("tts_first_chunk_received", "tts_playback_started"),
+        ),
+        "playback_duration": (
+            ("tts_playback_start", "tts_playback_complete"),
+            ("tts_playback_start", "tts_playback_completed"),
+            ("tts_playback_started", "tts_playback_complete"),
+            ("tts_playback_started", "tts_playback_completed"),
+        ),
+        "speech_end_to_first_audio": (("device_speech_end", "tts_first_chunk_received"),),
+        "end_to_end": (
+            ("device_speech_end", "tts_playback_complete"),
+            ("device_speech_end", "tts_playback_completed"),
+        ),
+        "stt_final_to_orchestration": (("stt_final_received", "orchestration_started"),),
+        "orchestration_to_request": (("orchestration_started", "llm_request_started"),),
+        "stt_final_to_request": (("stt_final_received", "llm_request_started"),),
+        "stt_final_to_first_token": (("stt_final_received", "llm_first_token"),),
+        "request_to_stream_opened": (("http_request_started", "llm_stream_opened"),),
+        "connection_acquisition": (("http_request_started", "llm_connection_acquired"),),
+        "stream_opened_to_first_token": (("llm_stream_opened", "llm_first_token"),),
+        "provider_ttft": (("http_request_started", "llm_first_token"),),
+        "speech_end_to_first_assistant_audio": (("device_speech_end", "tts_first_chunk_received"),),
+        "backend_speech_end_to_provider_first_token": (("speech_end", "llm_first_token"),),
+    }
+    incompatible.update(
+        {
+            key
+            for key, candidates in pairs.items()
+            if any(_delta_is_incompatible(events, start, end) for start, end in candidates)
+            and not any(_delta(events, start, end) is not None for start, end in candidates)
+        }
+    )
+    return incompatible
 
 
 def _delta_aliases(
@@ -186,25 +387,49 @@ def _first_measured(*values: float | None) -> float | None:
 
 def metrics_for_turn(records: list[dict[str, Any]]) -> dict[str, float | None]:
     events = _events(records)
+    memory_context_pipeline = _first_measured(
+        _local_duration(records, ("memory_context_pipeline_completed",)),
+        _delta(events, "rag_start", "rag_end"),
+    )
     values: dict[str, float | None] = {
         "speech_duration": _delta(events, "speech_start", "speech_end"),
         "speech_end_to_stt_final": _first_measured(
             _delta(events, "device_speech_end", "client_stt_final_received"),
             _delta(events, "speech_end", "stt_final"),
         ),
+        "stt_request_duration": _local_duration(
+            records, ("stt_request_completed", "stt_request_duration", "stt_response_received")
+        ),
         "embedding": _delta(events, "embedding_start", "embedding_end"),
         "vector_search": _delta(events, "vector_search_start", "vector_search_end"),
         "fts": _delta(events, "fts_start", "fts_end"),
         "rrf": _delta(events, "rrf_start", "rrf_end"),
         "rerank": _delta(events, "rerank_start", "rerank_end"),
-        "rag": _delta(events, "rag_start", "rag_end"),
-        "llm_ttft": _delta(events, "llm_request_start", "llm_first_token"),
-        "llm_total": _delta(events, "llm_request_start", "llm_complete"),
+        "rag": memory_context_pipeline,
+        "memory_context_pipeline": memory_context_pipeline,
+        "llm_ttft": _first_measured(
+            _local_duration(records, ("llm_first_token_received", "llm_ttft_local")),
+            _delta(events, "llm_request_start", "llm_first_token"),
+        ),
+        "llm_total": _first_measured(
+            _local_duration(records, ("llm_request_completed", "llm_completed")),
+            _delta(events, "llm_request_start", "llm_complete"),
+        ),
         "speech_end_to_first_token": _delta(
             events, "device_speech_end", "first_assistant_token_received"
         ),
-        "tts_ttfa": _delta(events, "tts_request_start", "tts_first_audio_chunk"),
-        "tts_generation_total": _delta(events, "tts_request_start", "tts_generation_complete"),
+        "tts_ttfa": _first_measured(
+            _local_duration(records, ("tts_first_audio_received",)),
+            _delta(events, "tts_request_start", "tts_first_audio_chunk"),
+        ),
+        "tts_generation_total": _first_measured(
+            _local_duration(
+                records,
+                ("tts_generation_completed", "tts_request_completed"),
+                aggregate=True,
+            ),
+            _delta(events, "tts_request_start", "tts_generation_complete"),
+        ),
         "server_to_client_audio": _delta(
             events, "tts_first_audio_chunk", "tts_first_chunk_received"
         ),
@@ -213,10 +438,13 @@ def metrics_for_turn(records: list[dict[str, Any]]) -> dict[str, float | None]:
             ("tts_first_chunk_received",),
             ("tts_playback_start", "tts_playback_started"),
         ),
-        "playback_duration": _delta_aliases(
-            events,
-            ("tts_playback_start", "tts_playback_started"),
-            ("tts_playback_complete", "tts_playback_completed"),
+        "playback_duration": _first_measured(
+            _local_duration(records, ("tts_playback_complete", "tts_playback_completed")),
+            _delta_aliases(
+                events,
+                ("tts_playback_start", "tts_playback_started"),
+                ("tts_playback_complete", "tts_playback_completed"),
+            ),
         ),
         "speech_end_to_first_audio": _delta_aliases(
             events,
@@ -309,6 +537,10 @@ def pipeline_metrics_for_turn(records: list[dict[str, Any]]) -> dict[str, float 
     events = _events(records)
     turn_id = str(records[0].get("turn_id", "")) if records else ""
     stt_final_to_orchestration = _delta(events, "stt_final_received", "orchestration_started")
+    speech_end_to_stt_request = _delta(events, "speech_end", "stt_request_started")
+    stt_request_duration = _local_duration(
+        records, ("stt_request_completed", "stt_request_duration", "stt_response_received")
+    )
     stt_finalize = _stage_duration(records, "stt_finalize")
     turn_persistence = _stage_duration(records, "turn_persistence")
     gateway_commit_queue_wait = _stage_duration(records, "gateway_commit_queue_wait")
@@ -324,6 +556,7 @@ def pipeline_metrics_for_turn(records: list[dict[str, Any]]) -> dict[str, float 
     stt_turn_close = _stage_duration(records, "stt_turn_close")
     transcript_log_write = _stage_duration(records, "transcript_delivery_log_write")
     memory = _stage_duration(records, "memory_decision")
+    memory_context_pipeline = _local_duration(records, ("memory_context_pipeline_completed",))
     explicit_memory_routing = _stage_duration(records, "explicit_memory_routing")
     tool_routing = _stage_duration(records, "tool_routing")
     prompt_inclusive = _stage_duration(records, "prompt_build")
@@ -361,7 +594,11 @@ def pipeline_metrics_for_turn(records: list[dict[str, Any]]) -> dict[str, float 
     llm_request_to_stream = _delta(events, "http_request_started", "llm_stream_opened")
     connection_acquisition = _delta(events, "http_request_started", "llm_connection_acquired")
     stream_to_first_token = _delta(events, "llm_stream_opened", "llm_first_token")
-    provider_ttft = _delta(events, "http_request_started", "llm_first_token")
+    provider_ttft = _first_measured(
+        _local_duration(records, ("llm_first_token_received", "llm_ttft_local")),
+        _delta(events, "http_request_started", "llm_first_token"),
+    )
+    request_to_first_token = provider_ttft
     provider_to_gateway_delay = next(
         (
             float(record["duration_ms"])
@@ -403,6 +640,8 @@ def pipeline_metrics_for_turn(records: list[dict[str, Any]]) -> dict[str, float 
             _delta(events, "device_speech_end", "client_stt_final_received"),
             _delta(events, "speech_end", "stt_final"),
         ),
+        "speech_end_to_stt_request": speech_end_to_stt_request,
+        "stt_request_duration": stt_request_duration,
         "stt_final_to_orchestration": stt_final_to_orchestration,
         "stt_processing": stt_finalize,
         "server_commit_to_stt_final": _delta(events, "speech_end", "stt_final"),
@@ -417,6 +656,7 @@ def pipeline_metrics_for_turn(records: list[dict[str, Any]]) -> dict[str, float 
         "stt_turn_close": stt_turn_close,
         "transcript_log_write": transcript_log_write,
         "memory_rag_decision": memory,
+        "memory_context_pipeline": memory_context_pipeline,
         "tool_routing": tool_routing,
         "prompt_build": prompt_build,
         "token_budget": token_budget,
@@ -431,10 +671,12 @@ def pipeline_metrics_for_turn(records: list[dict[str, Any]]) -> dict[str, float 
         "connection_acquisition": connection_acquisition,
         "stream_opened_to_first_token": stream_to_first_token,
         "provider_ttft": provider_ttft,
+        "request_to_first_token": request_to_first_token,
         "provider_to_gateway_delay": provider_to_gateway_delay,
         "first_assistant_text_send": _stage_duration(records, "first_assistant_text_send"),
         "legacy_llm_ttft": _delta(events, "llm_request_start", "llm_first_token"),
         "stt_final_to_request": stt_final_to_request,
+        "llm_request_to_first_token": request_to_first_token,
         "stt_final_to_first_token": stt_final_to_first_token,
         "speech_end_to_first_token": speech_end_to_first_token,
         "speech_end_to_first_assistant_audio": _delta(
@@ -478,10 +720,18 @@ def print_report(records: list[dict[str, Any]]) -> None:
     for turn_id, turn_records in sorted(grouped.items()):
         values = metrics_for_turn(turn_records)
         pipeline = pipeline_metrics_for_turn(turn_records)
+        incompatible = incompatible_metric_keys(turn_records)
         print(f"TURN {turn_id}")
         for label, key in METRICS:
             value = values[key]
-            print(f"{label + ':':34} {value if value is not None else 'n/a'} ms")
+            rendered = (
+                "n/a — incompatible clock domains"
+                if value is None and key in incompatible
+                else f"{value} ms"
+                if value is not None
+                else "n/a"
+            )
+            print(f"{label + ':':34} {rendered}")
             if value is not None:
                 aggregate[key].append(value)
         ranked = sorted(
@@ -495,6 +745,8 @@ def print_report(records: list[dict[str, Any]]) -> None:
         print("STT → LLM PIPELINE BREAKDOWN")
         pipeline_rows = (
             ("Speech-end → STT final", "speech_end_to_stt_final"),
+            ("Speech-end → STT request", "speech_end_to_stt_request"),
+            ("STT request duration", "stt_request_duration"),
             ("STT final → orchestration start", "stt_final_to_orchestration"),
             ("Turn persistence", "turn_persistence"),
             ("Gateway audio-commit queue wait", "gateway_commit_queue_wait"),
@@ -512,6 +764,7 @@ def print_report(records: list[dict[str, Any]]) -> None:
             ("Device speech-end -> first token received", "speech_end_to_first_token"),
             ("Device speech-end -> first assistant audio", "speech_end_to_first_assistant_audio"),
             ("Memory/RAG decision", "memory_rag_decision"),
+            ("Memory context pipeline", "memory_context_pipeline"),
             ("Tool routing", "tool_routing"),
             ("Prompt construction (exclusive)", "prompt_build"),
             ("Token budgeting", "token_budget"),
@@ -523,6 +776,7 @@ def print_report(records: list[dict[str, Any]]) -> None:
             ("Trace writer overhead", "trace_write_overhead"),
             ("Orchestration start → LLM request", "orchestration_to_request"),
             ("LLM request → stream opened", "request_to_stream_opened"),
+            ("LLM request → first token (provider-local)", "llm_request_to_first_token"),
             ("Stream opened → first token", "stream_opened_to_first_token"),
             ("Provider TTFT (HTTP start → token)", "provider_ttft"),
             ("Legacy LLM TTFT", "legacy_llm_ttft"),
@@ -538,7 +792,13 @@ def print_report(records: list[dict[str, Any]]) -> None:
         )
         for label, key in pipeline_rows:
             value = pipeline[key]
-            rendered = f"{value:.3f} ms" if value is not None else "n/a"
+            rendered = (
+                "n/a — incompatible clock domains"
+                if value is None and key in incompatible
+                else f"{value:.3f} ms"
+                if value is not None
+                else "n/a"
+            )
             if key in {"history_loading", "safety_preprocessing"}:
                 rendered += " (no standalone stage in current path)"
             elif key == "context_loading" and value is not None:
@@ -573,12 +833,15 @@ def print_report(records: list[dict[str, Any]]) -> None:
     print("STT→LLM LATENCY INVESTIGATION")
     summary_rows = (
         ("STT final → orchestration", "stt_final_to_orchestration"),
+        ("Speech-end → STT request", "speech_end_to_stt_request"),
+        ("STT request duration", "stt_request_duration"),
         ("Persistence", "turn_persistence"),
         ("Gateway audio-commit queue wait", "gateway_commit_queue_wait"),
         ("Context loading", "context_loading"),
         ("History loading", "history_loading"),
         ("Confirmation routing", "confirmation_routing"),
         ("Memory/RAG decision", "memory_rag_decision"),
+        ("Memory context pipeline", "memory_context_pipeline"),
         ("Tool routing", "tool_routing"),
         ("Prompt build", "prompt_build"),
         ("Token budget", "token_budget"),
@@ -591,6 +854,7 @@ def print_report(records: list[dict[str, Any]]) -> None:
             "connection_acquisition",
         ),
         ("Provider TTFT", "provider_ttft"),
+        ("LLM request → first token (provider-local)", "llm_request_to_first_token"),
         ("Provider first token → gateway", "provider_to_gateway_delay"),
         ("First assistant text send", "first_assistant_text_send"),
         ("Device speech-end -> first token received", "speech_end_to_first_token"),
@@ -614,6 +878,8 @@ def print_report(records: list[dict[str, Any]]) -> None:
 
 
 def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser()
     parser.add_argument("path", nargs="?", type=Path, default=Path("logs/latency_trace.jsonl"))
     parser.add_argument(

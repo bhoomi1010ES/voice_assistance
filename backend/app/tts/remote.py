@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.core.config import Settings
+from app.services.latency_trace import LatencyTracer
 from app.tts.base import (
     TTSCancelledError,
     TTSConfigurationError,
@@ -30,6 +31,7 @@ class TTSStreamMetrics:
     pcm_bytes: int
     audio_duration_ms: float
     rtf: float | None
+    first_audio_latency_ms: float | None = None
 
 
 class RemoteTTSEngine:
@@ -46,6 +48,7 @@ class RemoteTTSEngine:
         self._client: httpx.AsyncClient | None = None
         self._info: TTSEngineInfo | None = None
         self._last_stream_metrics: TTSStreamMetrics | None = None
+        self._latency_tracer = LatencyTracer()
 
     async def initialize(self) -> TTSEngineInfo:
         if self._info is not None:
@@ -85,6 +88,8 @@ class RemoteTTSEngine:
         *,
         text: str,
         response_id: str,
+        session_id: str | None = None,
+        turn_id: str | None = None,
     ) -> AsyncIterator[bytes]:
         if not text.strip():
             return
@@ -101,9 +106,22 @@ class RemoteTTSEngine:
         }
         received = 0
         pcm_bytes = 0
-        request_started = time.monotonic()
+        request_started_ns = time.perf_counter_ns()
+        self._latency_tracer.emit(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            component="tts_provider",
+            event="tts_request_started",
+            monotonic_ns=request_started_ns,
+            metadata={
+                "duration_basis": "tts_local_http_stream",
+                "sentence_bytes": len(text.encode("utf-8")),
+            },
+        )
         self._last_stream_metrics = None
         pending_pcm: bytes | None = None
+        first_audio_ns: int | None = None
         try:
             async with client.stream(
                 "POST",
@@ -136,20 +154,65 @@ class RemoteTTSEngine:
                     if received > self.settings.tts_api_max_response_bytes:
                         raise TTSProviderError("TTS response exceeded the configured size limit")
                     for pcm_chunk in parser.feed(chunk):
+                        if pcm_chunk and first_audio_ns is None:
+                            first_audio_ns = time.perf_counter_ns()
+                            first_audio_latency_ms = (
+                                first_audio_ns - request_started_ns
+                            ) / 1_000_000
+                            self._latency_tracer.emit(
+                                session_id=session_id,
+                                turn_id=turn_id,
+                                response_id=response_id,
+                                component="tts_provider",
+                                event="tts_first_audio_received",
+                                monotonic_ns=first_audio_ns,
+                                duration_ms=first_audio_latency_ms,
+                                metadata={"duration_basis": "tts_local_http_stream"},
+                            )
                         pcm_bytes += len(pcm_chunk)
                         if pending_pcm is not None:
                             yield pending_pcm
                         pending_pcm = pcm_chunk
                 parser.finish()
-                generation_ms = round((time.monotonic() - request_started) * 1000, 3)
-                audio_duration_ms = pcm_bytes * 1000 / (
-                    self.settings.tts_api_sample_rate_hz * 1 * 2
+                completed_ns = time.perf_counter_ns()
+                generation_ms = round((completed_ns - request_started_ns) / 1_000_000, 3)
+                audio_duration_ms = (
+                    pcm_bytes * 1000 / (self.settings.tts_api_sample_rate_hz * 1 * 2)
                 )
                 self._last_stream_metrics = TTSStreamMetrics(
                     generation_ms=generation_ms,
                     pcm_bytes=pcm_bytes,
                     audio_duration_ms=audio_duration_ms,
                     rtf=(generation_ms / audio_duration_ms if audio_duration_ms > 0 else None),
+                    first_audio_latency_ms=(
+                        round((first_audio_ns - request_started_ns) / 1_000_000, 3)
+                        if first_audio_ns is not None
+                        else None
+                    ),
+                )
+                self._latency_tracer.emit(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    component="tts_provider",
+                    event="tts_request_completed",
+                    monotonic_ns=completed_ns,
+                    duration_ms=generation_ms,
+                    metadata={
+                        "duration_basis": "tts_local_http_stream",
+                        "pcm_bytes": pcm_bytes,
+                        "audio_duration_ms": audio_duration_ms,
+                    },
+                )
+                self._latency_tracer.emit(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    component="tts_provider",
+                    event="tts_generation_completed",
+                    monotonic_ns=completed_ns,
+                    duration_ms=generation_ms,
+                    metadata={"duration_basis": "tts_local_http_stream"},
                 )
                 if pending_pcm is not None:
                     yield pending_pcm

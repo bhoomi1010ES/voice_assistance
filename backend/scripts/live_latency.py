@@ -33,11 +33,11 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scripts.analyze_latency import METRICS, metrics_for_turn
+    from scripts.analyze_latency import METRICS, correlation_errors, metrics_for_turn
     from scripts.merge_latency_trace import TRACE_PATTERN
 except ModuleNotFoundError:  # Direct ``python backend/scripts/live_latency.py``.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from scripts.analyze_latency import METRICS, metrics_for_turn
+    from scripts.analyze_latency import METRICS, correlation_errors, metrics_for_turn
     from scripts.merge_latency_trace import TRACE_PATTERN
 
 
@@ -52,10 +52,14 @@ _STAGES: tuple[tuple[str, str, str], ...] = (
     ("FTS", "fts_start", "fts_end"),
     ("RRF", "rrf_start", "rrf_end"),
     ("rerank", "rerank_start", "rerank_end"),
-    ("RAG", "rag_start", "rag_end"),
-    ("LLM TTFT", "llm_request_start", "llm_first_token"),
-    ("LLM total", "llm_request_start", "llm_complete"),
-    ("TTS TTFA", "tts_request_start", "tts_first_audio_chunk"),
+    (
+        "Memory context pipeline",
+        "memory_context_pipeline_started",
+        "memory_context_pipeline_completed",
+    ),
+    ("LLM TTFT", "llm_request_started", "llm_first_token_received"),
+    ("LLM total", "llm_request_started", "llm_request_completed"),
+    ("TTS TTFA", "tts_request_started", "tts_first_audio_received"),
     ("playback", "tts_playback_started", "tts_playback_completed"),
 )
 
@@ -167,6 +171,9 @@ class LiveCollector:
         self.seen: set[tuple[Any, ...]] = set()
         self.printed_durations: set[tuple[str, str]] = set()
         self.completed_turns: set[str] = set()
+        self.turn_response_ids: dict[str, str] = {}
+        self.response_turn_ids: dict[str, str] = {}
+        self.rejected_records: list[dict[str, Any]] = []
         self.logcat_process: subprocess.Popen[str] | None = None
         self.logcat_queue: queue.Queue[str] = queue.Queue()
         self.stop_event = threading.Event()
@@ -238,14 +245,40 @@ class LiveCollector:
         if key in self.seen:
             return
         self.seen.add(key)
-        self.output.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-        self.output.flush()
         turn_id = record.get("turn_id")
         if not turn_id:
+            self.output.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+            self.output.flush()
             return
         turn_id = str(turn_id)
-        self.records[turn_id].append(record)
         event = str(record.get("event"))
+        response_id = record.get("response_id")
+        rejection: str | None = None
+        if response_id is not None:
+            response_id = str(response_id)
+            expected_response_id = self.turn_response_ids.get(turn_id)
+            if expected_response_id is None:
+                self.turn_response_ids[turn_id] = response_id
+            elif expected_response_id != response_id:
+                rejection = "wrong_response_id"
+            expected_turn_id = self.response_turn_ids.get(response_id)
+            if expected_turn_id is None:
+                self.response_turn_ids[response_id] = turn_id
+            elif expected_turn_id != turn_id:
+                rejection = "wrong_turn_id"
+        if rejection is not None:
+            record.setdefault("metadata", {})["collector_rejection"] = rejection
+        self.output.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+        self.output.flush()
+        if rejection is not None:
+            self.rejected_records.append(record)
+            print(
+                f"REJECTED stale event={event} turn={turn_id} "
+                f"response={response_id} reason={rejection}",
+                flush=True,
+            )
+            return
+        self.records[turn_id].append(record)
         print(
             f"[{record.get('timestamp', '?')}] {source} {event} "
             f"session={record.get('session_id')} turn={turn_id} "
@@ -274,7 +307,7 @@ class LiveCollector:
                     "FTS": "fts",
                     "RRF": "rrf",
                     "rerank": "rerank",
-                    "RAG": "rag",
+                    "Memory context pipeline": "memory_context_pipeline",
                     "LLM TTFT": "llm_ttft",
                     "LLM total": "llm_total",
                     "TTS TTFA": "tts_ttfa",
@@ -289,6 +322,7 @@ class LiveCollector:
     def print_turn(self, turn_id: str, *, completion_event: str) -> None:
         records = self.records[turn_id]
         values = metrics_for_turn(records)
+        errors = correlation_errors(records)
         first = min(records, key=lambda item: item.get("timestamp_ms", 0))
         print(f"\nTURN {turn_id} COMPLETE ({completion_event})", flush=True)
         print(f"Session: {first.get('session_id')}", flush=True)
@@ -307,6 +341,8 @@ class LiveCollector:
                 flush=True,
             )
         print(f"Trace records: {len(records)}\n", flush=True)
+        if errors:
+            print(f"Correlation rejections: {', '.join(errors)}", flush=True)
         self.completed_turns.add(turn_id)
 
     def close(self) -> None:

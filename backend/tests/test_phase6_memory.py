@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import SQLAlchemyError
 
+from app.api.memories import _search_memories, create_memory
 from app.core.config import Settings
-from app.llm.tool_loop import ToolRegistry
+from app.llm.tool_loop import ToolExecutionContext, ToolRegistry
 from app.memory.chunking import chunk_text
 from app.memory.extraction import extract_explicit_candidates, extract_explicit_tool_candidate
+from app.memory.jobs import MemoryJobWorker
 from app.memory.policy import ExtractionCandidate, validate_candidate
 from app.memory.providers import (
     MemoryProviderError,
@@ -19,19 +23,29 @@ from app.memory.providers import (
     RemoteReranker,
 )
 from app.memory.retrieval import (
+    MemoryRetrievalService,
     apply_relevance_boundary,
     dense_retrieve,
     fuse_candidates,
     rerank_fused,
     should_run_structured_retrieval,
 )
-from app.memory.tool_tools import build_explicit_memory_save_call, register_memory_tools
+from app.memory.tool_tools import (
+    MemorySaveArguments,
+    build_explicit_memory_save_call,
+    memory_forget_handler,
+    memory_save_handler,
+    register_memory_tools,
+)
 from app.memory.types import (
     FusedMemory,
+    MemoryCandidate,
     MemoryIntent,
     MemoryType,
     build_memory_query_plan,
 )
+from app.schemas import MemoryCreateRequest
+from app.services.auth import AuthPrincipal
 
 
 def _settings() -> Settings:
@@ -407,3 +421,242 @@ async def test_rerank_falls_back_without_exposing_provider_payload() -> None:
     assert error.value.code == "memory_provider_rate_limited"
     assert "provider secret" not in str(error.value)
     await provider.close()
+
+
+class _NestedTransaction:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+
+class _RetrievalSession:
+    def begin_nested(self):
+        return _NestedTransaction()
+
+
+def _candidate(
+    *, user_id: uuid.UUID, memory_id: uuid.UUID, source: str, content: str
+) -> MemoryCandidate:
+    return MemoryCandidate(
+        memory_id=memory_id,
+        user_id=user_id,
+        content=content,
+        source=source,
+        source_rank=1,
+        score=1.0,
+        created_at=datetime.now(UTC),
+        memory_type=MemoryType.FACT,
+    )
+
+
+@pytest.mark.asyncio
+async def test_reranker_failure_drops_dense_only_candidates(monkeypatch) -> None:
+    import app.memory.retrieval as retrieval
+
+    settings = _settings()
+    user_id = uuid.uuid4()
+    lexical = _candidate(
+        user_id=user_id,
+        memory_id=uuid.uuid4(),
+        source="fts",
+        content="I work remotely",
+    )
+    dense_only = _candidate(
+        user_id=user_id,
+        memory_id=uuid.uuid4(),
+        source="dense",
+        content="Unrelated nearest neighbour",
+    )
+    monkeypatch.setattr(retrieval, "fts_retrieve", AsyncMock(return_value=[lexical]))
+    monkeypatch.setattr(retrieval, "dense_retrieve", AsyncMock(return_value=[dense_only]))
+    reranker = AsyncMock()
+    reranker.rerank.side_effect = MemoryProviderError("memory_provider_unavailable")
+
+    service = MemoryRetrievalService(
+        settings,
+        embedding_provider=object(),
+        reranker=reranker,
+    )
+    result = await service.retrieve(
+        _RetrievalSession(),
+        user_id=user_id,
+        query="where do I work?",
+    )
+
+    assert result.status == "degraded"
+    assert result.provider_error == "memory_provider_unavailable"
+    assert [item.memory_id for item in result.memories] == [lexical.memory_id]
+
+
+@pytest.mark.asyncio
+async def test_optional_retrieval_database_failure_isolated_to_savepoint(monkeypatch) -> None:
+    import app.memory.retrieval as retrieval
+
+    async def fail(*_args, **_kwargs):
+        raise SQLAlchemyError("synthetic retrieval failure")
+
+    monkeypatch.setattr(retrieval, "fts_retrieve", fail)
+    service = MemoryRetrievalService(_settings())
+    result = await service.retrieve(
+        _RetrievalSession(),
+        user_id=uuid.uuid4(),
+        query="where do I work?",
+    )
+
+    assert result.status == "degraded"
+    assert result.provider_error == "memory_database_error"
+    assert result.memories == ()
+
+
+@pytest.mark.asyncio
+async def test_memory_search_passes_requested_limit_to_hybrid_service() -> None:
+    user_id = uuid.uuid4()
+    service = SimpleNamespace(retrieve=AsyncMock(return_value=SimpleNamespace(memories=())))
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(settings=_settings(), memory_service=service),
+        )
+    )
+    session = AsyncMock()
+    session.get.return_value = SimpleNamespace(
+        id=user_id,
+        status="active",
+        memory_enabled=True,
+    )
+    principal = SimpleNamespace(user_id=user_id)
+
+    assert await _search_memories("work", 3, request, session, principal) == []
+    call = service.retrieve.await_args
+    assert call.kwargs["limit"] == 3
+
+
+@pytest.mark.asyncio
+async def test_manual_rest_create_remains_available_when_operator_writes_are_off(
+    monkeypatch,
+) -> None:
+    import app.api.memories as memories_api
+
+    saved = SimpleNamespace(id=uuid.uuid4())
+    writer = AsyncMock(return_value=(saved, True))
+    monkeypatch.setattr(memories_api.MemoryWriter, "write_candidate", writer)
+    session = AsyncMock()
+    session.get.return_value = SimpleNamespace(
+        id=uuid.uuid4(), status="active", memory_enabled=True
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                settings=_settings().model_copy(update={"memory_write_enabled": False})
+            )
+        )
+    )
+    principal = AuthPrincipal(
+        user_id=session.get.return_value.id, session_id=uuid.uuid4(), device_id=uuid.uuid4()
+    )
+
+    result = await create_memory(
+        MemoryCreateRequest(content="I prefer jasmine tea", memory_type="preference"),
+        request,
+        session,
+        principal,
+    )
+
+    assert result is saved
+    writer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_confirmed_memory_save_carries_turn_session_and_source_message(
+    monkeypatch,
+) -> None:
+    import app.memory.tool_tools as tool_tools
+
+    source_message_id = uuid.uuid4()
+    saved_memory_id = uuid.uuid4()
+    writer = AsyncMock(return_value=(SimpleNamespace(id=saved_memory_id), True))
+    monkeypatch.setattr(tool_tools.MemoryWriter, "write_candidate", writer)
+    session = AsyncMock()
+    session.get.return_value = SimpleNamespace(memory_enabled=True)
+    session.scalar.return_value = source_message_id
+    context = ToolExecutionContext(
+        user_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=uuid.uuid4(),
+        db=session,
+        memory_settings=_settings().model_copy(update={"memory_write_enabled": True}),
+    )
+
+    result = await memory_save_handler(
+        context,
+        MemorySaveArguments(content="I prefer jasmine tea", memory_type=MemoryType.PREFERENCE),
+    )
+
+    assert result == {"memory_id": str(saved_memory_id), "created": True}
+    call = writer.await_args
+    assert call.kwargs["source_message_id"] == source_message_id
+    assert call.kwargs["source_turn_id"] == context.turn_id
+    assert call.kwargs["source_session_id"] == context.session_id
+
+
+@pytest.mark.asyncio
+async def test_confirmed_memory_forget_bumps_version_for_real_deletion(monkeypatch) -> None:
+    import app.memory.tool_tools as tool_tools
+
+    item = SimpleNamespace(id=uuid.uuid4(), status="active")
+    bump = AsyncMock()
+    monkeypatch.setattr(tool_tools.MemoryRepository, "bump_memory_version", bump)
+    session = AsyncMock()
+    session.scalar.return_value = item
+    context = ToolExecutionContext(
+        user_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=uuid.uuid4(),
+        db=session,
+    )
+
+    result = await memory_forget_handler(
+        context,
+        tool_tools.MemoryForgetArguments(memory_id=item.id),
+    )
+
+    assert result == {"deleted": True, "memory_id": str(item.id)}
+    session.delete.assert_awaited_once_with(item)
+    bump.assert_awaited_once_with(session, user_id=context.user_id)
+
+
+@pytest.mark.asyncio
+async def test_reembed_jobs_use_embedding_handler_and_unsupported_jobs_dead_letter() -> None:
+    settings = _settings()
+    worker = MemoryJobWorker(settings)
+    session = AsyncMock()
+    reembed_job = SimpleNamespace(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        memory_id=uuid.uuid4(),
+        job_type="reembed_memory",
+        attempts=1,
+        locked_at=None,
+    )
+    worker.repository.claim_next = AsyncMock(return_value=reembed_job)
+    worker._embed_memory = AsyncMock()
+
+    assert await worker.run_once(session) is True
+    worker._embed_memory.assert_awaited_once_with(session, reembed_job)
+
+    unsupported = SimpleNamespace(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        memory_id=None,
+        job_type="future_memory_job",
+        attempts=1,
+        locked_at=None,
+    )
+    worker.repository.claim_next = AsyncMock(return_value=unsupported)
+    assert await worker.run_once(session) is True
+    statement = session.execute.await_args.args[0]
+    assert statement.compile().params["status"] == "dead"
+    assert statement.compile().params["last_error_code"] == "memory_job_type_unsupported"

@@ -80,6 +80,51 @@ async def test_remote_tts_uses_configured_speech_endpoint_and_extracts_wav_pcm()
 
 
 @pytest.mark.asyncio
+async def test_remote_tts_emits_source_local_generation_boundaries(tmp_path, monkeypatch) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_wav_pcm(b"\x00\x01\x02\x03"),
+            headers={"content-type": "audio/wav", "x-sample-rate": "24000"},
+        )
+
+    monkeypatch.setenv("LATENCY_TRACE_PATH", str(tmp_path / "tts-trace.jsonl"))
+    settings = Settings(
+        _env_file=None,
+        tts_api_url="https://tts.example.test/v1/audio/speech",
+        tts_api_key=SecretStr("test-only-key"),
+        tts_api_response_format="wav",
+        tts_api_sample_rate_hz=24_000,
+    )
+    engine = RemoteTTSEngine(settings, transport=httpx.MockTransport(handler))
+    try:
+        await engine.initialize()
+        _ = [
+            chunk
+            async for chunk in engine.stream(
+                text="Hello.",
+                response_id="response-1",
+                session_id="session-1",
+                turn_id="turn-1",
+            )
+        ]
+    finally:
+        await engine.close()
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "tts-trace.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    first_audio = next(
+        record for record in records if record["event"] == "tts_first_audio_received"
+    )
+    generation = next(record for record in records if record["event"] == "tts_generation_completed")
+    assert first_audio["session_id"] == "session-1"
+    assert first_audio["turn_id"] == "turn-1"
+    assert 0 <= first_audio["duration_ms"] <= generation["duration_ms"]
+
+
+@pytest.mark.asyncio
 async def test_remote_tts_rejects_non_wav_provider_output() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"\x00\x01\x02\x03")

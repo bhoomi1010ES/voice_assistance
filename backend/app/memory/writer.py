@@ -226,6 +226,7 @@ class MemoryWriter:
                                 "policy_version": GRAPH_INDEX_POLICY_VERSION,
                             },
                         )
+        await self.repository.bump_memory_version(session, user_id=user_id)
         return item, True
 
     async def write_many(

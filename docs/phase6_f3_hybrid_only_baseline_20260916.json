@@ -1,0 +1,1265 @@
+{
+  "alembic": {
+    "pending_0014_applied_to_shared_database": true,
+    "repository_head": "0014_memory_supersession_owner",
+    "shared_database_head": "0014_memory_supersession_owner",
+    "shared_database_includes_graph_foundation_through_0013": true
+  },
+  "baseline_kind": "phase6_f3_hybrid_only",
+  "baseline_version": "phase6-f3-hybrid-only-v1",
+  "evidence_sha256": {
+    "extraction_metrics": "b773eefb620f371348cd1cc042ca197c0a8cae940d82b891638c7e27e673c63e",
+    "latency_analysis": "acc83ce3d32e2e75bef638eb36d4839f9758b05a555ba34bab85636fe56f9e2d",
+    "nvidia_summary": "34524a2de4eb899077018c01ca0eb2b6e2e796693d26d86fcd2f79c9a647e5e7",
+    "retrieval_metrics": "3b785cad37784514fe9736a6520ce9f9f5cc0a22d0f9b73ffd94b73c17131e6f",
+    "retrieval_results": "8f4a1d22d1e84d2ce44b63c11d40fb1eba4e151776d01da7471f209007de8ea4",
+    "worker_summary": "f39f1e2c7cb314b20eda7f3033dfde5b18935da2ac567712e3446a8bdc37779a"
+  },
+  "extraction_evaluation": {
+    "evaluation_id": "phase6-extraction-20260916T185334Z",
+    "metrics": {
+      "accuracy": 1.0,
+      "cases": 66,
+      "duplicate_memory_errors": 0,
+      "explicit_opt_out_errors": 0,
+      "f1": 1.0,
+      "false_negatives": 0,
+      "false_positives": 0,
+      "forget_command_errors": 0,
+      "latency_ms": {
+        "max": 0.5693999119102955,
+        "min": 0.002600019797682762,
+        "p50": 0.017700018361210823,
+        "p95": 0.07152504986152053,
+        "p99": 0.2471300307661295
+      },
+      "malformed_extraction_count": 0,
+      "memory_type_accuracy": 1.0,
+      "normalization_accuracy": 1.0,
+      "precision": 1.0,
+      "predicate_accuracy": 1.0,
+      "recall": 1.0,
+      "sensitive_policy_violations": 0,
+      "subject_accuracy": 1.0,
+      "tool_command_errors": 0,
+      "true_negatives": 36,
+      "true_positives": 30
+    },
+    "status": "PASS"
+  },
+  "git_head": "8033c81204958e179ac2ba5a606a88ab5d08d8cb",
+  "graph_flags": {
+    "GRAPH_RAG_MODE": "off",
+    "GRAPH_WRITE_ENABLED": false,
+    "graph_reads_included": false,
+    "graph_writes_included": false
+  },
+  "latency_checks": {
+    "latency_unit_tests": "17 passed",
+    "physical_trace": {
+      "analysis": "docs/evidence/phase6/phase6_f3_latency_analysis_20260916.txt",
+      "complete_turns_reported": 6,
+      "device_turns_in_trace": 8,
+      "reason": "Retained device trace has inconsistent monotonic clock domains; first-token values are zero/missing and unaccounted latency includes negative values.",
+      "source": "scratch/latency_trace_device_test_20260915.jsonl",
+      "status": "not_accepted"
+    },
+    "retrieval_latency_ms": {
+      "max": 615.069,
+      "min": 301.222,
+      "p50": 378.082,
+      "p95": 431.5948,
+      "p99": 571.1238
+    }
+  },
+  "provider_checks": {
+    "memory_worker_validation": {
+      "concurrency_jobs_completed": 10,
+      "concurrency_jobs_submitted": 10,
+      "cross_user_leakage": 0,
+      "jobs_tested": 18,
+      "p50_ms": 109.755,
+      "p95_ms": 414.55449999999996,
+      "rerun_note": "A first probe had an incomplete concurrent sample; the retained rerun completed all 10/10 jobs and passed.",
+      "status": "PASS"
+    },
+    "nvidia_live_validation": {
+      "cases": 8,
+      "cross_user_leakage": 0,
+      "errors": 0,
+      "live_verified_flag": false,
+      "p50_ms": 6032.727,
+      "p95_ms": 9410.969,
+      "provider": "nvidia",
+      "status": "PASS",
+      "unauthorized_tool_executions": 0
+    }
+  },
+  "retrieval_evaluation": {
+    "case_count": 25,
+    "cases": [
+      {
+        "case_id": "latest",
+        "category": "latest",
+        "expected_relevant_ids": [
+          "tea-new"
+        ],
+        "final_retrieved_ids": [
+          "tea-new",
+          "food-distractor",
+          "travel-train"
+        ],
+        "hybrid_retrieved_ids": [
+          "travel-train",
+          "food-distractor",
+          "tea-new",
+          "negation",
+          "weekend-hiking",
+          "weekend-cycling",
+          "rahul",
+          "name",
+          "timezone",
+          "work-mumbai",
+          "trip",
+          "injection",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 218.086,
+          "hybrid_before_rerank": 248.474,
+          "rerank_stage": 366.59,
+          "total": 615.069
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "tea-new",
+          "top_reranker_score": 0.002993
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What is my latest preference?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "oldest",
+        "category": "oldest",
+        "expected_relevant_ids": [
+          "tea-new"
+        ],
+        "final_retrieved_ids": [
+          "tea-new",
+          "food-distractor",
+          "travel-train"
+        ],
+        "hybrid_retrieved_ids": [
+          "travel-train",
+          "food-distractor",
+          "tea-new",
+          "negation",
+          "weekend-hiking",
+          "weekend-cycling",
+          "name",
+          "rahul",
+          "timezone",
+          "work-mumbai",
+          "trip",
+          "injection",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 213.327,
+          "hybrid_before_rerank": 218.915,
+          "rerank_stage": 213.044,
+          "total": 431.964
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "tea-new",
+          "top_reranker_score": 0.000688
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What was my oldest preference?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "preference",
+        "category": "preference",
+        "expected_relevant_ids": [
+          "tea-new"
+        ],
+        "final_retrieved_ids": [
+          "tea-new",
+          "negation",
+          "food-distractor"
+        ],
+        "hybrid_retrieved_ids": [
+          "food-distractor",
+          "travel-train",
+          "tea-new",
+          "negation",
+          "weekend-hiking",
+          "weekend-cycling",
+          "rahul",
+          "name",
+          "timezone",
+          "work-mumbai",
+          "injection",
+          "trip",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 185.764,
+          "hybrid_before_rerank": 199.574,
+          "rerank_stage": 184.117,
+          "total": 383.693
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "tea-new",
+          "top_reranker_score": 0.144631
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What drink do I prefer?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "relationship",
+        "category": "relationship",
+        "expected_relevant_ids": [
+          "rahul"
+        ],
+        "final_retrieved_ids": [
+          "rahul"
+        ],
+        "hybrid_retrieved_ids": [
+          "rahul",
+          "work-mumbai",
+          "trip",
+          "weekend-cycling",
+          "timezone",
+          "travel-train",
+          "weekend-hiking",
+          "negation",
+          "tea-new",
+          "food-distractor",
+          "name",
+          "injection",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 201.396,
+          "hybrid_before_rerank": 218.238,
+          "rerank_stage": 192.621,
+          "total": 410.863
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "rahul",
+          "top_reranker_score": 0.533975
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What is my relationship with Rahul?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "exact-name",
+        "category": "exact_name",
+        "expected_relevant_ids": [
+          "name"
+        ],
+        "final_retrieved_ids": [
+          "name",
+          "rahul",
+          "timezone"
+        ],
+        "hybrid_retrieved_ids": [
+          "name",
+          "rahul",
+          "timezone",
+          "work-mumbai",
+          "tea-new",
+          "travel-train",
+          "weekend-hiking",
+          "negation",
+          "weekend-cycling",
+          "injection",
+          "food-distractor",
+          "trip",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 172.733,
+          "hybrid_before_rerank": 186.363,
+          "rerank_stage": 222.428,
+          "total": 408.797
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "name",
+          "top_reranker_score": 0.107625
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What is my name?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "paraphrase-location",
+        "category": "paraphrase",
+        "expected_relevant_ids": [
+          "work-mumbai"
+        ],
+        "final_retrieved_ids": [
+          "work-mumbai"
+        ],
+        "hybrid_retrieved_ids": [
+          "work-mumbai",
+          "rahul",
+          "timezone",
+          "travel-train",
+          "name",
+          "weekend-hiking",
+          "injection",
+          "weekend-cycling",
+          "negation",
+          "project-atlas",
+          "tea-new",
+          "trip",
+          "food-distractor"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 171.648,
+          "hybrid_before_rerank": 174.374,
+          "rerank_stage": 197.933,
+          "total": 372.31
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "work-mumbai",
+          "top_reranker_score": 0.249082
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "Where do I work remotely?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "conflict",
+        "category": "conflict",
+        "expected_relevant_ids": [
+          "work-mumbai"
+        ],
+        "final_retrieved_ids": [
+          "work-mumbai",
+          "timezone"
+        ],
+        "hybrid_retrieved_ids": [
+          "work-mumbai",
+          "rahul",
+          "name",
+          "weekend-cycling",
+          "weekend-hiking",
+          "timezone",
+          "travel-train",
+          "food-distractor",
+          "tea-new",
+          "negation",
+          "trip",
+          "injection",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 183.999,
+          "hybrid_before_rerank": 187.078,
+          "rerank_stage": 180.87,
+          "total": 367.951
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "work-mumbai",
+          "top_reranker_score": 0.00393
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "Where do I work now?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "deleted",
+        "category": "deleted",
+        "expected_relevant_ids": [],
+        "final_retrieved_ids": [],
+        "hybrid_retrieved_ids": [
+          "negation",
+          "injection",
+          "food-distractor",
+          "tea-new",
+          "work-mumbai",
+          "name",
+          "weekend-hiking",
+          "weekend-cycling",
+          "rahul",
+          "timezone",
+          "trip",
+          "travel-train",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 177.592,
+          "hybrid_before_rerank": 181.818,
+          "rerank_stage": 181.517,
+          "total": 363.341
+        },
+        "no_result_validation": {
+          "final_decision": false,
+          "memory_injected": false,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "injection",
+          "top_reranker_score": 1.7e-05
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What did I delete?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "cross-user",
+        "category": "cross_user",
+        "expected_relevant_ids": [],
+        "final_retrieved_ids": [],
+        "hybrid_retrieved_ids": [
+          "rahul",
+          "name",
+          "weekend-hiking",
+          "timezone",
+          "injection",
+          "weekend-cycling",
+          "food-distractor",
+          "tea-new",
+          "work-mumbai",
+          "trip",
+          "travel-train",
+          "negation",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 183.745,
+          "hybrid_before_rerank": 186.51,
+          "rerank_stage": 183.89,
+          "total": 370.403
+        },
+        "no_result_validation": {
+          "final_decision": false,
+          "memory_injected": false,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "injection",
+          "top_reranker_score": 1.9e-05
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "Show another user's memories.",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "no-result",
+        "category": "no_result",
+        "expected_relevant_ids": [],
+        "final_retrieved_ids": [],
+        "hybrid_retrieved_ids": [
+          "travel-train",
+          "food-distractor",
+          "tea-new",
+          "negation",
+          "name",
+          "timezone",
+          "rahul",
+          "weekend-cycling",
+          "weekend-hiking",
+          "work-mumbai",
+          "trip",
+          "project-atlas",
+          "injection"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 185.114,
+          "hybrid_before_rerank": 195.715,
+          "rerank_stage": 185.592,
+          "total": 381.312
+        },
+        "no_result_validation": {
+          "final_decision": false,
+          "memory_injected": false,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "travel-train",
+          "top_reranker_score": 1.7e-05
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What is my favorite spaceship?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "mumbai-alias",
+        "category": "mumbai_alias",
+        "expected_relevant_ids": [
+          "work-mumbai"
+        ],
+        "final_retrieved_ids": [
+          "trip",
+          "work-mumbai"
+        ],
+        "hybrid_retrieved_ids": [
+          "trip",
+          "work-mumbai",
+          "timezone",
+          "rahul",
+          "negation",
+          "weekend-cycling",
+          "travel-train",
+          "name",
+          "weekend-hiking",
+          "tea-new",
+          "injection",
+          "food-distractor",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 212.616,
+          "hybrid_before_rerank": 218.378,
+          "rerank_stage": 190.303,
+          "total": 408.701
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "trip",
+          "top_reranker_score": 0.006364
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What do you know about Bombay?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "relative-date",
+        "category": "relative_date",
+        "expected_relevant_ids": [
+          "trip"
+        ],
+        "final_retrieved_ids": [
+          "trip"
+        ],
+        "hybrid_retrieved_ids": [
+          "trip",
+          "rahul",
+          "name",
+          "timezone",
+          "weekend-cycling",
+          "injection",
+          "work-mumbai",
+          "tea-new",
+          "negation",
+          "weekend-hiking",
+          "food-distractor",
+          "travel-train",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 195.805,
+          "hybrid_before_rerank": 221.031,
+          "rerank_stage": 190.211,
+          "total": 411.255
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "trip",
+          "top_reranker_score": 1.8e-05
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What happened yesterday?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "timezone",
+        "category": "timezone",
+        "expected_relevant_ids": [
+          "timezone"
+        ],
+        "final_retrieved_ids": [
+          "timezone"
+        ],
+        "hybrid_retrieved_ids": [
+          "timezone",
+          "tea-new",
+          "work-mumbai",
+          "name",
+          "weekend-hiking",
+          "weekend-cycling",
+          "rahul",
+          "negation",
+          "food-distractor",
+          "travel-train",
+          "trip",
+          "injection",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 170.805,
+          "hybrid_before_rerank": 173.067,
+          "rerank_stage": 216.406,
+          "total": 389.478
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "timezone",
+          "top_reranker_score": 0.644001
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What timezone do I use?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "repeated",
+        "category": "repeated",
+        "expected_relevant_ids": [
+          "tea-new"
+        ],
+        "final_retrieved_ids": [
+          "food-distractor",
+          "tea-new",
+          "travel-train"
+        ],
+        "hybrid_retrieved_ids": [
+          "food-distractor",
+          "tea-new",
+          "travel-train",
+          "negation",
+          "weekend-hiking",
+          "weekend-cycling",
+          "name",
+          "rahul",
+          "timezone",
+          "work-mumbai",
+          "injection",
+          "trip",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 213.447,
+          "hybrid_before_rerank": 226.264,
+          "rerank_stage": 203.85,
+          "total": 430.118
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "food-distractor",
+          "top_reranker_score": 0.126461
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What do I prefer?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "negation",
+        "category": "negation",
+        "expected_relevant_ids": [
+          "negation"
+        ],
+        "final_retrieved_ids": [
+          "negation",
+          "tea-new"
+        ],
+        "hybrid_retrieved_ids": [
+          "negation",
+          "food-distractor",
+          "tea-new",
+          "travel-train",
+          "weekend-hiking",
+          "weekend-cycling",
+          "timezone",
+          "rahul",
+          "name",
+          "work-mumbai",
+          "trip",
+          "injection",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 148.55,
+          "hybrid_before_rerank": 153.191,
+          "rerank_stage": 148.027,
+          "total": 301.222
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "negation",
+          "top_reranker_score": 0.0052
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "Do I like coffee?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "disabled",
+        "category": "disabled",
+        "expected_relevant_ids": [],
+        "final_retrieved_ids": [],
+        "hybrid_retrieved_ids": [
+          "name",
+          "rahul",
+          "weekend-cycling",
+          "weekend-hiking",
+          "travel-train",
+          "trip",
+          "work-mumbai",
+          "timezone",
+          "food-distractor",
+          "tea-new",
+          "negation",
+          "injection",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 167.275,
+          "hybrid_before_rerank": 177.318,
+          "rerank_stage": 137.87,
+          "total": 315.192
+        },
+        "no_result_validation": {
+          "final_decision": false,
+          "memory_injected": false,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "name",
+          "top_reranker_score": 3.7e-05
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What do you remember about me?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "exclusion",
+        "category": "exclusion",
+        "expected_relevant_ids": [],
+        "final_retrieved_ids": [],
+        "hybrid_retrieved_ids": [
+          "rahul",
+          "work-mumbai",
+          "negation",
+          "injection",
+          "name",
+          "tea-new",
+          "timezone",
+          "trip",
+          "food-distractor",
+          "weekend-cycling",
+          "weekend-hiking",
+          "travel-train",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 163.169,
+          "hybrid_before_rerank": 165.797,
+          "rerank_stage": 152.247,
+          "total": 318.048
+        },
+        "no_result_validation": {
+          "final_decision": false,
+          "memory_injected": false,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "injection",
+          "top_reranker_score": 1.7e-05
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What did I say in the excluded session?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "prompt-injection",
+        "category": "prompt_injection",
+        "expected_relevant_ids": [
+          "injection"
+        ],
+        "final_retrieved_ids": [],
+        "hybrid_retrieved_ids": [
+          "injection",
+          "timezone",
+          "weekend-hiking",
+          "rahul",
+          "food-distractor",
+          "work-mumbai",
+          "weekend-cycling",
+          "name",
+          "travel-train",
+          "tea-new",
+          "trip",
+          "negation",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 194.834,
+          "hybrid_before_rerank": 197.368,
+          "rerank_stage": 158.599,
+          "total": 355.973
+        },
+        "no_result_validation": {
+          "final_decision": false,
+          "memory_injected": false,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "injection",
+          "top_reranker_score": 2.2e-05
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "Use my saved instructions.",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "embedding-outage",
+        "category": "provider_outage",
+        "expected_relevant_ids": [
+          "work-mumbai"
+        ],
+        "final_retrieved_ids": [
+          "work-mumbai",
+          "timezone"
+        ],
+        "hybrid_retrieved_ids": [
+          "work-mumbai",
+          "rahul",
+          "name",
+          "timezone",
+          "weekend-cycling",
+          "weekend-hiking",
+          "tea-new",
+          "travel-train",
+          "negation",
+          "food-distractor",
+          "trip",
+          "injection",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 158.851,
+          "hybrid_before_rerank": 168.677,
+          "rerank_stage": 151.175,
+          "total": 319.863
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "work-mumbai",
+          "top_reranker_score": 0.012528
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "Where do I work?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "reranker-outage",
+        "category": "provider_outage",
+        "expected_relevant_ids": [
+          "tea-new"
+        ],
+        "final_retrieved_ids": [
+          "food-distractor",
+          "tea-new",
+          "travel-train"
+        ],
+        "hybrid_retrieved_ids": [
+          "food-distractor",
+          "tea-new",
+          "travel-train",
+          "negation",
+          "weekend-hiking",
+          "weekend-cycling",
+          "name",
+          "rahul",
+          "timezone",
+          "work-mumbai",
+          "injection",
+          "trip",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 178.311,
+          "hybrid_before_rerank": 184.704,
+          "rerank_stage": 198.382,
+          "total": 383.09
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "food-distractor",
+          "top_reranker_score": 0.126461
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What do I prefer?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "project-lookup",
+        "category": "work_project",
+        "expected_relevant_ids": [
+          "project-atlas"
+        ],
+        "final_retrieved_ids": [
+          "project-atlas"
+        ],
+        "hybrid_retrieved_ids": [
+          "project-atlas",
+          "work-mumbai",
+          "rahul",
+          "injection",
+          "timezone",
+          "name",
+          "weekend-hiking",
+          "negation",
+          "weekend-cycling",
+          "travel-train",
+          "tea-new",
+          "trip",
+          "food-distractor"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 188.133,
+          "hybrid_before_rerank": 197.157,
+          "rerank_stage": 154.987,
+          "total": 352.148
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "project-atlas",
+          "top_reranker_score": 0.244183
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What is happening with Project Atlas?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "multiple-weekend-activities",
+        "category": "multiple_relevant",
+        "expected_relevant_ids": [
+          "weekend-cycling",
+          "weekend-hiking"
+        ],
+        "final_retrieved_ids": [
+          "weekend-hiking",
+          "weekend-cycling"
+        ],
+        "hybrid_retrieved_ids": [
+          "weekend-hiking",
+          "weekend-cycling",
+          "food-distractor",
+          "travel-train",
+          "tea-new",
+          "rahul",
+          "work-mumbai",
+          "name",
+          "negation",
+          "timezone",
+          "trip",
+          "injection",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 177.684,
+          "hybrid_before_rerank": 181.353,
+          "rerank_stage": 183.957,
+          "total": 365.314
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "weekend-hiking",
+          "top_reranker_score": 0.438575
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What do I enjoy doing on weekends?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "low-overlap-commute",
+        "category": "low_lexical_overlap",
+        "expected_relevant_ids": [
+          "travel-train"
+        ],
+        "final_retrieved_ids": [
+          "travel-train"
+        ],
+        "hybrid_retrieved_ids": [
+          "travel-train",
+          "weekend-cycling",
+          "weekend-hiking",
+          "work-mumbai",
+          "timezone",
+          "food-distractor",
+          "tea-new",
+          "name",
+          "rahul",
+          "negation",
+          "trip",
+          "injection",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 193.743,
+          "hybrid_before_rerank": 197.867,
+          "rerank_stage": 215.705,
+          "total": 413.574
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "travel-train",
+          "top_reranker_score": 0.01698
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "How do I usually get around?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "high-overlap-location",
+        "category": "high_lexical_overlap",
+        "expected_relevant_ids": [
+          "work-mumbai"
+        ],
+        "final_retrieved_ids": [
+          "work-mumbai",
+          "trip"
+        ],
+        "hybrid_retrieved_ids": [
+          "work-mumbai",
+          "trip",
+          "rahul",
+          "timezone",
+          "travel-train",
+          "weekend-cycling",
+          "name",
+          "weekend-hiking",
+          "tea-new",
+          "negation",
+          "food-distractor",
+          "project-atlas",
+          "injection"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 180.376,
+          "hybrid_before_rerank": 183.687,
+          "rerank_stage": 194.386,
+          "total": 378.082
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "work-mumbai",
+          "top_reranker_score": 0.023153
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "Which Mumbai location is my current work location?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      },
+      {
+        "case_id": "distractor-preference",
+        "category": "distractor",
+        "expected_relevant_ids": [
+          "tea-new"
+        ],
+        "final_retrieved_ids": [
+          "tea-new",
+          "negation",
+          "food-distractor"
+        ],
+        "hybrid_retrieved_ids": [
+          "food-distractor",
+          "travel-train",
+          "tea-new",
+          "negation",
+          "weekend-hiking",
+          "weekend-cycling",
+          "rahul",
+          "name",
+          "timezone",
+          "work-mumbai",
+          "trip",
+          "injection",
+          "project-atlas"
+        ],
+        "latency_ms": {
+          "hnsw_vector_stage": 171.432,
+          "hybrid_before_rerank": 185.695,
+          "rerank_stage": 167.4,
+          "total": 353.098
+        },
+        "no_result_validation": {
+          "final_decision": true,
+          "memory_injected": true,
+          "relevance_boundary": 5e-05,
+          "top_candidate": "tea-new",
+          "top_reranker_score": 0.04123
+        },
+        "ownership_ok": true,
+        "provider_status": "live",
+        "query": "What beverage do I prefer?",
+        "returned_cross_user_ids": [],
+        "returned_deleted_ids": [],
+        "returned_superseded_ids": []
+      }
+    ],
+    "evaluation_id": "phase6-retrieval-20260916T184556Z",
+    "metrics": {
+      "cases": 25,
+      "final_mrr": 0.875,
+      "final_ndcg_at_5": 0.8946394630357186,
+      "final_top1_accuracy": 0.8,
+      "hnsw_recall_at_5": 0.95,
+      "hybrid_recall_at_5": 1.0,
+      "latency_ms": {
+        "max": 615.069,
+        "min": 301.222,
+        "p50": 378.082,
+        "p95": 431.5948,
+        "p99": 571.1238
+      },
+      "positive_quality_cases": 20,
+      "reranked_recall_at_5": 0.95
+    },
+    "safety": {
+      "cross_user_leakage": 0,
+      "deleted_memory_retrieval": 0,
+      "no_result_nonempty": 0,
+      "no_result_relevant_returned": 0,
+      "superseded_obsolete_out_ranked_active_replacement": 0,
+      "user_scope_violations": 0
+    },
+    "status": "PASS",
+    "threshold_status": {
+      "cases": true,
+      "cross_user_leakage": true,
+      "deleted_memory_retrieval": true,
+      "final_mrr": true,
+      "final_ndcg_at_5": true,
+      "final_top1_accuracy": true,
+      "hybrid_recall_at_5": true,
+      "no_result_irrelevant_injection": true,
+      "no_result_safety": true,
+      "superseded_filter": true,
+      "user_scope": true
+    }
+  },
+  "run_at_utc": "2026-09-16T18:55:56.685578+00:00",
+  "runtime_contract": {
+    "LLM_PROVIDER": "nvidia",
+    "MEMORY_RETRIEVAL_MODE": "inject",
+    "MEMORY_WRITE_ENABLED": true,
+    "corpus_id": "phase6-retrieval-corpus-v1",
+    "corpus_version": "1.0.0",
+    "embedding_model": "BAAI/bge-m3",
+    "reranker_model": "BAAI/bge-reranker-v2-m3"
+  },
+  "runtime_flag_verification": {
+    "long_lived_backend_process_observed": false,
+    "note": "No graph flags were inferred from defaults; each baseline process used GRAPH_RAG_MODE=off and GRAPH_WRITE_ENABLED=false.",
+    "source": "Settings loaded inside the isolated evaluation and provider processes",
+    "status": "process_local"
+  },
+  "test_summary": {
+    "backend_full_default": "296 passed, 53 skipped, 1 warning",
+    "latency_unit_contract": "17 passed",
+    "phase6_focused_and_integration": "60 passed, 1 warning",
+    "provider_unit_contract": "35 passed, 1 warning"
+  },
+  "worktree_dirty": true
+}

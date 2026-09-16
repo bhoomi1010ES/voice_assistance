@@ -22,8 +22,20 @@ class TTSService:
     def enabled(self) -> bool:
         return bool(self.info is not None and self.info.enabled)
 
-    async def stream(self, *, text: str, response_id: str) -> AsyncIterator[bytes]:
-        async for chunk in self.engine.stream(text=text, response_id=response_id):
+    async def stream(
+        self,
+        *,
+        text: str,
+        response_id: str,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> AsyncIterator[bytes]:
+        async for chunk in self.engine.stream(
+            text=text,
+            response_id=response_id,
+            session_id=session_id,
+            turn_id=turn_id,
+        ):
             yield chunk
 
     async def close(self) -> None:

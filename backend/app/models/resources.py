@@ -88,10 +88,10 @@ class MemoryItem(Base):
             name="fk_memory_items_source_session_user",
         ),
         ForeignKeyConstraint(
-            ["supersedes_id"],
-            ["memory_items.id"],
+            ["supersedes_id", "user_id"],
+            ["memory_items.id", "memory_items.user_id"],
             ondelete="SET NULL",
-            name="fk_memory_items_supersedes",
+            name="fk_memory_items_supersedes_user",
         ),
         UniqueConstraint("id", "user_id", name="uq_memory_items_id_user_id"),
         CheckConstraint(

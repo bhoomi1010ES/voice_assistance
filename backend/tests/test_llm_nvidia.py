@@ -149,6 +149,7 @@ async def test_nvidia_trace_records_adapter_and_stream_boundaries(monkeypatch, t
         "provider_prepare_completed",
         "http_request_started",
         "llm_request_started",
+        "llm_request_start",
         "stream_opened",
         "llm_stream_opened",
         "first_sse_event",
@@ -156,8 +157,20 @@ async def test_nvidia_trace_records_adapter_and_stream_boundaries(monkeypatch, t
         "llm_first_event",
         "first_content_token",
         "llm_first_content_token",
+        "llm_first_token_received",
+        "llm_request_completed",
+        "llm_request_complete",
+        "llm_completed",
     } <= events
     assert all(record["monotonic_ns"] > 0 for record in turn_records)
+    first_token = next(
+        record for record in turn_records if record["event"] == "llm_first_token_received"
+    )
+    completed = next(
+        record for record in turn_records if record["event"] == "llm_request_completed"
+    )
+    assert first_token["duration_ms"] >= 0
+    assert completed["duration_ms"] >= first_token["duration_ms"]
     assert '"ok"' not in trace_path.read_text(encoding="utf-8")
 
 
