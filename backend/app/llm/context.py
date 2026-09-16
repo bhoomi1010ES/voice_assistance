@@ -118,6 +118,7 @@ def build_voice_llm_request(
     transcript: str,
     allowed_tools: tuple[LLMToolDefinition, ...] = (),
     memory_context: str | None = None,
+    conversation_history: tuple[LLMMessage, ...] = (),
     trace: Callable[..., None] | None = None,
 ) -> LLMRequest:
     """Build the bounded Phase 5 v2 context for one committed speech turn."""
@@ -133,6 +134,7 @@ def build_voice_llm_request(
             metadata={
                 "tool_count": len(allowed_tools),
                 "memory_context_characters": len(memory_context or ""),
+                "history_message_count": len(conversation_history),
             },
         )
         if trace is not None
@@ -147,6 +149,7 @@ def build_voice_llm_request(
             transcript=transcript,
             allowed_tools=allowed_tools,
             memory_context=memory_context,
+            conversation_history=conversation_history,
             trace=trace,
         )
 
@@ -160,6 +163,7 @@ def _build_voice_llm_request(
     transcript: str,
     allowed_tools: tuple[LLMToolDefinition, ...],
     memory_context: str | None,
+    conversation_history: tuple[LLMMessage, ...],
     trace: Callable[..., None] | None,
 ) -> LLMRequest:
 
@@ -168,6 +172,11 @@ def _build_voice_llm_request(
         raise LLMInvalidRequestError("A final transcript is required for LLM generation.")
 
     memory_text = "\n".join(memory_context.split()) if memory_context else ""
+    history_text = "\n".join(
+        f"{message.role.value}: {message.content.strip()}"
+        for message in conversation_history
+        if message.content.strip()
+    )
     system_instructions = f"{VOICE_SYSTEM_INSTRUCTIONS}\n{VOICE_TOOL_ROUTING_INSTRUCTIONS}"
     budget_span = (
         latency_span(
@@ -189,12 +198,26 @@ def _build_voice_llm_request(
         character_ceiling = settings.llm_max_context_tokens * 4
         if len(memory_text) > character_ceiling:
             raise LLMContextLimitError("The memory context exceeds the configured context bound.")
-        if len(VOICE_SYSTEM_INSTRUCTIONS) + len(user_text) + len(memory_text) > character_ceiling:
+        if len(history_text) > character_ceiling:
+            raise LLMContextLimitError("The conversation history exceeds the configured context bound.")
+        if (
+            len(VOICE_SYSTEM_INSTRUCTIONS)
+            + len(user_text)
+            + len(memory_text)
+            + len(history_text)
+            > character_ceiling
+        ):
             raise LLMContextLimitError("The voice request exceeds the configured context bound.")
-        if len(system_instructions) + len(user_text) + len(memory_text) > character_ceiling:
+        if (
+            len(system_instructions)
+            + len(user_text)
+            + len(memory_text)
+            + len(history_text)
+            > character_ceiling
+        ):
             raise LLMContextLimitError("The voice request exceeds the configured context bound.")
 
-    messages = (
+    memory_messages = (
         (
             LLMMessage(
                 role=LLMRole.USER,
@@ -207,7 +230,10 @@ def _build_voice_llm_request(
         )
         if memory_text
         else ()
-    ) + (LLMMessage(role=LLMRole.USER, content=user_text),)
+    )
+    messages = memory_messages + tuple(conversation_history) + (
+        LLMMessage(role=LLMRole.USER, content=user_text),
+    )
 
     tool_span = (
         latency_span(

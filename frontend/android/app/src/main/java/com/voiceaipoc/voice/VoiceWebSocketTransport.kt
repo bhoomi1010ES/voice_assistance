@@ -89,6 +89,7 @@ class VoiceWebSocketTransport(
         val toolName: String? = null,
         val toolStatus: String? = null,
         val confirmationId: String? = null,
+        val status: String? = null,
         val errorCode: String? = null,
         val retryable: Boolean? = null,
     )
@@ -403,7 +404,8 @@ class VoiceWebSocketTransport(
         val preRoll = if (includePreRoll) sendQueue.takePreRoll() else emptyList()
         val nextGeneration: Long
         synchronized(stateLock) {
-            if (status.state != State.SESSION_READY) {
+            val canStartQueuedTurn = status.state == State.STREAMING_AUDIO && !status.turnActive
+            if (status.state != State.SESSION_READY && !canStartQueuedTurn) {
                 return Result(false, "E_VOICE_STATE", "Start a voice session first.")
             }
             nextGeneration = turnGeneration + 1L
@@ -617,6 +619,62 @@ class VoiceWebSocketTransport(
                 .put("response_id", responseId)
                 .put("reason", reason.take(128)),
         )
+        return Result(true)
+    }
+
+    fun abortAllResponses(reason: String = "abort_all"): Result {
+        val current = synchronized(stateLock) { status }
+        if (!current.connected || !current.sessionStarted) {
+            return Result(false, "E_VOICE_STATE", "The voice session is not ready.")
+        }
+        synchronized(stateLock) {
+            status = status.copy(
+                state = State.SESSION_READY,
+                turnActive = false,
+                turnId = null,
+                responseId = null,
+            )
+        }
+        sendQueue.clear()
+        sendQueue.clearPreRoll()
+        bargeInTurn = false
+        awaitingTurnReadyGeneration = null
+        pendingCommitDurationMs = null
+        cancelledBargeInResponseId = null
+        bargeInState = BargeInState.IDLE
+        ttsAudioPlayer.cancel()
+        notifyStatus()
+        postControl(
+            JSONObject()
+                .put("type", "client.response.abort_all")
+                .put("reason", reason.take(128)),
+        )
+        return Result(true)
+    }
+
+    fun resetConversation(): Result {
+        val current = synchronized(stateLock) { status }
+        if (!current.connected || !current.sessionStarted) {
+            return Result(false, "E_VOICE_STATE", "The voice session is not ready.")
+        }
+        synchronized(stateLock) {
+            status = status.copy(
+                state = State.SESSION_READY,
+                turnActive = false,
+                turnId = null,
+                responseId = null,
+            )
+        }
+        sendQueue.clear()
+        sendQueue.clearPreRoll()
+        bargeInTurn = false
+        awaitingTurnReadyGeneration = null
+        pendingCommitDurationMs = null
+        cancelledBargeInResponseId = null
+        bargeInState = BargeInState.IDLE
+        ttsAudioPlayer.cancel()
+        notifyStatus()
+        postControl(JSONObject().put("type", "client.conversation.reset"))
         return Result(true)
     }
 
@@ -1383,6 +1441,7 @@ class VoiceWebSocketTransport(
             "voice.transcript.final.delivered",
         )
         val isAssistant = eventType in setOf(
+            "assistant.thinking",
             "assistant.response.started",
             "assistant.request.started",
             "assistant.text.delta",
@@ -1395,7 +1454,9 @@ class VoiceWebSocketTransport(
         )
         val isError = eventType == "server.error" || eventType == "server.turn.failed" ||
             eventType == "assistant.response.failed" || eventType == "llm.response.failed"
-        val isTool = eventType == "tool.status" || eventType == "confirmation.required"
+        val isTool = eventType == "tool.status" ||
+            eventType == "confirmation.required" ||
+            eventType == "confirmation.resolved"
         if (!isTranscript && !isAssistant && !isError && !isTool) {
             return null
         }
@@ -1459,6 +1520,8 @@ class VoiceWebSocketTransport(
                 }
                 )?.takeIf { it.length <= MAX_ERROR_CODE_BYTES },
             confirmationId = json.optStringOrNull("confirmation_id")
+                ?.takeIf { it.length <= MAX_ERROR_CODE_BYTES },
+            status = json.optStringOrNull("status")
                 ?.takeIf { it.length <= MAX_ERROR_CODE_BYTES },
             errorCode = (json.optStringOrNull("code") ?: json.optStringOrNull("error_code"))
                 ?.takeIf { it.length <= MAX_ERROR_CODE_BYTES },

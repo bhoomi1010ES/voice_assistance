@@ -74,6 +74,19 @@ class VoiceConnectionState:
         self.state = VoiceState.RECEIVING_AUDIO
         return self.turn_number
 
+    def reset_session(self) -> None:
+        """Return an established socket to the authenticated state."""
+
+        self._require(VoiceState.SESSION_READY)
+        self.session_id = None
+        self.current_turn_id = None
+        self.current_response_id = None
+        self.turn_number = 0
+        self.expected_sequence = 0
+        self.frame_count = 0
+        self.byte_count = 0
+        self.state = VoiceState.AUTHENTICATED
+
     def accept_frame(self, frame: BinaryPcmFrame) -> None:
         self._require(VoiceState.RECEIVING_AUDIO)
         if frame.sequence_no != self.expected_sequence:

@@ -84,6 +84,15 @@ class ResponseCancelMessage(ControlMessage):
     reason: str = Field(default="client_requested", max_length=128)
 
 
+class ResponseAbortAllMessage(ControlMessage):
+    type: Literal["client.response.abort_all"]
+    reason: str = Field(default="abort_all", max_length=128)
+
+
+class ConversationResetMessage(ControlMessage):
+    type: Literal["client.conversation.reset"]
+
+
 class ResponseRetryMessage(ControlMessage):
     type: Literal["client.response.retry"]
     turn_id: uuid.UUID
@@ -113,6 +122,8 @@ ControlMessageType = Annotated[
     | TurnStartMessage
     | AudioCommitMessage
     | ResponseCancelMessage
+    | ResponseAbortAllMessage
+    | ConversationResetMessage
     | ResponseRetryMessage
     | ConfirmationResolveMessage
     | ClientPingMessage

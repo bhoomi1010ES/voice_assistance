@@ -124,6 +124,55 @@ class MemoryRepository:
         await session.flush()
         return message, True
 
+    async def list_recent_session_messages(
+        self,
+        session: AsyncSession,
+        principal: AuthPrincipal,
+        *,
+        session_id: uuid.UUID,
+        exclude_turn_id: uuid.UUID | None = None,
+        limit: int = 20,
+    ) -> Sequence[Message]:
+        """Load recent final conversation turns owned by this voice session.
+
+        The gateway uses this only as ephemeral LLM context. The owner and
+        device/auth-session predicates mirror ``persist_final_message`` so a
+        session can never import another principal's conversation.
+        """
+
+        if not 1 <= limit <= 100:
+            raise ValueError("conversation history limit must be between 1 and 100")
+        query = (
+            select(Message)
+            .join(
+                ConversationTurn,
+                (ConversationTurn.id == Message.turn_id)
+                & (ConversationTurn.user_id == Message.user_id),
+            )
+            .join(
+                VoiceSession,
+                (VoiceSession.id == ConversationTurn.session_id)
+                & (VoiceSession.user_id == ConversationTurn.user_id),
+            )
+            .where(
+                Message.user_id == principal.user_id,
+                Message.role.in_(("user", "assistant")),
+                Message.is_final.is_(True),
+                Message.content.is_not(None),
+                ConversationTurn.session_id == session_id,
+                VoiceSession.user_id == principal.user_id,
+                VoiceSession.device_id == principal.device_id,
+                VoiceSession.auth_session_id == principal.session_id,
+            )
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(limit)
+        )
+        if exclude_turn_id is not None:
+            query = query.where(Message.turn_id != exclude_turn_id)
+        messages = list((await session.scalars(query)).all())
+        messages.reverse()
+        return messages
+
     async def enqueue_extract_turn(
         self,
         session: AsyncSession,

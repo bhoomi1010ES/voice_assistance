@@ -654,6 +654,10 @@ type NativeVoiceModule = {
   ) => Promise<VoiceGatewayStatus>;
   commitVoiceAudio: (durationMs: number) => Promise<VoiceGatewayStatus>;
   cancelVoiceResponse: (reason?: string | null) => Promise<VoiceGatewayStatus>;
+  abortAllVoiceResponses: (
+    reason?: string | null,
+  ) => Promise<VoiceGatewayStatus>;
+  resetVoiceConversation: () => Promise<VoiceGatewayStatus>;
   stopVoicePlayback: () => Promise<VoiceGatewayStatus>;
   getVoiceOutputPreferences: () => Promise<VoiceOutputPreferences>;
   setVoiceOutputEnabled: (enabled: boolean) => Promise<VoiceOutputPreferences>;
@@ -842,6 +846,16 @@ export async function cancelVoiceResponse(
   reason?: string | null,
 ): Promise<VoiceGatewayStatus> {
   return requireNativeVoiceModule().cancelVoiceResponse(reason);
+}
+
+export async function abortAllVoiceResponses(
+  reason?: string | null,
+): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().abortAllVoiceResponses(reason);
+}
+
+export async function resetVoiceConversation(): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().resetVoiceConversation();
 }
 
 /** Stops only local TTS playback; the committed text response remains intact. */

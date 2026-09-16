@@ -9,6 +9,7 @@ import pytest
 
 from app.core.clock import DeviceEpochClock, FrozenClock
 from app.core.config import Settings
+from app.llm.tool_loop import create_default_tool_registry
 from app.llm.types import (
     LLMCapabilities,
     LLMEvent,
@@ -130,6 +131,21 @@ def _gateway(event_factory):
 
 
 @pytest.mark.asyncio
+async def test_gateway_does_not_emit_wait_phrase_for_empty_transcript() -> None:
+    gateway, outbound = _gateway(lambda _request: ())
+
+    result = await gateway._stream_llm_response(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=uuid.uuid4(),
+        transcript="   ",
+    )
+
+    assert result == {"status": "failed", "error": "empty_transcript"}
+    assert outbound == []
+
+
+@pytest.mark.asyncio
 async def test_live_memory_exclusion_lookup_refreshes_cached_gateway_metadata() -> None:
     class ExclusionDatabase:
         def begin_nested(self):
@@ -205,10 +221,15 @@ async def test_gateway_streams_correlated_text_and_persists_safe_metadata() -> N
 
     assert result["status"] == "completed"
     assert [event["type"] for event in outbound] == [
+        "assistant.thinking",
         "assistant.text.delta",
         "assistant.text.delta",
         "assistant.text.final",
     ]
+    assert outbound[0]["text"] in {
+        "We're reviewing your query.",
+        "Give me a moment.",
+    }
     assert all(event["session_id"] == str(session_id) for event in outbound)
     assert all(event["turn_id"] == str(turn_id) for event in outbound)
     assert all(event["response_id"] == str(response_id) for event in outbound)
@@ -264,6 +285,7 @@ async def test_gateway_with_device_time_context_reaches_answer_stream() -> None:
 
     assert result["status"] == "completed"
     assert [event["type"] for event in outbound] == [
+        "assistant.thinking",
         "assistant.text.delta",
         "assistant.text.final",
     ]
@@ -312,17 +334,18 @@ async def test_gateway_emits_ordered_server_owned_tool_lifecycle() -> None:
 
     assert result["status"] == "completed"
     assert [event["type"] for event in outbound] == [
+        "assistant.thinking",
         "tool.status",
         "tool.status",
         "tool.status",
         "assistant.text.final",
     ]
-    assert [event["tool_status"] for event in outbound[:3]] == [
+    assert [event["tool_status"] for event in outbound[1:4]] == [
         "understanding",
         "executing",
         "success",
     ]
-    assert all(event["tool_call_id"] == "call-time-1" for event in outbound[:3])
+    assert all(event["tool_call_id"] == "call-time-1" for event in outbound[1:4])
 
 
 @pytest.mark.asyncio
@@ -360,8 +383,65 @@ async def test_gateway_treats_confirmation_request_as_terminal_without_llm_failu
     )
 
     assert result == {"status": "confirmation_required"}
-    assert outbound == []
+    assert [event["type"] for event in outbound] == ["assistant.thinking"]
     assert gateway.persistence.metadata == []
+
+
+@pytest.mark.asyncio
+async def test_gateway_emits_task_wait_phrase_without_wait_tts() -> None:
+    gateway, outbound = _gateway(lambda _request: ())
+    gateway.principal = SimpleNamespace(user_id=uuid.uuid4())
+    gateway.voice_session = None
+    gateway.tool_registry = create_default_tool_registry()
+    gateway._tts_tasks = {}
+    gateway._tts_queues = {}
+    gateway._turn_timings = {}
+
+    class FakeToolLoop:
+        async def stream(self, request, *, context):
+            del context
+            call = LLMToolCall(
+                tool_call_id="call-create-task",
+                name="create_task",
+                arguments={"title": "Call Rahul"},
+            )
+            yield _event(
+                request,
+                "confirmation_required",
+                1,
+                tool_call=call,
+                error_code="llm_tool_confirmation_required",
+            )
+
+    class FakeTTS:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        async def stream(self, *, text: str, **_kwargs):
+            self.texts.append(text)
+            if False:
+                yield b""
+
+    tts = FakeTTS()
+    gateway.tool_loop = FakeToolLoop()
+    gateway.tts_service = tts
+    response_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._stream_llm_response(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=response_id,
+        transcript="Remind me to call Rahul tomorrow.",
+    )
+
+    assert result == {"status": "confirmation_required"}
+    assert outbound[0]["type"] == "assistant.thinking"
+    assert outbound[0]["category"] == "task"
+    assert outbound[0]["text"] in {"I'm on it.", "Setting that up."}
+    assert tts.texts == []
 
 
 @pytest.mark.asyncio
@@ -388,8 +468,11 @@ async def test_gateway_preserves_typed_provider_failure_without_text_final() -> 
     )
 
     assert result == {"status": "failed", "error": "llm_rate_limited"}
-    assert [event["type"] for event in outbound] == ["assistant.response.failed"]
-    assert outbound[0]["code"] == "llm_rate_limited"
+    assert [event["type"] for event in outbound] == [
+        "assistant.thinking",
+        "assistant.response.failed",
+    ]
+    assert outbound[1]["code"] == "llm_rate_limited"
     assert gateway.persistence.metadata[0]["llm"]["status"] == "failed"
 
 
@@ -414,3 +497,41 @@ async def test_gateway_discards_events_after_response_is_cancelled() -> None:
     assert result == {"status": "cancelled"}
     assert outbound == []
     assert gateway.persistence.metadata == []
+
+
+@pytest.mark.asyncio
+async def test_gateway_queues_wait_phrase_before_reply_tts() -> None:
+    def events(request):
+        yield _event(request, "request_started", 0)
+        yield _event(request, "response_completed", 1, text="Hello there", finish_reason="stop")
+
+    gateway, _outbound = _gateway(events)
+    gateway._tts_tasks = {}
+    gateway._tts_queues = {}
+    gateway._turn_timings = {}
+
+    class FakeTTS:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        async def stream(self, *, text: str, **_kwargs):
+            self.texts.append(text)
+            if False:
+                yield b""
+
+    tts = FakeTTS()
+    gateway.tts_service = tts
+    response_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._stream_llm_response(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=response_id,
+        transcript="Hello assistant",
+    )
+
+    assert result["status"] == "completed"
+    assert tts.texts == ["We're reviewing your query.", "Hello there"]

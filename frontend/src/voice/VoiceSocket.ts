@@ -1,5 +1,6 @@
 import { AppState, AppStateStatus } from 'react-native';
 import {
+  abortAllVoiceResponses,
   cancelVoiceResponse,
   commitVoiceAudio,
   connectVoiceGateway,
@@ -9,6 +10,7 @@ import {
   requestMicrophonePermission,
   resolveVoiceConfirmation,
   retryVoiceResponse,
+  resetVoiceConversation,
   stopVoicePlayback,
   startMicrophone,
   startVoiceSession,
@@ -61,6 +63,7 @@ export const VOICE_SERVER_EVENT_TYPES = [
   'voice.session.started',
   'voice.session.stale.reaped',
   'server.session.ready',
+  'server.conversation.reset',
   'server.session.ending',
   'server.session.ended',
   'voice.turn.started',
@@ -76,6 +79,7 @@ export const VOICE_SERVER_EVENT_TYPES = [
   'voice.transcript.final.delivered',
   'assistant.response.started',
   'assistant.request.started',
+  'assistant.thinking',
   'assistant.text.delta',
   'assistant.text.final',
   'assistant.response.failed',
@@ -141,6 +145,9 @@ export type VoiceSocketSnapshot = {
   ttsPlaybackState: VoiceTtsPlaybackState;
   ttsResponseId: string | null;
   ttsError: string | null;
+  waitPhrase: string | null;
+  continuousListening: boolean;
+  followUpQueued: boolean;
   confirmationAwaitingVoice: boolean;
   speechDetected: boolean;
   transcriptMessages: VoiceTranscriptMessage[];
@@ -180,6 +187,8 @@ export type VoiceSocketAdapter = {
   ) => Promise<VoiceGatewayStatus>;
   commitAudio: (durationMs: number) => Promise<VoiceGatewayStatus>;
   cancelResponse: (reason?: string | null) => Promise<VoiceGatewayStatus>;
+  abortAll?: (reason?: string | null) => Promise<VoiceGatewayStatus>;
+  resetConversation?: () => Promise<VoiceGatewayStatus>;
   stopPlayback?: () => Promise<VoiceGatewayStatus>;
   retryResponse?: (
     turnId: string,
@@ -217,6 +226,8 @@ export type VoiceSocketOptions = {
   heartbeatTimeoutMs?: number;
   heartbeatCheckIntervalMs?: number;
   reconnectDelaysMs?: number[];
+  continuousListening?: boolean;
+  autoStartSession?: boolean;
 };
 
 export type VoiceTurnStartOptions = {
@@ -236,6 +247,9 @@ const INITIAL_SNAPSHOT: VoiceSocketSnapshot = {
   ttsPlaybackState: 'idle',
   ttsResponseId: null,
   ttsError: null,
+  waitPhrase: null,
+  continuousListening: true,
+  followUpQueued: false,
   confirmationAwaitingVoice: false,
   speechDetected: false,
   transcriptMessages: [],
@@ -267,6 +281,7 @@ const RESPONSE_SCOPED_EVENTS = new Set<VoiceServerEventType>([
   'voice.transcript.final.delivered',
   'assistant.response.started',
   'assistant.request.started',
+  'assistant.thinking',
   'assistant.text.delta',
   'assistant.text.final',
   'server.turn.failed',
@@ -302,6 +317,7 @@ const TURN_SCOPED_EVENTS = new Set<VoiceServerEventType>([
   'voice.transcript.final.delivered',
   'assistant.response.started',
   'assistant.request.started',
+  'assistant.thinking',
   'assistant.text.delta',
   'assistant.text.final',
   'assistant.response.failed',
@@ -334,6 +350,8 @@ const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
   startTurn: startVoiceTurn,
   commitAudio: commitVoiceAudio,
   cancelResponse: cancelVoiceResponse,
+  abortAll: abortAllVoiceResponses,
+  resetConversation: resetVoiceConversation,
   stopPlayback: stopVoicePlayback,
   retryResponse: retryVoiceResponse,
   resolveConfirmation: resolveVoiceConfirmation,
@@ -356,6 +374,7 @@ export type NormalizedVoiceEvent = {
   timestampMs: number | null;
   transcript?: CanonicalTranscriptEvent;
   assistant?: VoiceEvent;
+  thinkingText?: string;
   confirmationStatus?: string;
   errorCode?: string;
   errorMessage?: string;
@@ -403,6 +422,10 @@ export function normalizeVoiceGatewayEvent(
   const timestampMs = readTimestamp(record.timestampMs ?? record.timestamp_ms);
   const transcript = readTranscriptEvent(rawType, record);
   const assistant = readAssistantEvent(rawType, record);
+  const thinkingText =
+    rawType === 'assistant.thinking'
+      ? readString(record.text, MAX_TRANSCRIPT_LENGTH)
+      : null;
   const errorCode = readString(record.code ?? record.errorCode, MAX_ID_LENGTH);
   const errorMessage = readString(record.message ?? record.errorMessage, 180);
   const retryable = readBoolean(record.retryable);
@@ -420,6 +443,7 @@ export function normalizeVoiceGatewayEvent(
     timestampMs,
     ...(transcript ? { transcript } : {}),
     ...(assistant ? { assistant } : {}),
+    ...(thinkingText ? { thinkingText } : {}),
     ...(confirmationStatus ? { confirmationStatus } : {}),
     ...(errorCode ? { errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
@@ -438,6 +462,8 @@ export class VoiceSocket {
   private readonly heartbeatTimeoutMs: number;
   private readonly heartbeatCheckIntervalMs: number;
   private readonly reconnectDelaysMs: number[];
+  private readonly continuousListening: boolean;
+  private readonly autoStartSession: boolean;
   private readonly listeners = new Set<VoiceSocketListener>();
   private readonly seenEventIds = new Set<string>();
   private readonly seenFallbackEvents = new Set<string>();
@@ -458,6 +484,7 @@ export class VoiceSocket {
   private turnStartedAtMs: number | null = null;
   private connectPromise: Promise<void> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private autoListenTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private statusUnsubscribe: (() => void) | null = null;
   private eventUnsubscribe: (() => void) | null = null;
@@ -478,6 +505,7 @@ export class VoiceSocket {
   private confirmationTurnStartInFlight = false;
   private sileroSpeechSegmentStartedAtMs: number | null = null;
   private sileroSpeechSegmentStartedDuringGuard = false;
+  private autoListenSuppressed = false;
 
   constructor(options: VoiceSocketOptions = {}) {
     this.adapter = options.adapter ?? nativeVoiceSocketAdapter;
@@ -493,6 +521,12 @@ export class VoiceSocket {
       options.heartbeatCheckIntervalMs ?? DEFAULT_HEARTBEAT_CHECK_INTERVAL_MS;
     this.reconnectDelaysMs =
       options.reconnectDelaysMs ?? DEFAULT_RECONNECT_DELAYS_MS;
+    this.continuousListening = options.continuousListening ?? true;
+    this.autoStartSession = options.autoStartSession ?? true;
+    this.snapshot = {
+      ...INITIAL_SNAPSHOT,
+      continuousListening: this.continuousListening,
+    };
   }
 
   start(): void {
@@ -544,6 +578,9 @@ export class VoiceSocket {
     this.start();
     this.explicitStop = false;
     this.desiredConnection = true;
+    if (this.autoStartSession) {
+      this.desiredSession = true;
+    }
     this.allowAutoReconnect = false;
     this.clearReconnectTimer();
 
@@ -622,6 +659,24 @@ export class VoiceSocket {
     if (this.snapshot.session !== 'ready') {
       throw new Error('Start a voice session before starting a turn.');
     }
+    this.clearAutoListenTimer();
+    const queueFollowUp =
+      ['committing', 'waiting'].includes(this.snapshot.turn) &&
+      this.snapshot.ttsPlaybackState !== 'speaking' &&
+      !this.confirmationAwaitingVoice;
+    if (queueFollowUp) {
+      options = {
+        ...options,
+        preserveMicrophone: true,
+        autoCommitOnSpeechEnd: true,
+      };
+      this.autoListenSuppressed = false;
+      this.setSnapshot({ followUpQueued: true, error: null });
+    } else if (this.snapshot.turn !== 'idle') {
+      throw new Error('Finish the current voice turn before starting another.');
+    } else {
+      this.autoListenSuppressed = false;
+    }
     if (['failed', 'cancelled', 'completed'].includes(this.snapshot.turn)) {
       this.retireCurrentTurnCorrelation();
       this.setSnapshot({
@@ -631,10 +686,9 @@ export class VoiceSocket {
         ttsPlaybackState: 'idle',
         ttsResponseId: null,
         ttsError: null,
+        waitPhrase: null,
+        followUpQueued: false,
       });
-    }
-    if (this.snapshot.turn !== 'idle') {
-      throw new Error('Finish the current voice turn before starting another.');
     }
 
     try {
@@ -650,9 +704,11 @@ export class VoiceSocket {
         await this.adapter.startMicrophone?.();
       }
       this.responseServerCompleted = false;
-      this.ttsPlaybackTerminal = true;
-      this.ttsPlaybackStartedAtMs = null;
-      this.ttsPlaybackResponseId = null;
+      if (!queueFollowUp) {
+        this.ttsPlaybackTerminal = true;
+        this.ttsPlaybackStartedAtMs = null;
+        this.ttsPlaybackResponseId = null;
+      }
       this.sileroSpeechSegmentStartedAtMs = null;
       this.sileroSpeechSegmentStartedDuringGuard = false;
       this.autoCommitBargeInTurn = Boolean(options.autoCommitOnSpeechEnd);
@@ -677,6 +733,7 @@ export class VoiceSocket {
         ttsPlaybackState: 'idle',
         ttsResponseId: null,
         ttsError: null,
+        followUpQueued: queueFollowUp,
         error: null,
       });
       this.handleStatus(
@@ -687,6 +744,7 @@ export class VoiceSocket {
       this.turnStartedAtMs = null;
       this.autoCommitBargeInTurn = false;
       this.bargeInSpeechEndedPending = false;
+      this.setSnapshot({ followUpQueued: false });
       this.markCurrentTranscriptError(error);
       this.setSnapshot({
         turn: 'idle',
@@ -743,6 +801,8 @@ export class VoiceSocket {
     if (!this.snapshot.responseId && this.snapshot.turn === 'idle') {
       return;
     }
+    this.clearAutoListenTimer();
+    this.autoListenSuppressed = true;
     const turnId = this.snapshot.turnId;
     const responseId = this.snapshot.responseId;
     this.markCurrentTranscriptCancelled();
@@ -765,7 +825,12 @@ export class VoiceSocket {
         error: null,
       });
       await this.stopMicrophoneSafely();
-      this.handleStatus(await this.adapter.cancelResponse(reason));
+      const abortAll =
+        reason === 'barge_in' ? undefined : this.adapter.abortAll;
+      const status = abortAll
+        ? await abortAll.call(this.adapter, reason)
+        : await this.adapter.cancelResponse(reason);
+      this.handleStatus(status);
     } catch (error) {
       this.markCurrentTranscriptError(error);
       this.setSnapshot({ turn: 'failed', error: safeVoiceError(error) });
@@ -781,6 +846,8 @@ export class VoiceSocket {
         turnId: null,
         responseId: null,
         session: 'ready',
+        waitPhrase: null,
+        followUpQueued: false,
       });
     }
   }
@@ -888,6 +955,27 @@ export class VoiceSocket {
   }
 
   async resetConversation(): Promise<void> {
+    this.clearAutoListenTimer();
+    this.autoListenSuppressed = false;
+    if (this.snapshot.sessionId && this.adapter.resetConversation) {
+      this.clearConversationState();
+      this.setSnapshot({
+        transcriptMessages: [],
+        transcriptError: null,
+        firstTextAtMs: null,
+        waitPhrase: null,
+        followUpQueued: false,
+        error: null,
+      });
+      try {
+        this.handleStatus(await this.adapter.resetConversation());
+      } catch (error) {
+        const message = safeVoiceError(error);
+        this.setSnapshot({ error: message });
+        throw new Error(message);
+      }
+      return;
+    }
     if (this.snapshot.responseId) {
       await this.cancelTurn('new_conversation');
     } else if (this.snapshot.turn !== 'idle') {
@@ -908,6 +996,8 @@ export class VoiceSocket {
       transcriptError: null,
       firstTextAtMs: null,
       conversationRenderCompletedAtMs: null,
+      waitPhrase: null,
+      followUpQueued: false,
     });
   }
 
@@ -935,6 +1025,7 @@ export class VoiceSocket {
     this.desiredConnection = false;
     this.explicitStop = true;
     this.allowAutoReconnect = false;
+    this.clearAutoListenTimer();
     this.clearReconnectTimer();
     this.setSnapshot({ session: 'ending', error: null });
     try {
@@ -952,6 +1043,7 @@ export class VoiceSocket {
     this.desiredSession = false;
     this.explicitStop = true;
     this.allowAutoReconnect = false;
+    this.clearAutoListenTimer();
     this.clearReconnectTimer();
     try {
       this.handleStatus(await this.adapter.disconnect());
@@ -965,6 +1057,7 @@ export class VoiceSocket {
     this.desiredSession = false;
     this.explicitStop = true;
     this.allowAutoReconnect = false;
+    this.clearAutoListenTimer();
     this.clearReconnectTimer();
 
     if (!this.started) {
@@ -1173,6 +1266,9 @@ export class VoiceSocket {
           () => undefined,
         );
       }
+      if (sessionIsStable) {
+        this.scheduleContinuousListen();
+      }
       return;
     }
 
@@ -1326,6 +1422,34 @@ export class VoiceSocket {
           reconnectAttempt: 0,
           error: null,
         });
+        this.scheduleContinuousListen();
+        break;
+      case 'server.conversation.reset':
+        this.clearConversationState();
+        this.retireCorrelation(
+          this.snapshot.sessionId,
+          this.snapshot.turnId,
+          this.snapshot.responseId,
+        );
+        this.responseServerCompleted = false;
+        this.ttsPlaybackTerminal = true;
+        this.confirmationAwaitingVoice = false;
+        this.confirmationPromptPlaybackCompleted = false;
+        this.confirmationTurnStartInFlight = false;
+        this.setSnapshot({
+          turn: 'idle',
+          sessionId: null,
+          turnId: null,
+          responseId: null,
+          ttsPlaybackState: 'idle',
+          ttsResponseId: null,
+          ttsError: null,
+          waitPhrase: null,
+          followUpQueued: false,
+          transcriptMessages: [],
+          transcriptError: null,
+          session: 'ready',
+        });
         break;
       case 'server.session.ending':
         this.setSnapshot({ session: 'ending' });
@@ -1394,6 +1518,8 @@ export class VoiceSocket {
           connection: 'connected',
           turn: 'recording',
           speechDetected: false,
+          followUpQueued: false,
+          waitPhrase: null,
         });
         this.ensureTranscriptPlaceholder('listening');
         if (this.autoCommitBargeInTurn) {
@@ -1417,7 +1543,6 @@ export class VoiceSocket {
         break;
       case 'assistant.response.started':
       case 'assistant.request.started':
-      case 'assistant.text.delta':
       case 'assistant.text.final':
       case 'llm.response.completed':
         if (
@@ -1430,7 +1555,25 @@ export class VoiceSocket {
             timestampMs: this.now(),
           });
         }
-        this.setSnapshot({ turn: 'waiting', speechDetected: false });
+        this.setSnapshot({
+          turn: 'waiting',
+          speechDetected: false,
+          waitPhrase: null,
+        });
+        break;
+      case 'assistant.thinking':
+        this.setSnapshot({
+          turn: 'waiting',
+          speechDetected: false,
+          waitPhrase: event.thinkingText ?? null,
+        });
+        break;
+      case 'assistant.text.delta':
+        this.setSnapshot({
+          turn: 'waiting',
+          speechDetected: false,
+          waitPhrase: null,
+        });
         break;
       case 'tts.started':
         this.ttsPlaybackTerminal = false;
@@ -1553,12 +1696,15 @@ export class VoiceSocket {
           timestampMs: event.timestampMs,
         });
         this.responseServerCompleted = true;
-        this.setSnapshot({
-          turn: this.ttsPlaybackTerminal ? 'completed' : 'waiting',
-          speechDetected: false,
-          session: 'ready',
-        });
-        this.finalizeResponseIfReady();
+        if (!this.snapshot.followUpQueued) {
+          this.setSnapshot({
+            turn: this.ttsPlaybackTerminal ? 'completed' : 'waiting',
+            speechDetected: false,
+            session: 'ready',
+            waitPhrase: null,
+          });
+          this.finalizeResponseIfReady();
+        }
         this.maybeStartVoiceConfirmationTurn();
         break;
       case 'response.cancelled':
@@ -1588,6 +1734,8 @@ export class VoiceSocket {
           responseId: null,
           confirmationAwaitingVoice: false,
           session: 'ready',
+          waitPhrase: null,
+          followUpQueued: false,
         });
         this.setSnapshot({ turn: 'idle' });
         this.stopMicrophoneSafely().catch(() => undefined);
@@ -1670,6 +1818,8 @@ export class VoiceSocket {
       responseId: null,
       confirmationAwaitingVoice: false,
       speechDetected: false,
+      waitPhrase: null,
+      followUpQueued: false,
       transcriptMessages: [],
       transcriptError: null,
       lastHeartbeatAtMs: null,
@@ -1720,6 +1870,8 @@ export class VoiceSocket {
       responseId: null,
       confirmationAwaitingVoice: false,
       speechDetected: false,
+      waitPhrase: null,
+      followUpQueued: false,
       transcriptMessages: [],
       transcriptError: null,
       lastHeartbeatAtMs: null,
@@ -1753,9 +1905,56 @@ export class VoiceSocket {
       turnId: null,
       responseId: null,
       session: 'ready',
+      waitPhrase: null,
     });
     this.setSnapshot({ turn: 'idle' });
-    this.stopMicrophoneSafely().catch(() => undefined);
+    if (
+      this.continuousListening &&
+      !this.autoListenSuppressed &&
+      !this.confirmationAwaitingVoice
+    ) {
+      this.scheduleContinuousListen(true);
+    } else {
+      this.stopMicrophoneSafely().catch(() => undefined);
+    }
+  }
+
+  private scheduleContinuousListen(preserveMicrophone = false): void {
+    if (
+      !this.continuousListening ||
+      this.autoListenSuppressed ||
+      this.confirmationAwaitingVoice ||
+      this.confirmationTurnStartInFlight ||
+      this.snapshot.connection !== 'connected' ||
+      this.snapshot.session !== 'ready' ||
+      this.snapshot.turn !== 'idle' ||
+      this.autoListenTimer
+    ) {
+      return;
+    }
+    this.autoListenTimer = setTimeout(() => {
+      this.autoListenTimer = null;
+      if (
+        this.autoListenSuppressed ||
+        this.snapshot.turn !== 'idle' ||
+        this.snapshot.session !== 'ready'
+      ) {
+        return;
+      }
+      this.startTurn({
+        preserveMicrophone,
+        autoCommitOnSpeechEnd: true,
+      }).catch(error => {
+        this.setSnapshot({ error: safeVoiceError(error) });
+      });
+    }, 0);
+  }
+
+  private clearAutoListenTimer(): void {
+    if (this.autoListenTimer) {
+      clearTimeout(this.autoListenTimer);
+      this.autoListenTimer = null;
+    }
   }
 
   private maybeStartVoiceConfirmationTurn(): void {
@@ -2676,6 +2875,7 @@ export class VoiceSocket {
   }
 
   private resetToDisconnected(): void {
+    this.clearAutoListenTimer();
     this.clearConversationState();
     this.retireCorrelation(
       this.snapshot.sessionId,
@@ -2686,6 +2886,7 @@ export class VoiceSocket {
     this.turnStartedAtMs = null;
     this.responseServerCompleted = false;
     this.ttsPlaybackTerminal = true;
+    this.autoListenSuppressed = false;
     this.bargeInInFlight = false;
     this.confirmationAwaitingVoice = false;
     this.confirmationPromptPlaybackCompleted = false;
@@ -2703,6 +2904,8 @@ export class VoiceSocket {
       ttsPlaybackState: 'idle',
       ttsResponseId: null,
       ttsError: null,
+      waitPhrase: null,
+      followUpQueued: false,
       transcriptMessages: [],
       transcriptError: null,
       lastHeartbeatAtMs: null,

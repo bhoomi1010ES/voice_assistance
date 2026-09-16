@@ -95,6 +95,21 @@ def test_confirmation_resolution_accepts_only_correlated_decision_fields() -> No
         )
 
 
+def test_abort_all_and_conversation_reset_control_messages_are_typed() -> None:
+    abort = parse_control_message(
+        json.dumps({"type": "client.response.abort_all", "reason": "stop"}),
+        max_bytes=16 * 1024,
+    )
+    reset = parse_control_message(
+        json.dumps({"type": "client.conversation.reset"}),
+        max_bytes=16 * 1024,
+    )
+
+    assert abort.type == "client.response.abort_all"
+    assert abort.reason == "stop"
+    assert reset.type == "client.conversation.reset"
+
+
 def test_voice_state_accepts_one_turn_and_rejects_invalid_sequence() -> None:
     state = VoiceConnectionState()
     session_id = uuid.uuid4()
@@ -126,6 +141,20 @@ def test_state_transitions_and_commit_reset_active_turn() -> None:
     assert counters.turn_id == turn_id
     assert state.state == VoiceState.SESSION_READY
     assert state.current_turn_id is None
+
+
+def test_state_reset_returns_an_active_session_to_authenticated() -> None:
+    state = VoiceConnectionState()
+    state.authenticate()
+    state.session_ready(uuid.uuid4(), completed_turns=3)
+
+    state.reset_session()
+
+    assert state.state == VoiceState.AUTHENTICATED
+    assert state.session_id is None
+    assert state.current_turn_id is None
+    assert state.current_response_id is None
+    assert state.turn_number == 0
 
 
 def test_cancellation_guard_blocks_stale_response() -> None:

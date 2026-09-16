@@ -221,6 +221,15 @@ export function AssistantScreen() {
       return socket.commitTurn();
     }
     if (['committing', 'waiting'].includes(socketState.turn)) {
+      if (
+        socketState.ttsPlaybackState !== 'speaking' &&
+        !socketState.followUpQueued
+      ) {
+        return socket.startTurn({
+          preserveMicrophone: true,
+          autoCommitOnSpeechEnd: true,
+        });
+      }
       return socket.cancelTurn('user_stopped_response');
     }
     const retryable = [...conversationMessages]
@@ -328,25 +337,6 @@ export function AssistantScreen() {
               testID="voice-retry"
             />
           ) : null}
-          {socketState.connection === 'connected' &&
-          socketState.session === 'idle' ? (
-            <ActionButton
-              label={strings.assistant.startSession}
-              onPress={() => execute(() => socket.startSession())}
-              disabled={busy}
-              testID="voice-start-session"
-            />
-          ) : null}
-          {socketState.session === 'ready' &&
-          socketState.turn === 'idle' &&
-          !voiceConfirmationPending ? (
-            <ActionButton
-              label={strings.assistant.startTurn}
-              onPress={() => execute(() => socket.startTurn())}
-              disabled={busy}
-              testID="voice-start-turn"
-            />
-          ) : null}
           {['starting', 'recording', 'speech_detected'].includes(
             socketState.turn,
           ) ? (
@@ -359,20 +349,6 @@ export function AssistantScreen() {
                 onPress={() => execute(() => socket.commitTurn())}
                 disabled={busy}
                 testID="voice-finish-turn"
-              />
-            </View>
-          ) : null}
-          {['committing', 'waiting'].includes(socketState.turn) ? (
-            <View style={styles.actionGroup}>
-              <AppText style={styles.turnStatus}>
-                {turnCopy(socketState.turn)}
-              </AppText>
-              <ActionButton
-                label={strings.assistant.stopResponse}
-                onPress={() => execute(() => socket.cancelTurn())}
-                disabled={busy}
-                variant="secondary"
-                testID="voice-cancel-response"
               />
             </View>
           ) : null}
@@ -391,15 +367,6 @@ export function AssistantScreen() {
                 />
               ) : null}
             </View>
-          ) : null}
-          {socketState.session !== 'idle' ? (
-            <ActionButton
-              label={strings.assistant.endSession}
-              onPress={() => execute(() => socket.endSession())}
-              disabled={busy || socketState.session === 'ending'}
-              variant="quiet"
-              testID="voice-end-session"
-            />
           ) : null}
         </Card>
 
@@ -464,6 +431,7 @@ export function AssistantScreen() {
                 <ConversationMessageView
                   key={message.id}
                   message={message}
+                  waitPhrase={socketState.waitPhrase}
                   copied={copiedMessageId === message.id}
                   onCopy={copyMessage}
                   onRetry={turnId =>
@@ -603,7 +571,11 @@ function voiceControlLabel(
       : strings.assistant.listening;
   }
   if (snapshot.turn === 'committing') return strings.assistant.transcribing;
-  if (snapshot.turn === 'waiting') return strings.assistant.stopResponse;
+  if (snapshot.turn === 'waiting') {
+    return snapshot.ttsPlaybackState === 'speaking'
+      ? strings.assistant.interrupt
+      : strings.assistant.speakNow;
+  }
   const failed = [...messages]
     .reverse()
     .find(
@@ -618,11 +590,13 @@ function voiceControlLabel(
 function ConversationMessageView({
   copied,
   message,
+  waitPhrase,
   onCopy,
   onRetry,
 }: {
   copied: boolean;
   message: ConversationMessage;
+  waitPhrase?: string | null;
   onCopy: (message: ConversationAssistantMessage) => void;
   onRetry: (turnId: string) => void;
 }) {
@@ -636,7 +610,7 @@ function ConversationMessageView({
         <AppText style={styles.messageRole}>Assistant</AppText>
         {message.status === 'pending' ? (
           <AppText accessibilityLiveRegion="none" style={styles.messageMuted}>
-            {strings.assistant.thinking}
+            {waitPhrase ?? strings.assistant.thinking}
           </AppText>
         ) : null}
         {message.status === 'streaming' || message.status === 'completed' ? (
@@ -868,6 +842,10 @@ function connectionCopy(
 
 function statusCopy(snapshot: VoiceSocketSnapshot): string {
   if (snapshot.error) return snapshot.error;
+  if (snapshot.followUpQueued) return strings.assistant.followUpQueued;
+  if (snapshot.ttsPlaybackState === 'speaking') {
+    return strings.assistant.speakingStatus;
+  }
   return connectionCopy(snapshot.connection, snapshot.session);
 }
 

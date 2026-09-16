@@ -127,3 +127,23 @@ def test_voice_request_contains_server_owned_routing_and_confirmation_policy() -
     assert "create_task tool" in request.system_instructions
     assert "memory_save tool" in request.system_instructions
     assert "server owns confirmation and execution" in request.system_instructions
+
+
+def test_voice_request_places_bounded_session_history_before_current_transcript() -> None:
+    history = (
+        LLMMessage(role=LLMRole.USER, content="I live in Mumbai."),
+        LLMMessage(role=LLMRole.ASSISTANT, content="Thanks, I’ll remember that."),
+    )
+    request = build_voice_llm_request(
+        _settings(),
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=uuid.uuid4(),
+        transcript="What city did I say I live in?",
+        conversation_history=history,
+    )
+
+    assert request.messages[-3:] == (
+        *history,
+        LLMMessage(role=LLMRole.USER, content="What city did I say I live in?"),
+    )

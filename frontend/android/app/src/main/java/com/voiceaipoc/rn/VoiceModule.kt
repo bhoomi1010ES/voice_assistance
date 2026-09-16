@@ -336,6 +336,16 @@ class VoiceModule(
     }
 
     @ReactMethod
+    fun abortAllVoiceResponses(reason: String?, promise: Promise) {
+        resolveVoiceResult(voiceGateway.abortAllResponses(reason ?: "abort_all"), promise)
+    }
+
+    @ReactMethod
+    fun resetVoiceConversation(promise: Promise) {
+        resolveVoiceResult(voiceGateway.resetConversation(), promise)
+    }
+
+    @ReactMethod
     fun stopVoicePlayback(promise: Promise) {
         voiceGateway.stopTtsPlayback()
         promise.resolve(toWritableVoiceGatewayMap(voiceGateway.getStatus()))
@@ -722,6 +732,7 @@ class VoiceModule(
         val toolName = eventPayload?.toolName
         val toolStatus = eventPayload?.toolStatus
         val confirmationId = eventPayload?.confirmationId
+        val status = eventPayload?.status
         val errorCode = eventPayload?.errorCode
         val retryable = eventPayload?.retryable
         val metrics = eventPayload?.metrics
@@ -758,6 +769,7 @@ class VoiceModule(
             } else {
                 putString("confirmationId", confirmationId)
             }
+            if (status == null) putNull("status") else putString("status", status)
             if (errorCode == null) putNull("code") else putString("code", errorCode)
             if (retryable == null) putNull("retryable") else putBoolean("retryable", retryable)
             if (metrics == null) {
