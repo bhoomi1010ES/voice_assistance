@@ -331,6 +331,11 @@ const TURN_SCOPED_EVENTS = new Set<VoiceServerEventType>([
 ]);
 
 const KNOWN_EVENT_TYPES = new Set<string>(VOICE_SERVER_EVENT_TYPES);
+const CLIENT_CLOCK_EVENT_TYPES = new Set<VoiceServerEventType>([
+  'tts.playback.started',
+  'tts.playback.completed',
+  'tts.playback.stopped',
+]);
 const EVENTS_ALLOWED_DURING_CONNECTION_TRANSITION =
   new Set<VoiceServerEventType>([
     'server.error',
@@ -1332,7 +1337,9 @@ export class VoiceSocket {
     }
     this.rememberEvent(duplicateKey, Boolean(event.eventId));
 
+    const usesClientClock = CLIENT_CLOCK_EVENT_TYPES.has(event.type);
     if (
+      !usesClientClock &&
       event.timestampMs !== null &&
       this.snapshot.lastEventAtMs !== null &&
       event.timestampMs < this.snapshot.lastEventAtMs
@@ -1374,7 +1381,9 @@ export class VoiceSocket {
     this.setSnapshot({
       eventSequence: this.snapshot.eventSequence + 1,
       lastEvent: event.type,
-      lastEventAtMs: event.timestampMs ?? receivedAtMs,
+      lastEventAtMs: usesClientClock
+        ? this.snapshot.lastEventAtMs
+        : event.timestampMs ?? receivedAtMs,
       ...(event.sessionId ? { sessionId: event.sessionId } : {}),
       ...(event.turnId ? { turnId: event.turnId } : {}),
       ...(event.responseId ? { responseId: event.responseId } : {}),
