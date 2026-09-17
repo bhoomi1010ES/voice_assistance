@@ -1,6 +1,17 @@
 import React, { useState } from 'react';
-import { Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import {
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { ClientError, safeUserMessage, toClientError } from '../api/errors';
+import { useAuth } from '../auth/AuthProvider';
+import { AuthBrandHeader } from '../components/auth/AuthBrandHeader';
+import { AuthCard } from '../components/auth/AuthCard';
+import { AuthField } from '../components/auth/AuthField';
 import {
   ActionButton,
   AppText,
@@ -10,9 +21,8 @@ import {
   StatusBanner,
 } from '../components/ui/Primitives';
 import { useAppTheme } from '../design/ThemeProvider';
-import { spacing, typography } from '../design/tokens';
+import { radii, spacing, typography } from '../design/tokens';
 import { strings } from '../i18n/strings';
-import { useAuth } from '../auth/AuthProvider';
 
 export function LoginScreen({
   sessionExpired,
@@ -61,87 +71,115 @@ export function LoginScreen({
 
   return (
     <Screen testID="auth-screen">
-      <View style={styles.content}>
-        <Heading>{strings.auth.title}</Heading>
-        <AppText style={styles.body}>{strings.auth.body}</AppText>
-        <Card>
-          {registrationMessage ? (
-            <StatusBanner>{registrationMessage}</StatusBanner>
-          ) : null}
-          {error ? <StatusBanner tone="error">{error}</StatusBanner> : null}
-          <AppText style={styles.label}>{strings.auth.email}</AppText>
-          <TextInput
-            accessibilityLabel={strings.auth.email}
-            autoCapitalize="none"
-            autoComplete="email"
-            autoCorrect={false}
-            keyboardType="email-address"
-            onChangeText={setEmail}
-            placeholder={strings.auth.email}
-            placeholderTextColor={colors.textMuted}
-            style={[
-              styles.input,
-              { color: colors.text, borderColor: colors.border },
-            ]}
-            textContentType="emailAddress"
-            value={email}
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.container}>
+          <AuthBrandHeader
+            subtitle={strings.auth.body}
+            title={strings.auth.title}
           />
-          <AppText style={styles.label}>{strings.auth.password}</AppText>
-          <View style={styles.passwordRow}>
-            <TextInput
+
+          <AuthCard>
+            {registrationMessage ? (
+              <View style={styles.bannerSpacing}>
+                <StatusBanner tone="success">
+                  {registrationMessage}
+                </StatusBanner>
+              </View>
+            ) : null}
+
+            {error ? (
+              <View style={styles.bannerSpacing}>
+                <StatusBanner tone="error">{error}</StatusBanner>
+              </View>
+            ) : null}
+
+            <AuthField
+              accessibilityLabel={strings.auth.email}
+              autoCapitalize="none"
+              autoComplete="email"
+              autoCorrect={false}
+              icon="✉"
+              keyboardType="email-address"
+              label={strings.auth.email}
+              onChangeText={setEmail}
+              placeholder={strings.auth.email}
+              textContentType="emailAddress"
+              value={email}
+            />
+
+            <AuthField
               accessibilityLabel={strings.auth.password}
               autoCapitalize="none"
               autoComplete="password"
+              icon="🔒"
+              label={strings.auth.password}
               onChangeText={setPassword}
               placeholder={strings.auth.password}
-              placeholderTextColor={colors.textMuted}
+              rightElement={
+                <Pressable
+                  accessibilityLabel={
+                    showPassword
+                      ? strings.auth.hidePassword
+                      : strings.auth.showPassword
+                  }
+                  accessibilityRole="button"
+                  hitSlop={spacing.xs}
+                  onPress={() => setShowPassword(current => !current)}
+                  style={styles.visibilityButton}
+                >
+                  <AppText style={[styles.visibilityText, { color: colors.primary }]}>
+                    {showPassword
+                      ? strings.auth.hidePassword
+                      : strings.auth.showPassword}
+                  </AppText>
+                </Pressable>
+              }
               secureTextEntry={!showPassword}
-              style={[
-                styles.input,
-                styles.passwordInput,
-                { color: colors.text, borderColor: colors.border },
-              ]}
               textContentType="password"
               value={password}
             />
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={
-                showPassword
-                  ? strings.auth.hidePassword
-                  : strings.auth.showPassword
-              }
-              onPress={() => setShowPassword(current => !current)}
-              style={styles.visibilityButton}
-            >
-              <AppText>
-                {showPassword
-                  ? strings.auth.hidePassword
-                  : strings.auth.showPassword}
+
+            <ActionButton
+              disabled={submitting}
+              label={submitting ? strings.auth.signingIn : strings.auth.signIn}
+              onPress={submit}
+              style={styles.submit}
+            />
+
+            {/* Ceramic divider */}
+            <View style={styles.dividerRow}>
+              <View
+                style={[
+                  styles.dividerLine,
+                  { backgroundColor: colors.borderSubtle },
+                ]}
+              />
+            </View>
+
+            <View style={styles.accountPrompt}>
+              <AppText style={{ color: colors.textMuted }}>
+                {strings.auth.noAccount}
               </AppText>
-            </Pressable>
-          </View>
-          <ActionButton
-            disabled={submitting}
-            label={submitting ? strings.auth.signingIn : strings.auth.signIn}
-            onPress={submit}
-            style={styles.submit}
-          />
-          <View style={styles.accountPrompt}>
-            <AppText>{strings.auth.noAccount}</AppText>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={strings.auth.createAccount}
-              onPress={onCreateAccount}
-              testID="create-account-link"
-            >
-              <AppText style={[styles.link, { color: colors.accent }]}>
-                {strings.auth.createAccount}
-              </AppText>
-            </Pressable>
-          </View>
-        </Card>
-      </View>
+              <Pressable
+                accessibilityLabel={strings.auth.createAccount}
+                accessibilityRole="button"
+                hitSlop={spacing.xs}
+                onPress={onCreateAccount}
+                testID="create-account-link"
+              >
+                <AppText style={[styles.link, { color: colors.primary }]}>
+                  {strings.auth.createAccount}
+                </AppText>
+              </Pressable>
+            </View>
+          </AuthCard>
+        </View>
+      </ScrollView>
+
       <Modal
         accessibilityViewIsModal
         animationType="fade"
@@ -178,28 +216,53 @@ function loginErrorMessage(error: ClientError): string {
 }
 
 const styles = StyleSheet.create({
-  content: { flex: 1, justifyContent: 'center' },
-  body: { marginBottom: spacing.lg, marginTop: spacing.sm },
-  label: { marginBottom: spacing.xs, marginTop: spacing.md },
-  input: {
-    borderRadius: 8,
-    borderWidth: 1,
-    fontSize: typography.body,
-    minHeight: 48,
-    paddingHorizontal: spacing.md,
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    paddingVertical: spacing.lg,
   },
-  passwordRow: { alignItems: 'center', flexDirection: 'row' },
-  passwordInput: { flex: 1 },
-  visibilityButton: { marginLeft: spacing.sm, maxWidth: 92 },
-  submit: { marginTop: spacing.lg },
+  container: {
+    alignSelf: 'center',
+    maxWidth: 440,
+    paddingHorizontal: spacing.md,
+    width: '100%',
+  },
+  bannerSpacing: {
+    marginBottom: spacing.md,
+  },
+  visibilityButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 48,
+    minWidth: 48,
+    paddingHorizontal: spacing.xs,
+  },
+  visibilityText: {
+    fontSize: typography.caption,
+    fontWeight: '600',
+  },
+  submit: {
+    marginTop: spacing.sm,
+  },
+  dividerRow: {
+    alignItems: 'center',
+    marginVertical: spacing.md,
+  },
+  dividerLine: {
+    height: 1,
+    width: '100%',
+  },
   accountPrompt: {
     alignItems: 'center',
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'center',
-    marginTop: spacing.md,
+    minHeight: 44,
   },
-  link: { fontWeight: '700', marginLeft: spacing.xs },
+  link: {
+    fontWeight: '700',
+    marginLeft: spacing.xs,
+  },
   modalBackdrop: {
     alignItems: 'center',
     backgroundColor: '#00000088',
@@ -207,5 +270,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: spacing.lg,
   },
-  modalCard: { width: '100%' },
+  modalCard: {
+    borderRadius: radii.lg,
+    width: '100%',
+  },
 });

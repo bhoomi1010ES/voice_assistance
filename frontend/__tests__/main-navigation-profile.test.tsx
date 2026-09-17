@@ -122,8 +122,11 @@ async function renderAuthenticated(
   return { controller, renderer: renderer! };
 }
 
-test('overflow menu opens settings, profile, and sign out actions', async () => {
-  const fetchImpl = jest.fn().mockResolvedValue(response(200, tokenResponse));
+test('bottom navigation opens settings and profile actions', async () => {
+  const fetchImpl = jest.fn().mockImplementation((url: string) => {
+    if (url.includes('/memories')) return response(200, []);
+    return response(200, tokenResponse);
+  });
   const { renderer } = await renderAuthenticated(
     fetchImpl,
     <MainNavigator />,
@@ -135,28 +138,36 @@ test('overflow menu opens settings, profile, and sign out actions', async () => 
       .accessibilityLabel,
   ).toBe('Hello, Test User');
 
-  await act(async () => {
-    renderer.root.findByProps({ testID: 'main-menu-button' }).props.onPress();
-  });
-
-  expect(renderer.root.findByProps({ testID: 'main-menu' })).toBeTruthy();
-  expect(renderer.root.findByProps({ testID: 'menu-memory' })).toBeTruthy();
-  expect(renderer.root.findByProps({ testID: 'menu-settings' })).toBeTruthy();
-  expect(renderer.root.findByProps({ testID: 'menu-profile' })).toBeTruthy();
-  expect(renderer.root.findByProps({ testID: 'menu-sign-out' })).toBeTruthy();
+  expect(renderer.root.findByProps({ testID: 'bottom-tab-bar' })).toBeTruthy();
+  expect(renderer.root.findByProps({ testID: 'tab-assistant' })).toBeTruthy();
+  expect(renderer.root.findByProps({ testID: 'tab-memory' })).toBeTruthy();
+  expect(renderer.root.findByProps({ testID: 'tab-tasks' })).toBeTruthy();
+  expect(renderer.root.findByProps({ testID: 'tab-settings' })).toBeTruthy();
 
   await act(async () => {
-    renderer.root.findByProps({ testID: 'menu-settings' }).props.onPress();
+    renderer.root.findByProps({ testID: 'tab-settings' }).props.onPress();
   });
   expect(renderer.root.findByProps({ testID: 'settings-screen' })).toBeTruthy();
 
   await act(async () => {
-    renderer.root.findByProps({ testID: 'main-menu-button' }).props.onPress();
-  });
-  await act(async () => {
-    renderer.root.findByProps({ testID: 'menu-profile' }).props.onPress();
+    renderer.root.findByProps({ testID: 'settings-account' }).props.onPress();
   });
   expect(renderer.root.findByProps({ testID: 'profile-screen' })).toBeTruthy();
+
+  await act(async () => {
+    renderer.root.findByProps({ testID: 'nav-back-button' }).props.onPress();
+  });
+  expect(renderer.root.findByProps({ testID: 'settings-screen' })).toBeTruthy();
+
+  await act(async () => {
+    renderer.root.findByProps({ testID: 'tab-memory' }).props.onPress();
+  });
+  expect(renderer.root.findByProps({ testID: 'memory-screen' })).toBeTruthy();
+
+  await act(async () => {
+    renderer.root.findByProps({ testID: 'tab-assistant' }).props.onPress();
+  });
+  expect(renderer.root.findByProps({ testID: 'assistant-screen' })).toBeTruthy();
   await act(async () => {
     renderer.unmount();
   });

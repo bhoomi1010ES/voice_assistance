@@ -1,5 +1,10 @@
-import React from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   AccessibilityInfo,
   Alert,
@@ -16,17 +21,16 @@ import {
   Card,
   Heading,
   Screen,
-  StatusBanner,
 } from '../components/ui/Primitives';
 import { useAuth } from '../auth/AuthProvider';
-import { spacing, typography } from '../design/tokens';
+import { radii, shadows, spacing, typography } from '../design/tokens';
+import { useAppTheme } from '../design/ThemeProvider';
 import { useVoiceSocket } from '../voice/VoiceSocketProvider';
 import {
   VoiceConnectionState,
   VoiceSocketSnapshot,
 } from '../voice/VoiceSocket';
 import {
-  mapTranscriptError,
   VoiceTranscriptMessage,
 } from '../voice/transcript';
 import {
@@ -34,18 +38,27 @@ import {
   ConversationMessage,
   ConversationToolMessage,
   ConversationUserMessage,
-  mapConversationError,
 } from '../voice/conversation';
 import {
   copyTextToClipboard,
   getVoiceOutputPreferences,
   setVoiceOutputEnabled,
 } from '../native/VoiceModule';
+import { VoiceOrbView } from '../components/voice/VoiceOrbView';
+import { ConnectionStatusBadge } from '../components/voice/ConnectionStatusBadge';
+import { VoiceStatusView } from '../components/voice/VoiceStatusView';
+import { QuickActionChips } from '../components/voice/QuickActionChips';
+import { ToolConfirmationCard } from '../components/voice/ToolConfirmationCard';
+import {
+  ConversationBubble,
+  TranscriptBubble,
+} from '../components/voice/ConversationBubble';
 
 export function AssistantScreen() {
   const { profile } = useAuth();
   const socketState = useVoiceSocket();
   const { socket } = socketState;
+  const { colors } = useAppTheme();
   const [busy, setBusy] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [historyNoticeVisible, setHistoryNoticeVisible] = useState(false);
@@ -268,18 +281,25 @@ export function AssistantScreen() {
           userScrolling.current = false;
         }}
         scrollEventThrottle={100}
+        showsVerticalScrollIndicator={false}
       >
+        {/* Top bar with screen title & history toggle */}
         <View style={styles.topBar}>
           <Heading>{strings.assistant.title}</Heading>
           <Pressable
             accessibilityLabel={strings.assistant.conversationHistory}
             accessibilityRole="button"
+            hitSlop={spacing.xs}
             onPress={() => setHistoryNoticeVisible(value => !value)}
             testID="conversation-history"
           >
-            <AppText style={styles.historyButton}>•••</AppText>
+            <AppText style={[styles.historyButton, { color: colors.primary }]}>
+              •••
+            </AppText>
           </Pressable>
         </View>
+
+        {/* Personalized greeting & dynamic subtitle */}
         <AppText
           accessibilityLabel={`${strings.assistant.greeting}, ${greetingName}`}
           style={styles.greeting}
@@ -287,82 +307,123 @@ export function AssistantScreen() {
         >
           {strings.assistant.greeting}, {greetingName}
         </AppText>
-        <AppText style={styles.subtitle}>
+        <AppText style={[styles.subtitle, { color: colors.textMuted }]}>
           {connectionCopy(socketState.connection, socketState.session)}
         </AppText>
-        <View testID="voice-connection-status">
-          <StatusBanner tone={isConnectionError ? 'error' : 'info'}>
-            {statusCopy(socketState)}
-          </StatusBanner>
-        </View>
 
+        {/* Real-time Connection Status Badge */}
+        <ConnectionStatusBadge
+          connection={socketState.connection}
+          isError={isConnectionError}
+          session={socketState.session}
+          statusText={statusCopy(socketState)}
+          testID="voice-connection-status"
+        />
+
+        {/* Local conversation history notice */}
         {historyNoticeVisible ? (
           <Card style={styles.historyNotice}>
             <AppText style={styles.diagnosticsTitle}>
               {strings.assistant.conversationHistory}
             </AppText>
-            <AppText>{strings.assistant.localHistoryNotice}</AppText>
+            <AppText style={{ color: colors.textMuted }}>
+              {strings.assistant.localHistoryNotice}
+            </AppText>
           </Card>
         ) : null}
 
-        <Card style={styles.card}>
+        {/* Primary Interactive Voice Orb Card */}
+        <Card
+          style={[
+            styles.card,
+            {
+              backgroundColor: colors.surface,
+              borderColor: colors.borderSubtle,
+            },
+            shadows.sm,
+          ]}
+        >
           {voiceConfirmationPending ? (
-            <View testID="voice-confirmation-status">
-              <AppText accessibilityLiveRegion="polite">
-                {strings.assistant.voiceConfirmationListening}
-              </AppText>
-            </View>
-          ) : (
-            <VoiceOrb
-              busy={busy}
-              label={voiceControlLabel(socketState, conversationMessages)}
-              onPress={() => execute(voiceControlAction)}
+            <ToolConfirmationCard
+              pendingConfirmation={pendingConfirmation}
+              testID="voice-confirmation-status"
             />
+          ) : (
+            <>
+              <VoiceOrbView
+                accessibilityHint="Activates the next voice session action"
+                accessibilityLabel={voiceControlLabel(
+                  socketState,
+                  conversationMessages,
+                )}
+                busy={busy}
+                connectionState={socketState.connection}
+                label={voiceControlLabel(socketState, conversationMessages)}
+                onPress={() => execute(voiceControlAction)}
+                playbackState={socketState.ttsPlaybackState}
+                testID="voice-control"
+                turnState={socketState.turn}
+              />
+              <VoiceStatusView
+                isActive={
+                  ['recording', 'speech_detected', 'committing', 'waiting'].includes(
+                    socketState.turn,
+                  ) || socketState.ttsPlaybackState === 'speaking'
+                }
+                primaryStatus={voiceControlLabel(
+                  socketState,
+                  conversationMessages,
+                )}
+                subStatus={turnCopy(socketState.turn)}
+              />
+            </>
           )}
+
+          {/* Fallback secondary control buttons with preserved testIDs */}
           {socketState.connection === 'disconnected' ? (
             <ActionButton
+              disabled={busy}
               label={strings.assistant.connect}
               onPress={() => execute(() => socket.connect())}
-              disabled={busy}
               testID="voice-connect"
             />
           ) : null}
+
           {['failed', 'degraded', 'reconnecting'].includes(
             socketState.connection,
           ) ? (
             <ActionButton
+              disabled={busy}
               label={strings.assistant.retry}
               onPress={() => execute(() => socket.retry())}
-              disabled={busy}
               testID="voice-retry"
             />
           ) : null}
+
           {['starting', 'recording', 'speech_detected'].includes(
             socketState.turn,
           ) ? (
             <View style={styles.actionGroup}>
-              <AppText style={styles.turnStatus}>
-                {turnCopy(socketState.turn)}
-              </AppText>
               <ActionButton
+                disabled={busy}
                 label={strings.assistant.endTurn}
                 onPress={() => execute(() => socket.commitTurn())}
-                disabled={busy}
                 testID="voice-finish-turn"
               />
             </View>
           ) : null}
+
           {socketState.turn === 'failed' ? (
             <View style={styles.actionGroup}>
-              <AppText style={styles.turnStatus}>
+              <AppText style={[styles.turnStatus, { color: colors.error }]}>
                 {socketState.transcriptError?.message ??
                   strings.assistant.turnFailed}
               </AppText>
               {socketState.transcriptError?.retryable !== false ? (
                 <ActionButton
+                  disabled={busy || socketState.session !== 'ready'}
                   label={strings.assistant.tryAgain}
                   onPress={() => execute(voiceControlAction)}
-                  disabled={busy || socketState.session !== 'ready'}
                   testID="voice-retry-turn"
                 />
               ) : null}
@@ -370,6 +431,16 @@ export function AssistantScreen() {
           ) : null}
         </Card>
 
+        {/* Quick example prompt suggestion chips (triggers existing voice flow, no typed prompts) */}
+        {!conversationMessages.length &&
+        !voiceConfirmationPending &&
+        socketState.turn === 'idle' ? (
+          <QuickActionChips
+            onChipPress={() => execute(voiceControlAction)}
+          />
+        ) : null}
+
+        {/* Voice output preferences card */}
         <Card style={styles.voiceOutputCard} testID="voice-output-settings">
           <AppText style={styles.diagnosticsTitle}>
             {strings.assistant.voiceOutput}
@@ -379,22 +450,23 @@ export function AssistantScreen() {
               ? strings.assistant.voiceOutputEnabled
               : strings.assistant.voiceOutputMuted}
           </AppText>
-          <AppText style={styles.messageMuted}>
+          <AppText style={[styles.messageMuted, { color: colors.textSubtle }]}>
             {strings.assistant.serverSelectedVoice}
           </AppText>
           <ActionButton
+            disabled={busy}
             label={
               voiceOutputEnabled
                 ? strings.assistant.muteVoiceOutput
                 : strings.assistant.enableVoiceOutput
             }
             onPress={toggleVoiceOutput}
-            disabled={busy}
-            variant="secondary"
             testID="voice-output-toggle"
+            variant="secondary"
           />
         </Card>
 
+        {/* TTS playback status banner/card */}
         {socketState.ttsPlaybackState !== 'idle' &&
         socketState.ttsPlaybackState !== 'completed' ? (
           socketState.ttsPlaybackState !== 'buffering' || showTtsBuffering ? (
@@ -405,15 +477,15 @@ export function AssistantScreen() {
               {socketState.ttsPlaybackState === 'speaking' ||
               socketState.ttsPlaybackState === 'buffering' ? (
                 <ActionButton
+                  disabled={busy}
                   label={strings.assistant.stopPlayback}
                   onPress={() => execute(() => socket.stopPlayback())}
-                  disabled={busy}
-                  variant="secondary"
                   testID="voice-stop-playback"
+                  variant="secondary"
                 />
               ) : null}
               {socketState.ttsPlaybackState === 'failed' ? (
-                <AppText style={styles.transcriptError}>
+                <AppText style={[styles.transcriptError, { color: colors.error }]}>
                   {socketState.ttsError ?? strings.assistant.voiceOutputFailed}
                 </AppText>
               ) : null}
@@ -421,6 +493,7 @@ export function AssistantScreen() {
           ) : null
         ) : null}
 
+        {/* Conversation transcript card & bubbles */}
         {conversationMessages.length ? (
           <Card style={styles.conversationCard} testID="voice-transcript">
             <AppText style={styles.diagnosticsTitle}>
@@ -428,15 +501,15 @@ export function AssistantScreen() {
             </AppText>
             <View testID="voice-conversation">
               {conversationMessages.map(message => (
-                <ConversationMessageView
+                <ConversationBubble
                   key={message.id}
-                  message={message}
-                  waitPhrase={socketState.waitPhrase}
                   copied={copiedMessageId === message.id}
+                  message={message}
                   onCopy={copyMessage}
                   onRetry={turnId =>
                     execute(() => socket.retryResponse(turnId))
                   }
+                  waitPhrase={socketState.waitPhrase}
                 />
               ))}
             </View>
@@ -447,7 +520,7 @@ export function AssistantScreen() {
               {strings.assistant.transcript}
             </AppText>
             {transcriptMessages.map(message => (
-              <TranscriptMessageView key={message.id} message={message} />
+              <TranscriptBubble key={message.id} message={message} />
             ))}
           </Card>
         ) : (
@@ -455,21 +528,25 @@ export function AssistantScreen() {
             <AppText style={styles.emptyTitle}>
               {strings.assistant.emptyConversationTitle}
             </AppText>
-            <AppText>{strings.assistant.emptyConversationBody}</AppText>
+            <AppText style={{ color: colors.textMuted }}>
+              {strings.assistant.emptyConversationBody}
+            </AppText>
           </Card>
         )}
 
+        {/* Reset conversation button */}
         {conversationMessages.length ? (
           <ActionButton
+            disabled={busy}
             label={strings.assistant.startNewConversation}
             onPress={startNewConversation}
-            disabled={busy}
-            variant="quiet"
             style={styles.resetButton}
             testID="conversation-reset"
+            variant="quiet"
           />
         ) : null}
 
+        {/* Developer Diagnostics (Development mode only) */}
         {typeof __DEV__ !== 'undefined' && __DEV__ ? (
           <Card style={styles.diagnostics} testID="voice-diagnostics">
             <AppText style={styles.diagnosticsTitle}>
@@ -526,34 +603,6 @@ export function AssistantScreen() {
   );
 }
 
-function VoiceOrb({
-  busy,
-  label,
-  onPress,
-}: {
-  busy: boolean;
-  label: string;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      accessibilityHint="Activates the next voice session action"
-      accessibilityLabel={label}
-      accessibilityRole="button"
-      disabled={busy}
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.voiceOrb,
-        { opacity: pressed || busy ? 0.72 : 1 },
-      ]}
-      testID="voice-control"
-    >
-      <AppText style={styles.voiceOrbIcon}>◉</AppText>
-      <AppText style={styles.voiceOrbLabel}>{label}</AppText>
-    </Pressable>
-  );
-}
-
 function voiceControlLabel(
   snapshot: VoiceSocketSnapshot,
   messages: ConversationMessage[],
@@ -585,232 +634,6 @@ function voiceControlLabel(
   return failed?.retryable
     ? strings.assistant.tryAgain
     : strings.assistant.startTurn;
-}
-
-function ConversationMessageView({
-  copied,
-  message,
-  waitPhrase,
-  onCopy,
-  onRetry,
-}: {
-  copied: boolean;
-  message: ConversationMessage;
-  waitPhrase?: string | null;
-  onCopy: (message: ConversationAssistantMessage) => void;
-  onRetry: (turnId: string) => void;
-}) {
-  if (message.role === 'user') {
-    return <ConversationUserView message={message} />;
-  }
-  if (message.role === 'assistant') {
-    const mapped = mapConversationError(message.errorCode);
-    return (
-      <View style={styles.messageRow} testID="assistant-message">
-        <AppText style={styles.messageRole}>Assistant</AppText>
-        {message.status === 'pending' ? (
-          <AppText accessibilityLiveRegion="none" style={styles.messageMuted}>
-            {waitPhrase ?? strings.assistant.thinking}
-          </AppText>
-        ) : null}
-        {message.status === 'streaming' || message.status === 'completed' ? (
-          <AppText accessibilityLiveRegion="none" style={styles.messageText}>
-            {message.text || strings.assistant.responding}
-          </AppText>
-        ) : null}
-        {message.status === 'failed' ? (
-          <>
-            <AppText
-              style={styles.transcriptError}
-              testID="assistant-response-error"
-            >
-              {mapped.message || strings.assistant.responseFailed}
-            </AppText>
-            {message.retryable ? (
-              <ActionButton
-                label={strings.assistant.tryAgain}
-                onPress={() => onRetry(message.turnId)}
-                variant="secondary"
-                testID="assistant-response-retry"
-              />
-            ) : null}
-          </>
-        ) : null}
-        {message.status === 'cancelled' ? (
-          <AppText
-            style={styles.messageMuted}
-            testID="assistant-response-cancelled"
-          >
-            {strings.assistant.responseStopped}
-          </AppText>
-        ) : null}
-        {message.status === 'completed' && message.text ? (
-          <ActionButton
-            label={copied ? strings.assistant.copied : strings.assistant.copy}
-            onPress={() => onCopy(message)}
-            variant="quiet"
-            testID="assistant-response-copy"
-          />
-        ) : null}
-      </View>
-    );
-  }
-  if (message.role === 'tool') {
-    return <ConversationToolView message={message} />;
-  }
-  return (
-    <View style={styles.messageRow} testID="system-message">
-      <AppText style={styles.messageRole}>Status</AppText>
-      <AppText
-        style={message.status === 'error' ? styles.transcriptError : undefined}
-      >
-        {message.text}
-      </AppText>
-    </View>
-  );
-}
-
-function ConversationUserView({
-  message,
-}: {
-  message: ConversationUserMessage;
-}) {
-  const placeholder = !message.text.trim();
-  return (
-    <View style={styles.messageRow} testID="voice-transcript-message">
-      <AppText style={styles.messageRole}>You</AppText>
-      {placeholder ? (
-        <AppText
-          accessibilityLiveRegion="none"
-          style={styles.transcriptPlaceholder}
-          testID={
-            message.status === 'transcribing'
-              ? 'voice-transcript-transcribing'
-              : message.status === 'speech_detected'
-              ? 'voice-transcript-speech-detected'
-              : 'voice-transcript-listening'
-          }
-        >
-          {message.status === 'transcribing'
-            ? strings.assistant.transcribing
-            : message.status === 'speech_detected'
-            ? strings.assistant.speechDetected
-            : strings.assistant.listening}
-        </AppText>
-      ) : (
-        <AppText
-          accessibilityLabel={`You said: ${message.text}`}
-          accessibilityLiveRegion="none"
-          style={styles.messageText}
-          testID={
-            message.final
-              ? 'voice-transcript-final'
-              : 'voice-transcript-partial'
-          }
-        >
-          {message.text}
-        </AppText>
-      )}
-    </View>
-  );
-}
-
-function ConversationToolView({
-  message,
-}: {
-  message: ConversationToolMessage;
-}) {
-  const statusText = {
-    understanding: strings.assistant.toolUnderstanding,
-    confirmation_required: strings.assistant.toolConfirmationRequired,
-    approved: strings.assistant.toolApproved,
-    executing: strings.assistant.toolExecuting,
-    success: strings.assistant.toolSuccess,
-    failed: strings.assistant.toolFailed,
-    cancelled: strings.assistant.toolCancelled,
-  }[message.status];
-  return (
-    <View
-      accessibilityLabel={`Assistant action: ${statusText}`}
-      accessibilityLiveRegion={
-        ['success', 'failed', 'cancelled'].includes(message.status)
-          ? 'polite'
-          : 'none'
-      }
-      style={styles.messageRow}
-      testID="tool-status-message"
-    >
-      <AppText style={styles.messageRole}>Assistant action</AppText>
-      <AppText testID={`tool-status-${message.status}`}>{statusText}</AppText>
-    </View>
-  );
-}
-
-function TranscriptMessageView({
-  message,
-}: {
-  message: VoiceTranscriptMessage;
-}) {
-  if (message.status === 'partial') {
-    return (
-      <View testID="voice-transcript-message">
-        <AppText style={styles.transcriptLabel}>
-          {strings.assistant.partialTranscript}
-        </AppText>
-        <AppText testID="voice-transcript-partial">{message.text}</AppText>
-      </View>
-    );
-  }
-
-  if (message.final) {
-    return (
-      <View testID="voice-transcript-message">
-        <AppText style={styles.transcriptLabel}>You said</AppText>
-        <AppText
-          accessibilityLabel={`You said: ${message.text}`}
-          testID="voice-transcript-final"
-        >
-          {message.text}
-        </AppText>
-      </View>
-    );
-  }
-
-  if (message.status === 'error') {
-    return (
-      <View testID="voice-transcript-message">
-        <AppText style={styles.transcriptError} testID="voice-transcript-error">
-          {mapTranscriptError(message.errorCode).message}
-        </AppText>
-      </View>
-    );
-  }
-
-  return (
-    <View testID="voice-transcript-message">
-      <AppText
-        accessibilityLiveRegion="none"
-        style={styles.transcriptPlaceholder}
-        testID={
-          message.status === 'transcribing'
-            ? 'voice-transcript-transcribing'
-            : message.status === 'speech_detected'
-            ? 'voice-transcript-speech-detected'
-            : 'voice-transcript-listening'
-        }
-      >
-        {transcriptStatusCopy(message.status)}
-      </AppText>
-    </View>
-  );
-}
-
-function transcriptStatusCopy(
-  status: VoiceTranscriptMessage['status'],
-): string {
-  if (status === 'transcribing') return strings.assistant.transcribing;
-  if (status === 'speech_detected') return strings.assistant.speechDetected;
-  return strings.assistant.listening;
 }
 
 function formatTranscriptTiming(messages: VoiceTranscriptMessage[]): string {
@@ -875,80 +698,119 @@ function shortId(value: string | null): string {
 }
 
 function DiagnosticRow({ label, value }: { label: string; value: string }) {
+  const { colors } = useAppTheme();
   return (
     <View style={styles.diagnosticRow}>
-      <AppText style={styles.diagnosticLabel}>{label}</AppText>
+      <AppText style={[styles.diagnosticLabel, { color: colors.textMuted }]}>
+        {label}
+      </AppText>
       <AppText>{value}</AppText>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  content: { paddingBottom: 24 },
+  content: {
+    paddingBottom: spacing.xl,
+    paddingHorizontal: spacing.md,
+  },
   topBar: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
+    minHeight: 48,
   },
-  historyButton: { fontSize: 28, fontWeight: '700', letterSpacing: 2 },
-  historyNotice: { gap: 8, marginTop: 12 },
-  greeting: {
-    fontSize: typography.heading,
-    fontWeight: '600',
+  historyButton: {
+    fontSize: 24,
+    fontWeight: '700',
+    letterSpacing: 2,
+    padding: spacing.xs,
+  },
+  historyNotice: {
+    gap: spacing.xs,
     marginTop: spacing.sm,
   },
-  subtitle: { marginBottom: 20, marginTop: 8 },
-  card: { gap: 12, marginTop: 16 },
-  voiceOutputCard: { gap: 12, marginTop: 16 },
-  actionGroup: { gap: 12 },
-  turnStatus: { marginBottom: 4 },
-  voiceOrb: {
-    alignItems: 'center',
-    alignSelf: 'center',
-    backgroundColor: '#3159D8',
-    borderRadius: 72,
-    height: 144,
-    justifyContent: 'center',
-    marginBottom: 4,
+  greeting: {
+    fontSize: typography.heading,
+    fontWeight: '700',
+    marginTop: spacing.xs,
+  },
+  subtitle: {
+    fontSize: typography.bodySm,
+    marginBottom: spacing.xs,
+    marginTop: 2,
+  },
+  card: {
+    borderRadius: radii.xl,
+    borderWidth: 1,
+    gap: spacing.sm,
+    marginTop: spacing.sm,
     padding: spacing.md,
-    width: 144,
   },
-  voiceOrbIcon: { color: '#FFFFFF', fontSize: 42, lineHeight: 46 },
-  voiceOrbLabel: {
-    color: '#FFFFFF',
-    fontSize: typography.label,
+  voiceOutputCard: {
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+    padding: spacing.md,
+  },
+  actionGroup: {
+    gap: spacing.sm,
+  },
+  turnStatus: {
+    fontSize: typography.bodySm,
+    marginBottom: 4,
+  },
+  conversationCard: {
+    borderRadius: radii.xl,
+    borderWidth: 1,
+    gap: spacing.md,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  emptyConversation: {
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    gap: spacing.xs,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  emptyTitle: {
+    fontSize: typography.body,
     fontWeight: '700',
-    textAlign: 'center',
   },
-  conversationCard: { gap: 14, marginTop: 16 },
-  emptyConversation: { gap: 8, marginTop: 16 },
-  emptyTitle: { fontWeight: '700' },
-  resetButton: { marginTop: 8 },
-  messageRow: {
-    borderBottomColor: '#E1E5EA',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    gap: 6,
-    paddingBottom: 12,
+  resetButton: {
+    marginTop: spacing.sm,
   },
-  messageRole: {
-    color: '#5D6875',
-    fontSize: typography.label,
+  messageMuted: {
+    fontStyle: 'italic',
+  },
+  transcriptError: {
+    fontSize: typography.bodySm,
+    fontWeight: '600',
+  },
+  diagnostics: {
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    gap: spacing.xs,
+    marginTop: spacing.md,
+    padding: spacing.md,
+  },
+  diagnosticsTitle: {
+    fontSize: typography.body,
     fontWeight: '700',
+    marginBottom: spacing.xxs,
   },
-  messageText: { lineHeight: 26 },
-  messageMuted: { color: '#5D6875', fontStyle: 'italic' },
-  transcriptLabel: { color: '#5D6875', fontSize: typography.label },
-  transcriptPlaceholder: { color: '#5D6875' },
-  transcriptError: { color: '#B42318' },
-  diagnostics: { gap: 8, marginTop: 16 },
-  diagnosticsTitle: { fontWeight: '700', marginBottom: 4 },
   diagnosticRow: {
     alignItems: 'center',
     flexDirection: 'row',
+    gap: spacing.md,
     justifyContent: 'space-between',
-    gap: 12,
+    paddingVertical: 2,
   },
-  diagnosticLabel: { color: '#5D6875' },
+  diagnosticLabel: {
+    fontSize: typography.caption,
+  },
 });
 
 const EMPTY_TRANSCRIPT_MESSAGES: VoiceTranscriptMessage[] = [];

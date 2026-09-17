@@ -162,10 +162,7 @@ test('Tasks destination exposes upcoming, all, and completed views', async () =>
   const renderer = await renderAuthenticated(fetchImpl, <MainNavigator />);
 
   await act(async () => {
-    renderer.root.findByProps({ testID: 'main-menu-button' }).props.onPress();
-  });
-  await act(async () => {
-    renderer.root.findByProps({ testID: 'menu-tasks' }).props.onPress();
+    renderer.root.findByProps({ testID: 'tab-tasks' }).props.onPress();
   });
 
   expect(renderer.root.findByProps({ testID: 'tasks-screen' })).toBeTruthy();

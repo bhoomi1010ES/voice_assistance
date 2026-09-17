@@ -5,18 +5,17 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import { safeUserMessage, toClientError } from '../api/errors';
 import {
   ActionButton,
   AppText,
-  Card,
   Heading,
   Screen,
   StatusBanner,
 } from '../components/ui/Primitives';
 import { useAppTheme } from '../design/ThemeProvider';
-import { spacing, typography } from '../design/tokens';
+import { radii, spacing, typography } from '../theme';
 import { strings } from '../i18n/strings';
 import { useAuth } from '../auth/AuthProvider';
 import { useVoiceSocket } from '../voice/VoiceSocketProvider';
@@ -33,6 +32,15 @@ import {
   updateMemorySettings,
 } from '../memory/api';
 import { MemoryItem, MemorySettings } from '../memory/types';
+
+import { MemoryCard } from '../components/memory/MemoryCard';
+import { MemoryDetailCard } from '../components/memory/MemoryDetailCard';
+import { MemorySettingsCard } from '../components/memory/MemorySettingsCard';
+import { MemorySearchBar } from '../components/memory/MemorySearchBar';
+import { MemoryCreateCard } from '../components/memory/MemoryCreateCard';
+import { SessionMemoryCard } from '../components/memory/SessionMemoryCard';
+import { MemoryConfirmModal } from '../components/memory/MemoryConfirmModal';
+import { MemoryEmptyState } from '../components/memory/MemoryEmptyState';
 
 type Confirmation = 'delete' | 'delete-all' | null;
 
@@ -301,305 +309,180 @@ export function MemoryScreen() {
   return (
     <Screen testID="memory-screen">
       <ScrollView contentContainerStyle={styles.content}>
-        <Heading>{strings.memory.title}</Heading>
-        <AppText style={styles.body}>{strings.memory.body}</AppText>
+        {/* Stitch-inspired Hero Header */}
+        <View style={styles.header}>
+          <AppText style={[styles.overline, { color: colors.primary }]}>
+            KNOWLEDGE & CONTEXT
+          </AppText>
+          <Heading>{strings.memory.title}</Heading>
+          <AppText style={[styles.body, { color: colors.textMuted }]}>
+            {strings.memory.body}
+          </AppText>
+        </View>
+
         {error ? <StatusBanner tone="error">{error}</StatusBanner> : null}
         {message ? <StatusBanner>{message}</StatusBanner> : null}
 
-        <Card style={styles.card} testID="memory-settings-card">
-          <AppText style={styles.sectionTitle}>
-            {strings.memory.settings}
-          </AppText>
-          <AppText>
-            {settings?.enabled
-              ? strings.memory.enabledDescription
-              : settings
-              ? strings.memory.disabledDescription
-              : strings.memory.loading}
-          </AppText>
-          <ActionButton
-            disabled={!settings || saving}
-            label={
-              settings?.enabled ? strings.memory.turnOff : strings.memory.turnOn
-            }
-            onPress={toggleMemory}
-            style={styles.action}
-            variant="secondary"
-            testID="memory-toggle"
-          />
-        </Card>
+        {/* Master Memory Settings Card */}
+        <MemorySettingsCard
+          enabled={Boolean(settings?.enabled)}
+          loading={!settings}
+          onToggle={toggleMemory}
+          saving={saving}
+        />
 
-        <Card style={styles.card} testID="memory-search-card">
-          <AppText style={styles.sectionTitle}>
-            {strings.memory.searchTitle}
-          </AppText>
-          <TextInput
-            accessibilityLabel={strings.memory.searchLabel}
-            editable={Boolean(settings?.enabled) && !searching}
-            onChangeText={setQuery}
-            onSubmitEditing={runSearch}
-            placeholder={strings.memory.searchPlaceholder}
-            placeholderTextColor={colors.textMuted}
-            returnKeyType="search"
-            style={[
-              styles.input,
-              { color: colors.text, borderColor: colors.border },
-            ]}
-            testID="memory-search-input"
-            value={query}
-          />
-          <ActionButton
-            disabled={!settings?.enabled || searching}
-            label={searching ? strings.memory.searching : strings.memory.search}
-            onPress={runSearch}
-            style={styles.action}
-            testID="memory-search"
-          />
-        </Card>
+        {/* Debounced Search Bar */}
+        <MemorySearchBar
+          enabled={Boolean(settings?.enabled)}
+          onQueryChange={setQuery}
+          onSearch={runSearch}
+          query={query}
+          searching={searching}
+        />
 
-        <Card style={styles.card} testID="memory-create-card">
-          <AppText style={styles.sectionTitle}>
-            {strings.memory.createTitle}
-          </AppText>
-          <TextInput
-            accessibilityLabel={strings.memory.contentLabel}
-            editable={Boolean(settings?.enabled) && !saving}
-            multiline
-            onChangeText={setNewContent}
-            placeholder={strings.memory.createPlaceholder}
-            placeholderTextColor={colors.textMuted}
-            style={[
-              styles.input,
-              styles.multilineInput,
-              { color: colors.text, borderColor: colors.border },
-            ]}
-            testID="memory-create-input"
-            value={newContent}
-          />
-          <ActionButton
-            disabled={!settings?.enabled || saving || !newContent.trim()}
-            label={saving ? strings.memory.creating : strings.memory.create}
-            onPress={saveNewMemory}
-            style={styles.action}
-            testID="memory-create"
-          />
-        </Card>
+        {/* Add Memory Card */}
+        <MemoryCreateCard
+          enabled={Boolean(settings?.enabled)}
+          newContent={newContent}
+          onContentChange={setNewContent}
+          onSave={saveNewMemory}
+          saving={saving}
+        />
 
+        {/* Active Session Exclusion Card (Conditional on active session) */}
         {sessionId ? (
-          <Card style={styles.card} testID="memory-session-card">
-            <AppText style={styles.sectionTitle}>
-              {strings.memory.sessionTitle}
-            </AppText>
-            <AppText>{strings.memory.sessionBody}</AppText>
-            <ActionButton
-              disabled={excluding}
-              label={
-                sessionExcluded
-                  ? strings.memory.includeSession
-                  : strings.memory.excludeSession
-              }
-              onPress={toggleSessionExclusion}
-              style={styles.action}
-              variant="secondary"
-              testID="memory-session-exclusion"
-            />
-          </Card>
+          <SessionMemoryCard
+            excluding={excluding}
+            onToggle={toggleSessionExclusion}
+            sessionExcluded={sessionExcluded}
+          />
         ) : null}
 
+        {/* Memory List Header */}
         <View style={styles.listHeader}>
-          <AppText style={styles.sectionTitle}>
-            {strings.memory.listTitle}
-          </AppText>
+          <View style={styles.listTitleContainer}>
+            <AppText style={[styles.sectionTitle, { color: colors.text }]}>
+              {strings.memory.listTitle}
+            </AppText>
+            <View
+              style={[
+                styles.countBadge,
+                { backgroundColor: colors.surfaceMuted },
+              ]}
+            >
+              <AppText style={[styles.countText, { color: colors.textMuted }]}>
+                {memories.length}
+              </AppText>
+            </View>
+          </View>
+
           <ActionButton
             disabled={saving || memories.length === 0}
             label={strings.memory.deleteAll}
             onPress={() => setConfirmation('delete-all')}
-            variant="quiet"
             testID="memory-delete-all"
+            variant="quiet"
           />
         </View>
 
         {visibleState === 'loading' ? (
-          <AppText>{strings.memory.loading}</AppText>
+          <AppText style={styles.loadingText}>{strings.memory.loading}</AppText>
         ) : null}
+
         {visibleState === 'empty' ? (
-          <Card style={styles.card} testID="memory-empty">
-            <AppText>{strings.memory.empty}</AppText>
-          </Card>
+          <MemoryEmptyState
+            testID="memory-empty"
+            text={strings.memory.empty}
+          />
         ) : null}
+
+        {/* Memory Items Stack */}
         {memories.map(memory => (
-          <Card key={memory.id} style={styles.card} testID="memory-item">
-            <AppText style={styles.memoryType}>
-              {memoryTypeLabel(memory.memory_type)}
-            </AppText>
-            {memory.supersedes_id ? (
-              <AppText style={styles.replacementNotice}>
-                {strings.memory.replacementNotice}
-              </AppText>
-            ) : null}
-            <AppText
-              accessibilityLabel={`${strings.memory.itemLabel}: ${memory.content}`}
-              style={styles.memoryContent}
-              testID="memory-item-content"
-            >
-              {memory.content}
-            </AppText>
-            <ActionButton
-              label={strings.memory.view}
-              onPress={() => selectMemory(memory)}
-              style={styles.action}
-              variant="secondary"
-              testID="memory-view"
-            />
-          </Card>
+          <MemoryCard
+            key={memory.id}
+            memory={memory}
+            onView={selectMemory}
+            selected={selected?.id === memory.id}
+          />
         ))}
 
+        {/* Selected Memory Detail & Editor */}
         {selected ? (
-          <Card style={styles.card} testID="memory-detail">
-            <AppText style={styles.sectionTitle}>
-              {strings.memory.detailTitle}
-            </AppText>
-            <AppText style={styles.memoryType}>
-              {memoryTypeLabel(selected.memory_type)}
-            </AppText>
-            {selected.supersedes_id ? (
-              <AppText style={styles.replacementNotice}>
-                {strings.memory.replacementNotice}
-              </AppText>
-            ) : null}
-            {editing ? (
-              <TextInput
-                accessibilityLabel={strings.memory.contentLabel}
-                multiline
-                onChangeText={setDraft}
-                style={[
-                  styles.input,
-                  styles.multilineInput,
-                  { color: colors.text, borderColor: colors.border },
-                ]}
-                testID="memory-edit-input"
-                value={draft}
-              />
-            ) : (
-              <AppText style={styles.memoryContent}>{selected.content}</AppText>
-            )}
-            <View style={styles.actions}>
-              {editing ? (
-                <>
-                  <ActionButton
-                    disabled={saving}
-                    label={saving ? strings.memory.saving : strings.memory.save}
-                    onPress={save}
-                    style={styles.actionHalf}
-                    testID="memory-save"
-                  />
-                  <ActionButton
-                    disabled={saving}
-                    label={strings.memory.cancel}
-                    onPress={() => {
-                      setDraft(selected.content);
-                      setEditing(false);
-                    }}
-                    style={styles.actionHalf}
-                    variant="secondary"
-                    testID="memory-cancel"
-                  />
-                </>
-              ) : (
-                <>
-                  <ActionButton
-                    label={strings.memory.edit}
-                    onPress={() => setEditing(true)}
-                    style={styles.actionHalf}
-                    variant="secondary"
-                    testID="memory-edit"
-                  />
-                  <ActionButton
-                    disabled={saving}
-                    label={strings.memory.delete}
-                    onPress={() => setConfirmation('delete')}
-                    style={styles.actionHalf}
-                    variant="quiet"
-                    testID="memory-delete"
-                  />
-                </>
-              )}
-            </View>
-          </Card>
+          <MemoryDetailCard
+            draft={draft}
+            editing={editing}
+            onCancel={() => {
+              setDraft(selected.content);
+              setEditing(false);
+            }}
+            onDelete={() => setConfirmation('delete')}
+            onDraftChange={setDraft}
+            onEdit={() => setEditing(true)}
+            onSave={save}
+            saving={saving}
+            selected={selected}
+          />
         ) : null}
 
+        {/* Confirmation Modal */}
         {confirmation ? (
-          <Card style={styles.confirmation} testID="memory-confirmation">
-            <AppText style={styles.sectionTitle}>
-              {confirmation === 'delete'
-                ? strings.memory.deleteTitle
-                : strings.memory.deleteAllTitle}
-            </AppText>
-            <AppText>
-              {confirmation === 'delete'
-                ? strings.memory.deleteBody
-                : strings.memory.deleteAllBody}
-            </AppText>
-            <View style={styles.actions}>
-              <ActionButton
-                disabled={saving}
-                label={strings.memory.cancel}
-                onPress={() => setConfirmation(null)}
-                style={styles.actionHalf}
-                variant="secondary"
-                testID="memory-confirm-cancel"
-              />
-              <ActionButton
-                disabled={saving}
-                label={strings.memory.confirmDelete}
-                onPress={confirmation === 'delete' ? removeSelected : removeAll}
-                style={styles.actionHalf}
-                variant="quiet"
-                testID="memory-confirm-delete"
-              />
-            </View>
-          </Card>
+          <MemoryConfirmModal
+            confirmation={confirmation}
+            onCancel={() => setConfirmation(null)}
+            onConfirm={confirmation === 'delete' ? removeSelected : removeAll}
+            saving={saving}
+          />
         ) : null}
       </ScrollView>
     </Screen>
   );
 }
 
-function memoryTypeLabel(type: MemoryItem['memory_type']): string {
-  return type.charAt(0).toUpperCase() + type.slice(1);
-}
-
 const styles = StyleSheet.create({
-  content: { paddingBottom: spacing.xl },
-  body: { marginTop: spacing.sm },
-  card: { marginTop: spacing.md },
-  sectionTitle: { fontWeight: '700' },
-  action: { marginTop: spacing.md },
-  input: {
-    borderRadius: 8,
-    borderWidth: 1,
-    fontSize: typography.body,
-    minHeight: 48,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+  content: {
+    gap: spacing.md,
+    paddingBottom: spacing.xxl,
   },
-  multilineInput: { minHeight: 110, textAlignVertical: 'top' },
-  searchTitle: { marginBottom: spacing.sm },
-  sessionTitle: { marginBottom: spacing.sm },
+  header: {
+    gap: 2,
+    marginBottom: spacing.xs,
+  },
+  overline: {
+    fontSize: typography.caption,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  body: {
+    fontSize: typography.caption,
+    lineHeight: 18,
+    marginTop: 2,
+  },
   listHeader: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: spacing.lg,
+    marginTop: spacing.md,
   },
-  memoryType: {
-    color: '#5D6875',
-    fontSize: typography.label,
+  listTitleContainer: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+  },
+  sectionTitle: {
+    fontSize: typography.subheading,
     fontWeight: '700',
   },
-  memoryContent: { marginTop: spacing.xs },
-  replacementNotice: { color: '#805A00', fontSize: typography.label },
-  actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
-  actionHalf: { flex: 1 },
-  confirmation: { borderColor: '#B42318' },
+  countBadge: {
+    borderRadius: radii.pill,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+  },
+  countText: {
+    fontSize: typography.caption,
+    fontWeight: '700',
+  },
+  loadingText: {
+    fontSize: typography.body,
+    paddingVertical: spacing.md,
+  },
 });

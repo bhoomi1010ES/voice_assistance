@@ -7,14 +7,11 @@ import React, {
 } from 'react';
 import {
   Linking,
-  Modal,
   PermissionsAndroid,
   Platform,
-  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
-  TextInput,
   View,
 } from 'react-native';
 import { useAuth } from '../auth/AuthProvider';
@@ -22,13 +19,12 @@ import { safeUserMessage, toClientError } from '../api/errors';
 import {
   ActionButton,
   AppText,
-  Card,
   Heading,
   Screen,
   StatusBanner,
 } from '../components/ui/Primitives';
 import { useAppTheme } from '../design/ThemeProvider';
-import { spacing, typography } from '../design/tokens';
+import { radii, spacing, typography } from '../theme';
 import { strings } from '../i18n/strings';
 import {
   completeTask,
@@ -42,45 +38,34 @@ import {
   updateTask,
 } from '../tasks/api';
 import {
-  dateInputForOffset,
   buildLocalDateTime,
+  dateInputForOffset,
   deviceTimezone,
-  formatScheduledTime,
   localInputParts,
   recurrenceChoice,
   recurrenceRule,
-  schedulePreview,
 } from '../tasks/scheduling';
-import { Reminder, Task, TaskPriority } from '../tasks/types';
+import { Reminder, Task } from '../tasks/types';
 
-type Page = 'tasks' | 'reminders';
-type TaskFilter = 'upcoming' | 'all' | 'completed';
-type ReminderFilter = 'upcoming' | 'all' | 'sent' | 'failed';
-type FormMode = 'create' | 'edit';
-type Confirmation =
-  | { kind: 'todo-delete'; id: string; label: string }
-  | { kind: 'todo-complete'; id: string; label: string }
-  | { kind: 'reminder-delete'; id: string; label: string };
-
-type TaskDraft = {
-  title: string;
-  description: string;
-  date: string;
-  time: string;
-  timezone: string;
-  priority: TaskPriority;
-};
-
-type ReminderDraft = {
-  title: string;
-  body: string;
-  date: string;
-  time: string;
-  timezone: string;
-  recurrence: 'none' | 'daily' | 'weekly';
-};
+import { TaskItemCard } from '../components/tasks/TaskItemCard';
+import { ReminderItemCard } from '../components/tasks/ReminderItemCard';
+import {
+  Page,
+  ReminderFilter,
+  TaskFilter,
+  TaskFilterChips,
+} from '../components/tasks/TaskFilterChips';
+import { TaskDraft, TaskEditorModal } from '../components/tasks/TaskEditorModal';
+import {
+  ReminderDraft,
+  ReminderEditorModal,
+} from '../components/tasks/ReminderEditorModal';
+import { TaskEmptyState } from '../components/tasks/TaskEmptyState';
+import { PushPermissionCard } from '../components/tasks/PushPermissionCard';
+import { Confirmation, ConfirmModal } from '../components/tasks/ConfirmModal';
 
 const PHASE7_RECURRENCE_ACCEPTED = true;
+
 const EMPTY_TASK_DRAFT: TaskDraft = {
   title: '',
   description: '',
@@ -89,6 +74,7 @@ const EMPTY_TASK_DRAFT: TaskDraft = {
   timezone: deviceTimezone(),
   priority: 'normal',
 };
+
 const EMPTY_REMINDER_DRAFT: ReminderDraft = {
   title: '',
   body: '',
@@ -100,6 +86,8 @@ const EMPTY_REMINDER_DRAFT: ReminderDraft = {
 
 export function TasksScreen() {
   const { controller, profile } = useAuth();
+  const { colors } = useAppTheme();
+
   const [page, setPage] = useState<Page>('tasks');
   const [taskFilter, setTaskFilter] = useState<TaskFilter>('upcoming');
   const [reminderFilter, setReminderFilter] =
@@ -113,23 +101,20 @@ export function TasksScreen() {
     text: string;
     error?: boolean;
   } | null>(null);
+
   const [taskForm, setTaskForm] = useState<TaskDraft>(EMPTY_TASK_DRAFT);
   const [reminderForm, setReminderForm] =
     useState<ReminderDraft>(EMPTY_REMINDER_DRAFT);
-  const [taskFormMode, setTaskFormMode] = useState<FormMode>('create');
-  const [reminderFormMode, setReminderFormMode] = useState<FormMode>('create');
+  const [taskFormMode, setTaskFormMode] = useState<'create' | 'edit'>('create');
+  const [reminderFormMode, setReminderFormMode] = useState<'create' | 'edit'>('create');
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
-  const [editingReminderId, setEditingReminderId] = useState<string | null>(
-    null,
-  );
+  const [editingReminderId, setEditingReminderId] = useState<string | null>(null);
   const [taskFormOpen, setTaskFormOpen] = useState(false);
   const [reminderFormOpen, setReminderFormOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-  const [pushState, setPushState] = useState<'unknown' | 'granted' | 'denied'>(
-    'unknown',
-  );
-  const actionKeys = useRef(new Set<string>());
+  const [pushState, setPushState] = useState<'unknown' | 'granted' | 'denied'>('unknown');
 
+  const actionKeys = useRef(new Set<string>());
   const userTimezone = profile?.timezone || deviceTimezone();
 
   const runOnce = useCallback(
@@ -202,6 +187,21 @@ export function TasksScreen() {
     if (reminderFilter === 'all') return reminders;
     return reminders.filter(reminder => reminder.status === reminderFilter);
   }, [reminderFilter, reminders]);
+
+  const taskCounts = useMemo(() => {
+    const upcoming = tasks.filter(
+      t => t.status !== 'completed' && t.status !== 'cancelled',
+    ).length;
+    const completed = tasks.filter(t => t.status === 'completed').length;
+    return { upcoming, all: tasks.length, completed };
+  }, [tasks]);
+
+  const reminderCounts = useMemo(() => {
+    const upcoming = reminders.filter(r => r.status === 'scheduled').length;
+    const sent = reminders.filter(r => r.status === 'sent').length;
+    const failed = reminders.filter(r => r.status === 'failed').length;
+    return { upcoming, all: reminders.length, sent, failed };
+  }, [reminders]);
 
   const openCreateTask = () => {
     setTaskForm({ ...EMPTY_TASK_DRAFT, timezone: userTimezone });
@@ -373,6 +373,90 @@ export function TasksScreen() {
     }
   };
 
+  // Agenda Grouping: Safely groups tasks by date using device-aware scheduling helpers
+  const groupedTasks = useMemo(() => {
+    if (taskFilter === 'completed') {
+      return [{ key: 'completed', title: 'COMPLETED', dotColor: colors.success, items: visibleTasks }];
+    }
+
+    const today = dateInputForOffset(0);
+    const tomorrow = dateInputForOffset(1);
+
+    const buckets: Record<string, Task[]> = {
+      today: [],
+      tomorrow: [],
+      upcoming: [],
+      past: [],
+      noDate: [],
+    };
+
+    visibleTasks.forEach(task => {
+      if (!task.due_at) {
+        buckets.noDate.push(task);
+        return;
+      }
+      const parts = localInputParts(task.due_at, task.timezone);
+      if (!parts.date) {
+        buckets.noDate.push(task);
+      } else if (parts.date === today) {
+        buckets.today.push(task);
+      } else if (parts.date === tomorrow) {
+        buckets.tomorrow.push(task);
+      } else if (parts.date > tomorrow) {
+        buckets.upcoming.push(task);
+      } else {
+        buckets.past.push(task);
+      }
+    });
+
+    const sections = [
+      { key: 'today', title: 'TODAY', dotColor: colors.primary, items: buckets.today },
+      { key: 'tomorrow', title: 'TOMORROW', dotColor: colors.secondary, items: buckets.tomorrow },
+      { key: 'upcoming', title: 'UPCOMING', dotColor: colors.tertiary, items: buckets.upcoming },
+      { key: 'past', title: 'PAST DUE', dotColor: colors.warning, items: buckets.past },
+      { key: 'noDate', title: 'NO DUE DATE', dotColor: colors.disabled, items: buckets.noDate },
+    ];
+
+    return sections.filter(section => section.items.length > 0);
+  }, [visibleTasks, taskFilter, colors]);
+
+  // Agenda Grouping: Safely groups reminders by date
+  const groupedReminders = useMemo(() => {
+    const today = dateInputForOffset(0);
+    const tomorrow = dateInputForOffset(1);
+
+    const buckets: Record<string, Reminder[]> = {
+      today: [],
+      tomorrow: [],
+      upcoming: [],
+      past: [],
+    };
+
+    visibleReminders.forEach(reminder => {
+      const parts = localInputParts(reminder.trigger_at, reminder.timezone);
+      if (!parts.date) {
+        buckets.upcoming.push(reminder);
+      } else if (parts.date === today) {
+        buckets.today.push(reminder);
+      } else if (parts.date === tomorrow) {
+        buckets.tomorrow.push(reminder);
+      } else if (parts.date > tomorrow) {
+        buckets.upcoming.push(reminder);
+      } else {
+        buckets.past.push(reminder);
+      }
+    });
+
+    const sections = [
+      { key: 'today', title: 'TODAY', dotColor: colors.primary, items: buckets.today },
+      { key: 'tomorrow', title: 'TOMORROW', dotColor: colors.secondary, items: buckets.tomorrow },
+      { key: 'upcoming', title: 'UPCOMING', dotColor: colors.tertiary, items: buckets.upcoming },
+      { key: 'past', title: 'PREVIOUS', dotColor: colors.disabled, items: buckets.past },
+    ];
+
+    return sections.filter(section => section.items.length > 0);
+  }, [visibleReminders, colors]);
+
   return (
     <Screen testID="tasks-screen">
       <ScrollView
@@ -384,99 +468,217 @@ export function TasksScreen() {
           />
         }
       >
-        <Heading>{strings.tasks.title}</Heading>
-        <AppText style={styles.subtitle}>{strings.tasks.body}</AppText>
+        {/* Stitch-inspired Hero Header */}
+        <View style={styles.header}>
+          <View style={styles.titleArea}>
+            <AppText style={[styles.overline, { color: colors.primary }]}>
+              AGENDA
+            </AppText>
+            <Heading>{strings.tasks.title}</Heading>
+            <AppText style={[styles.subtitle, { color: colors.textMuted }]}>
+              {page === 'tasks'
+                ? `${taskCounts.upcoming} upcoming • ${taskCounts.all} total`
+                : `${reminderCounts.upcoming} scheduled • ${reminderCounts.all} total`}
+            </AppText>
+          </View>
 
-        <View style={styles.pageTabs} accessibilityRole="tablist">
-          <TabButton
-            label={strings.tasks.tasksTab}
-            selected={page === 'tasks'}
-            onPress={() => setPage('tasks')}
-            testID="tasks-tab"
-          />
-          <TabButton
-            label={strings.tasks.remindersTab}
-            selected={page === 'reminders'}
-            onPress={() => setPage('reminders')}
-            testID="reminders-tab"
-          />
+          {/* Floating/Primary Add Action */}
+          <View style={styles.headerActionArea}>
+            {page === 'tasks' ? (
+              <ActionButton
+                label={strings.tasks.createTask}
+                onPress={openCreateTask}
+                testID="todo-create"
+              />
+            ) : (
+              <ActionButton
+                label={strings.tasks.createReminder}
+                onPress={openCreateReminder}
+                testID="reminder-create"
+              />
+            )}
+          </View>
         </View>
+
+        {/* Dual-Mode Segmented Tabs & Filter Chips */}
+        <TaskFilterChips
+          onPageChange={setPage}
+          onReminderFilterChange={setReminderFilter}
+          onTaskFilterChange={setTaskFilter}
+          page={page}
+          reminderCounts={reminderCounts}
+          reminderFilter={reminderFilter}
+          taskCounts={taskCounts}
+          taskFilter={taskFilter}
+        />
 
         {notice ? (
           <StatusBanner tone={notice.error ? 'error' : 'info'}>
             {notice.text}
           </StatusBanner>
         ) : null}
+
         {loading ? (
-          <AppText testID="tasks-loading">{strings.tasks.loading}</AppText>
+          <AppText style={styles.loadingText} testID="tasks-loading">
+            {strings.tasks.loading}
+          </AppText>
         ) : null}
 
         {page === 'tasks' ? (
-          <TaskPage
-            filter={taskFilter}
-            tasks={visibleTasks}
-            busyKey={busyKey}
-            onFilter={setTaskFilter}
-            onCreate={openCreateTask}
-            onEdit={openEditTask}
-            onComplete={task =>
-              setConfirmation({
-                kind: 'todo-complete',
-                id: task.id,
-                label: task.title,
-              })
-            }
-            onDelete={task =>
-              setConfirmation({
-                kind: 'todo-delete',
-                id: task.id,
-                label: task.title,
-              })
-            }
-          />
+          <View style={styles.listContainer}>
+            {groupedTasks.length > 0 ? (
+              groupedTasks.map(section => (
+                <View key={section.key} style={styles.section}>
+                  <View style={styles.sectionHeader}>
+                    <View
+                      style={[
+                        styles.sectionDot,
+                        { backgroundColor: section.dotColor },
+                      ]}
+                    />
+                    <AppText
+                      style={[
+                        styles.sectionTitle,
+                        { color: colors.textMuted },
+                      ]}
+                    >
+                      {section.title}
+                    </AppText>
+                    <AppText
+                      style={[
+                        styles.sectionCount,
+                        { color: colors.textSubtle },
+                      ]}
+                    >
+                      {section.items.length}{' '}
+                      {section.items.length === 1 ? 'task' : 'tasks'}
+                    </AppText>
+                  </View>
+                  {section.items.map(task => (
+                    <TaskItemCard
+                      busy={busyKey !== null}
+                      key={task.id}
+                      onComplete={t =>
+                        setConfirmation({
+                          kind: 'todo-complete',
+                          id: t.id,
+                          label: t.title,
+                        })
+                      }
+                      onDelete={t =>
+                        setConfirmation({
+                          kind: 'todo-delete',
+                          id: t.id,
+                          label: t.title,
+                        })
+                      }
+                      onEdit={openEditTask}
+                      task={task}
+                    />
+                  ))}
+                </View>
+              ))
+            ) : (
+              <TaskEmptyState
+                hint="Capture tasks naturally with voice anytime."
+                testID="tasks-empty"
+                text={strings.tasks.emptyTasks}
+                title="All caught up!"
+              />
+            )}
+          </View>
         ) : (
-          <ReminderPage
-            filter={reminderFilter}
-            reminders={visibleReminders}
-            busyKey={busyKey}
-            onFilter={setReminderFilter}
-            onCreate={openCreateReminder}
-            onEdit={openEditReminder}
-            onDelete={reminder =>
-              setConfirmation({
-                kind: 'reminder-delete',
-                id: reminder.id,
-                label: reminder.title,
-              })
-            }
-            pushState={pushState}
-            onRequestPush={requestPushPermission}
-            onOpenSettings={() => Linking.openSettings().catch(() => undefined)}
-          />
+          <View style={styles.listContainer}>
+            <PushPermissionCard
+              onOpenSettings={() =>
+                Linking.openSettings().catch(() => undefined)
+              }
+              onRequest={requestPushPermission}
+              state={pushState}
+            />
+
+            {groupedReminders.length > 0 ? (
+              groupedReminders.map(section => (
+                <View key={section.key} style={styles.section}>
+                  <View style={styles.sectionHeader}>
+                    <View
+                      style={[
+                        styles.sectionDot,
+                        { backgroundColor: section.dotColor },
+                      ]}
+                    />
+                    <AppText
+                      style={[
+                        styles.sectionTitle,
+                        { color: colors.textMuted },
+                      ]}
+                    >
+                      {section.title}
+                    </AppText>
+                    <AppText
+                      style={[
+                        styles.sectionCount,
+                        { color: colors.textSubtle },
+                      ]}
+                    >
+                      {section.items.length}{' '}
+                      {section.items.length === 1 ? 'reminder' : 'reminders'}
+                    </AppText>
+                  </View>
+                  {section.items.map(reminder => (
+                    <ReminderItemCard
+                      busy={busyKey !== null}
+                      key={reminder.id}
+                      onDelete={r =>
+                        setConfirmation({
+                          kind: 'reminder-delete',
+                          id: r.id,
+                          label: r.title,
+                        })
+                      }
+                      onEdit={openEditReminder}
+                      reminder={reminder}
+                    />
+                  ))}
+                </View>
+              ))
+            ) : (
+              <TaskEmptyState
+                hint="Say 'Remind me tomorrow at 9 AM' to create a reminder."
+                testID="reminders-empty"
+                text={strings.tasks.emptyReminders}
+                title="No reminders scheduled"
+              />
+            )}
+          </View>
         )}
       </ScrollView>
 
-      <TaskFormModal
-        visible={taskFormOpen}
-        mode={taskFormMode}
+      {/* Create / Edit Modals */}
+      <TaskEditorModal
         draft={taskForm}
-        saving={busyKey?.startsWith('todo-save-') ?? false}
+        mode={taskFormMode}
         onChange={setTaskForm}
         onClose={() => setTaskFormOpen(false)}
         onSave={saveTask}
+        saving={busyKey?.startsWith('todo-save-') ?? false}
+        visible={taskFormOpen}
       />
-      <ReminderFormModal
-        visible={reminderFormOpen}
-        mode={reminderFormMode}
+
+      <ReminderEditorModal
         draft={reminderForm}
-        saving={busyKey?.startsWith('reminder-save-') ?? false}
+        mode={reminderFormMode}
         onChange={setReminderForm}
         onClose={() => setReminderFormOpen(false)}
         onSave={saveReminder}
+        saving={busyKey?.startsWith('reminder-save-') ?? false}
+        visible={reminderFormOpen}
       />
+
+      {/* Confirmation Modal */}
       <ConfirmModal
-        confirmation={confirmation}
         busy={busyKey !== null}
+        confirmation={confirmation}
         onCancel={() => setConfirmation(null)}
         onConfirm={resolveConfirmation}
       />
@@ -484,666 +686,61 @@ export function TasksScreen() {
   );
 }
 
-function TaskPage({
-  filter,
-  tasks,
-  busyKey,
-  onFilter,
-  onCreate,
-  onEdit,
-  onComplete,
-  onDelete,
-}: {
-  filter: TaskFilter;
-  tasks: Task[];
-  busyKey: string | null;
-  onFilter: (value: TaskFilter) => void;
-  onCreate: () => void;
-  onEdit: (task: Task) => void;
-  onComplete: (task: Task) => void;
-  onDelete: (task: Task) => void;
-}) {
-  return (
-    <View>
-      <View style={styles.filterRow} accessibilityRole="tablist">
-        <TabButton
-          label={strings.tasks.upcoming}
-          selected={filter === 'upcoming'}
-          onPress={() => onFilter('upcoming')}
-          testID="tasks-filter-upcoming"
-        />
-        <TabButton
-          label={strings.tasks.all}
-          selected={filter === 'all'}
-          onPress={() => onFilter('all')}
-          testID="tasks-filter-all"
-        />
-        <TabButton
-          label={strings.tasks.completed}
-          selected={filter === 'completed'}
-          onPress={() => onFilter('completed')}
-          testID="tasks-filter-completed"
-        />
-      </View>
-      <ActionButton
-        label={strings.tasks.createTask}
-        onPress={onCreate}
-        testID="todo-create"
-      />
-      {tasks.length ? (
-        tasks.map(task => (
-          <TaskCard
-            key={task.id}
-            task={task}
-            busy={busyKey !== null}
-            onEdit={onEdit}
-            onComplete={onComplete}
-            onDelete={onDelete}
-          />
-        ))
-      ) : (
-        <EmptyState text={strings.tasks.emptyTasks} testID="tasks-empty" />
-      )}
-    </View>
-  );
-}
-
-function ReminderPage({
-  filter,
-  reminders,
-  busyKey,
-  onFilter,
-  onCreate,
-  onEdit,
-  onDelete,
-  pushState,
-  onRequestPush,
-  onOpenSettings,
-}: {
-  filter: ReminderFilter;
-  reminders: Reminder[];
-  busyKey: string | null;
-  onFilter: (value: ReminderFilter) => void;
-  onCreate: () => void;
-  onEdit: (reminder: Reminder) => void;
-  onDelete: (reminder: Reminder) => void;
-  pushState: 'unknown' | 'granted' | 'denied';
-  onRequestPush: () => void;
-  onOpenSettings: () => void;
-}) {
-  return (
-    <View>
-      <PushPermissionCard
-        state={pushState}
-        onRequest={onRequestPush}
-        onOpenSettings={onOpenSettings}
-      />
-      <View style={styles.filterRow} accessibilityRole="tablist">
-        <TabButton
-          label={strings.tasks.upcoming}
-          selected={filter === 'upcoming'}
-          onPress={() => onFilter('upcoming')}
-          testID="reminders-filter-upcoming"
-        />
-        <TabButton
-          label={strings.tasks.all}
-          selected={filter === 'all'}
-          onPress={() => onFilter('all')}
-          testID="reminders-filter-all"
-        />
-        <TabButton
-          label={strings.tasks.sent}
-          selected={filter === 'sent'}
-          onPress={() => onFilter('sent')}
-          testID="reminders-filter-sent"
-        />
-        <TabButton
-          label={strings.tasks.failed}
-          selected={filter === 'failed'}
-          onPress={() => onFilter('failed')}
-          testID="reminders-filter-failed"
-        />
-      </View>
-      <ActionButton
-        label={strings.tasks.createReminder}
-        onPress={onCreate}
-        testID="reminder-create"
-      />
-      {reminders.length ? (
-        reminders.map(reminder => (
-          <ReminderCard
-            key={reminder.id}
-            reminder={reminder}
-            busy={busyKey !== null}
-            onEdit={onEdit}
-            onDelete={onDelete}
-          />
-        ))
-      ) : (
-        <EmptyState
-          text={strings.tasks.emptyReminders}
-          testID="reminders-empty"
-        />
-      )}
-    </View>
-  );
-}
-
-function TaskCard({
-  task,
-  busy,
-  onEdit,
-  onComplete,
-  onDelete,
-}: {
-  task: Task;
-  busy: boolean;
-  onEdit: (task: Task) => void;
-  onComplete: (task: Task) => void;
-  onDelete: (task: Task) => void;
-}) {
-  return (
-    <Card style={styles.itemCard} testID={`todo-${task.id}`}>
-      <AppText style={styles.itemTitle}>{task.title}</AppText>
-      {task.description ? <AppText>{task.description}</AppText> : null}
-      <AppText style={styles.meta}>
-        {task.status} · {task.priority}
-      </AppText>
-      <AppText style={styles.schedule}>
-        {formatScheduledTime(task.due_at, task.timezone)} · {task.timezone}
-      </AppText>
-      <View style={styles.itemActions}>
-        {task.status !== 'completed' ? (
-          <ActionButton
-            label={strings.tasks.complete}
-            onPress={() => onComplete(task)}
-            disabled={busy}
-            variant="secondary"
-            testID={`todo-complete-${task.id}`}
-          />
-        ) : null}
-        <ActionButton
-          label={strings.tasks.edit}
-          onPress={() => onEdit(task)}
-          disabled={busy}
-          variant="quiet"
-          testID={`todo-edit-${task.id}`}
-        />
-        <ActionButton
-          label={strings.tasks.delete}
-          onPress={() => onDelete(task)}
-          disabled={busy}
-          variant="quiet"
-          testID={`todo-delete-${task.id}`}
-        />
-      </View>
-    </Card>
-  );
-}
-
-function ReminderCard({
-  reminder,
-  busy,
-  onEdit,
-  onDelete,
-}: {
-  reminder: Reminder;
-  busy: boolean;
-  onEdit: (reminder: Reminder) => void;
-  onDelete: (reminder: Reminder) => void;
-}) {
-  return (
-    <Card style={styles.itemCard} testID={`reminder-${reminder.id}`}>
-      <AppText style={styles.itemTitle}>{reminder.title}</AppText>
-      {reminder.body ? <AppText>{reminder.body}</AppText> : null}
-      <AppText style={styles.meta}>
-        {reminder.status}
-        {reminder.recurrence_rule ? ` · ${reminder.recurrence_rule}` : ''}
-      </AppText>
-      <AppText style={styles.schedule}>
-        {formatScheduledTime(reminder.trigger_at, reminder.timezone)} ·{' '}
-        {reminder.timezone}
-      </AppText>
-      {reminder.status === 'failed' ? (
-        <StatusBanner tone="error">{strings.tasks.deliveryFailed}</StatusBanner>
-      ) : null}
-      <View style={styles.itemActions}>
-        {reminder.status === 'scheduled' ? (
-          <ActionButton
-            label={strings.tasks.edit}
-            onPress={() => onEdit(reminder)}
-            disabled={busy}
-            variant="secondary"
-            testID={`reminder-edit-${reminder.id}`}
-          />
-        ) : null}
-        {reminder.status === 'scheduled' ? (
-          <ActionButton
-            label={strings.tasks.cancelReminder}
-            onPress={() => onDelete(reminder)}
-            disabled={busy}
-            variant="quiet"
-            testID={`reminder-delete-${reminder.id}`}
-          />
-        ) : null}
-      </View>
-    </Card>
-  );
-}
-
-function PushPermissionCard({
-  state,
-  onRequest,
-  onOpenSettings,
-}: {
-  state: 'unknown' | 'granted' | 'denied';
-  onRequest: () => void;
-  onOpenSettings: () => void;
-}) {
-  return (
-    <Card style={styles.pushCard} testID="push-permission-card">
-      <AppText style={styles.itemTitle}>{strings.tasks.pushTitle}</AppText>
-      <AppText>
-        {state === 'granted'
-          ? strings.tasks.pushEnabled
-          : state === 'denied'
-          ? strings.tasks.pushDenied
-          : strings.tasks.pushDescription}
-      </AppText>
-      {state === 'denied' ? (
-        <ActionButton
-          label={strings.tasks.openSettings}
-          onPress={onOpenSettings}
-          variant="secondary"
-          testID="push-open-settings"
-        />
-      ) : state !== 'granted' ? (
-        <ActionButton
-          label={strings.tasks.enablePush}
-          onPress={onRequest}
-          variant="secondary"
-          testID="push-enable"
-        />
-      ) : null}
-    </Card>
-  );
-}
-
-function TaskFormModal({
-  visible,
-  mode,
-  draft,
-  saving,
-  onChange,
-  onClose,
-  onSave,
-}: {
-  visible: boolean;
-  mode: FormMode;
-  draft: TaskDraft;
-  saving: boolean;
-  onChange: (value: TaskDraft) => void;
-  onClose: () => void;
-  onSave: () => void;
-}) {
-  return (
-    <Modal animationType="slide" onRequestClose={onClose} visible={visible}>
-      <Screen>
-        <ScrollView contentContainerStyle={styles.modalContent}>
-          <Heading>
-            {mode === 'create'
-              ? strings.tasks.createTask
-              : strings.tasks.editTask}
-          </Heading>
-          <Field
-            label={strings.tasks.titleLabel}
-            value={draft.title}
-            onChangeText={title => onChange({ ...draft, title })}
-            testID="todo-title-input"
-          />
-          <Field
-            label={strings.tasks.descriptionLabel}
-            value={draft.description}
-            onChangeText={description => onChange({ ...draft, description })}
-            multiline
-            testID="todo-description-input"
-          />
-          <ScheduleFields draft={draft} onChange={onChange} prefix="task" />
-          <AppText style={styles.previewLabel}>{strings.tasks.preview}</AppText>
-          <AppText testID="todo-schedule-preview">
-            {schedulePreview(draft.date, draft.time, draft.timezone)}
-          </AppText>
-          <View style={styles.modalActions}>
-            <ActionButton
-              label={strings.tasks.cancel}
-              onPress={onClose}
-              variant="quiet"
-            />
-            <ActionButton
-              label={saving ? strings.tasks.saving : strings.tasks.save}
-              onPress={onSave}
-              disabled={saving}
-              testID="todo-save"
-            />
-          </View>
-        </ScrollView>
-      </Screen>
-    </Modal>
-  );
-}
-
-function ReminderFormModal({
-  visible,
-  mode,
-  draft,
-  saving,
-  onChange,
-  onClose,
-  onSave,
-}: {
-  visible: boolean;
-  mode: FormMode;
-  draft: ReminderDraft;
-  saving: boolean;
-  onChange: (value: ReminderDraft) => void;
-  onClose: () => void;
-  onSave: () => void;
-}) {
-  return (
-    <Modal animationType="slide" onRequestClose={onClose} visible={visible}>
-      <Screen>
-        <ScrollView contentContainerStyle={styles.modalContent}>
-          <Heading>
-            {mode === 'create'
-              ? strings.tasks.createReminder
-              : strings.tasks.editReminder}
-          </Heading>
-          <Field
-            label={strings.tasks.titleLabel}
-            value={draft.title}
-            onChangeText={title => onChange({ ...draft, title })}
-            testID="reminder-title-input"
-          />
-          <Field
-            label={strings.tasks.bodyLabel}
-            value={draft.body}
-            onChangeText={body => onChange({ ...draft, body })}
-            multiline
-            testID="reminder-body-input"
-          />
-          <ScheduleFields draft={draft} onChange={onChange} prefix="reminder" />
-          <AppText style={styles.previewLabel}>{strings.tasks.preview}</AppText>
-          <AppText testID="reminder-schedule-preview">
-            {schedulePreview(draft.date, draft.time, draft.timezone)}
-          </AppText>
-          <AppText style={styles.previewHelp}>
-            {strings.tasks.serverValidation}
-          </AppText>
-          {PHASE7_RECURRENCE_ACCEPTED ? (
-            <View style={styles.recurrence}>
-              <AppText style={styles.fieldLabel}>
-                {strings.tasks.recurrence}
-              </AppText>
-              {(['none', 'daily', 'weekly'] as const).map(choice => (
-                <ActionButton
-                  key={choice}
-                  label={choice}
-                  onPress={() => onChange({ ...draft, recurrence: choice })}
-                  variant={
-                    draft.recurrence === choice ? 'primary' : 'secondary'
-                  }
-                  testID={`recurrence-${choice}`}
-                />
-              ))}
-            </View>
-          ) : null}
-          <View style={styles.modalActions}>
-            <ActionButton
-              label={strings.tasks.cancel}
-              onPress={onClose}
-              variant="quiet"
-            />
-            <ActionButton
-              label={saving ? strings.tasks.saving : strings.tasks.save}
-              onPress={onSave}
-              disabled={saving}
-              testID="reminder-save"
-            />
-          </View>
-        </ScrollView>
-      </Screen>
-    </Modal>
-  );
-}
-
-function ScheduleFields<
-  T extends { date: string; time: string; timezone: string },
->({
-  draft,
-  onChange,
-  prefix,
-}: {
-  draft: T;
-  onChange: (value: T) => void;
-  prefix: string;
-}) {
-  return (
-    <>
-      <Field
-        label={strings.tasks.dateLabel}
-        value={draft.date}
-        placeholder="YYYY-MM-DD"
-        onChangeText={date => onChange({ ...draft, date })}
-        testID={`${prefix}-date-input`}
-      />
-      <View style={styles.quickDateRow}>
-        <ActionButton
-          label={strings.tasks.tomorrow}
-          onPress={() => onChange({ ...draft, date: dateInputForOffset(1) })}
-          variant="secondary"
-          testID={`${prefix}-tomorrow`}
-        />
-      </View>
-      <Field
-        label={strings.tasks.timeLabel}
-        value={draft.time}
-        placeholder="HH:mm"
-        onChangeText={time => onChange({ ...draft, time })}
-        testID={`${prefix}-time-input`}
-      />
-      <Field
-        label={strings.tasks.timezoneLabel}
-        value={draft.timezone}
-        onChangeText={timezone => onChange({ ...draft, timezone })}
-        testID={`${prefix}-timezone-input`}
-      />
-    </>
-  );
-}
-
-function Field({
-  label,
-  value,
-  onChangeText,
-  testID,
-  placeholder,
-  multiline = false,
-}: {
-  label: string;
-  value: string;
-  onChangeText: (value: string) => void;
-  testID: string;
-  placeholder?: string;
-  multiline?: boolean;
-}) {
-  const { colors } = useAppTheme();
-  return (
-    <View style={styles.field}>
-      <AppText style={styles.fieldLabel}>{label}</AppText>
-      <TextInput
-        accessibilityLabel={label}
-        multiline={multiline}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor={colors.textMuted}
-        style={[
-          styles.input,
-          { color: colors.text, borderColor: colors.border },
-        ]}
-        testID={testID}
-        value={value}
-      />
-    </View>
-  );
-}
-
-function ConfirmModal({
-  confirmation,
-  busy,
-  onCancel,
-  onConfirm,
-}: {
-  confirmation: Confirmation | null;
-  busy: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <Modal
-      animationType="fade"
-      onRequestClose={onCancel}
-      transparent
-      visible={Boolean(confirmation)}
-    >
-      <View style={styles.confirmOverlay}>
-        <Card style={styles.confirmCard}>
-          <Heading>{strings.tasks.confirmTitle}</Heading>
-          <AppText>
-            {confirmation
-              ? `${strings.tasks.confirmBody} “${confirmation.label}”`
-              : ''}
-          </AppText>
-          <View style={styles.modalActions}>
-            <ActionButton
-              label={strings.tasks.cancel}
-              onPress={onCancel}
-              variant="quiet"
-              testID="action-cancel"
-            />
-            <ActionButton
-              label={strings.tasks.confirm}
-              onPress={onConfirm}
-              disabled={busy}
-              testID="action-confirm"
-            />
-          </View>
-        </Card>
-      </View>
-    </Modal>
-  );
-}
-
-function TabButton({
-  label,
-  selected,
-  onPress,
-  testID,
-}: {
-  label: string;
-  selected: boolean;
-  onPress: () => void;
-  testID: string;
-}) {
-  const { colors } = useAppTheme();
-  return (
-    <Pressable
-      accessibilityRole="tab"
-      accessibilityState={{ selected }}
-      onPress={onPress}
-      style={[
-        styles.tab,
-        {
-          borderColor: colors.border,
-          backgroundColor: selected ? colors.accent : colors.surfaceMuted,
-        },
-      ]}
-      testID={testID}
-    >
-      <AppText style={{ color: selected ? colors.accentText : colors.text }}>
-        {label}
-      </AppText>
-    </Pressable>
-  );
-}
-
-function EmptyState({ text, testID }: { text: string; testID: string }) {
-  return (
-    <Card style={styles.empty} testID={testID}>
-      <AppText>{text}</AppText>
-    </Card>
-  );
-}
-
 const styles = StyleSheet.create({
-  content: { gap: spacing.md, paddingBottom: spacing.xxl },
-  subtitle: { color: '#5D6875' },
-  pageTabs: { flexDirection: 'row', gap: spacing.sm },
-  filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  tab: {
-    borderRadius: 999,
-    borderWidth: 1,
-    minHeight: 44,
-    justifyContent: 'center',
-    paddingHorizontal: spacing.md,
+  content: {
+    gap: spacing.md,
+    paddingBottom: spacing.xxl,
   },
-  itemCard: { gap: spacing.sm, marginTop: spacing.md },
-  pushCard: { gap: spacing.sm, marginTop: spacing.md },
-  itemTitle: { fontSize: typography.heading, fontWeight: '700' },
-  meta: {
-    color: '#5D6875',
-    fontSize: typography.caption,
-    textTransform: 'capitalize',
-  },
-  schedule: { fontWeight: '600' },
-  itemActions: {
+  header: {
+    alignItems: 'flex-start',
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    justifyContent: 'space-between',
     gap: spacing.sm,
-    marginTop: spacing.sm,
   },
-  empty: { marginTop: spacing.md },
-  field: { gap: spacing.xs, marginTop: spacing.md },
-  fieldLabel: { fontWeight: '700' },
-  input: {
-    borderRadius: 10,
-    borderWidth: 1,
+  titleArea: {
+    flex: 1,
+    gap: 2,
+  },
+  overline: {
+    fontSize: typography.caption,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  subtitle: {
+    fontSize: typography.caption,
+  },
+  headerActionArea: {
+    alignItems: 'flex-end',
+  },
+  loadingText: {
     fontSize: typography.body,
-    minHeight: 48,
-    paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
-  quickDateRow: { alignItems: 'flex-start', marginTop: spacing.sm },
-  previewLabel: { fontWeight: '700', marginTop: spacing.lg },
-  previewHelp: {
-    color: '#5D6875',
-    fontSize: typography.caption,
+  listContainer: {
+    gap: spacing.md,
+  },
+  section: {
+    gap: spacing.xs,
     marginTop: spacing.xs,
   },
-  recurrence: { gap: spacing.sm, marginTop: spacing.lg },
-  modalContent: { paddingBottom: spacing.xxl },
-  modalActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-    justifyContent: 'flex-end',
-    marginTop: spacing.lg,
-  },
-  confirmOverlay: {
+  sectionHeader: {
     alignItems: 'center',
-    backgroundColor: '#00000066',
-    flex: 1,
-    justifyContent: 'center',
-    padding: spacing.lg,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    paddingHorizontal: 2,
   },
-  confirmCard: { gap: spacing.md, width: '100%' },
+  sectionDot: {
+    borderRadius: radii.full,
+    height: 8,
+    width: 8,
+  },
+  sectionTitle: {
+    fontSize: typography.caption,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+  },
+  sectionCount: {
+    fontSize: typography.caption,
+    marginLeft: 'auto',
+  },
 });

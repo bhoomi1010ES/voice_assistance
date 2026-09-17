@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { strings } from '../i18n/strings';
 import { AppText } from '../components/ui/Primitives';
+import { BottomTabBar, PrimaryTabRoute } from '../components/navigation/BottomTabBar';
 import { AssistantScreen } from '../screens/AssistantScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
 import { DiagnosticScreen } from '../screens/DiagnosticScreen';
@@ -13,9 +14,9 @@ import { TasksScreen } from '../screens/TasksScreen';
 import { useAuth } from '../auth/AuthProvider';
 import { useVoiceSocket } from '../voice/VoiceSocketProvider';
 import { useAppTheme } from '../design/ThemeProvider';
-import { radii, spacing, typography } from '../design/tokens';
+import { radii, shadows, spacing, typography } from '../design/tokens';
 
-type MainRoute =
+export type MainRoute =
   | 'assistant'
   | 'settings'
   | 'diagnostics'
@@ -30,19 +31,40 @@ export function MainNavigator() {
   const { colors } = useAppTheme();
   const insets = useSafeAreaInsets();
   const [route, setRoute] = useState<MainRoute>('assistant');
-  const [menuOpen, setMenuOpen] = useState(false);
 
   const navigate = (nextRoute: MainRoute) => {
-    setMenuOpen(false);
     setRoute(nextRoute);
   };
 
   const signOut = () => {
-    setMenuOpen(false);
     (async () => {
       await socket.stop('logout');
       await controller.logout();
     })().catch(() => undefined);
+  };
+
+  const isSecondaryRoute =
+    route === 'account' || route === 'sessions' || route === 'diagnostics';
+
+  const getHeaderTitle = () => {
+    switch (route) {
+      case 'assistant':
+        return strings.appName;
+      case 'tasks':
+        return strings.main.tasks;
+      case 'memory':
+        return strings.main.memory;
+      case 'settings':
+        return strings.main.settings;
+      case 'account':
+        return strings.main.profile;
+      case 'sessions':
+        return strings.sessions.title;
+      case 'diagnostics':
+        return strings.settings.diagnostics;
+      default:
+        return strings.appName;
+    }
   };
 
   return (
@@ -50,24 +72,52 @@ export function MainNavigator() {
       <View
         style={[
           styles.appBar,
-          { backgroundColor: colors.surface, borderBottomColor: colors.border },
-          { paddingTop: insets.top },
+          {
+            backgroundColor: colors.surface,
+            borderBottomColor: colors.borderSubtle,
+            paddingTop: insets.top,
+          },
+          shadows.sm,
         ]}
+        testID="main-header"
       >
         <View style={styles.appBarContent}>
-          <AppText style={styles.appBarTitle}>{strings.appName}</AppText>
-          <Pressable
-            accessibilityLabel={
-              menuOpen ? strings.main.closeMenu : strings.main.openMenu
-            }
-            accessibilityRole="button"
-            hitSlop={spacing.sm}
-            onPress={() => setMenuOpen(open => !open)}
-            style={styles.menuButton}
-            testID="main-menu-button"
-          >
-            <Text style={[styles.menuDots, { color: colors.text }]}>⋮</Text>
-          </Pressable>
+          {isSecondaryRoute ? (
+            <Pressable
+              accessibilityLabel={strings.assistant.cancel || 'Back'}
+              accessibilityRole="button"
+              hitSlop={spacing.sm}
+              onPress={() => navigate('settings')}
+              style={styles.backButton}
+              testID="nav-back-button"
+            >
+              <Text style={[styles.backArrow, { color: colors.primary }]}>←</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.brandIconContainer}>
+              <Text style={[styles.brandIcon, { color: colors.primary }]}>◉</Text>
+            </View>
+          )}
+
+          <AppText style={styles.appBarTitle}>{getHeaderTitle()}</AppText>
+
+          {/* Balance spacer or profile shortcut */}
+          {route === 'settings' ? (
+            <Pressable
+              accessibilityLabel={strings.main.signOut}
+              accessibilityRole="button"
+              hitSlop={spacing.sm}
+              onPress={signOut}
+              style={styles.headerActionButton}
+              testID="header-sign-out"
+            >
+              <Text style={[styles.headerActionText, { color: colors.error }]}>
+                {strings.main.signOut}
+              </Text>
+            </Pressable>
+          ) : (
+            <View style={styles.headerRightSpacer} />
+          )}
         </View>
       </View>
 
@@ -79,6 +129,7 @@ export function MainNavigator() {
             onOpenDiagnostics={() => navigate('diagnostics')}
             onOpenSessions={() => navigate('sessions')}
             onOpenMemory={() => navigate('memory')}
+            onSignOut={signOut}
           />
         ) : null}
         {route === 'diagnostics' ? <DiagnosticScreen /> : null}
@@ -88,141 +139,70 @@ export function MainNavigator() {
         {route === 'tasks' ? <TasksScreen /> : null}
       </View>
 
-      <Modal
-        animationType="fade"
-        onRequestClose={() => setMenuOpen(false)}
-        transparent
-        visible={menuOpen}
-      >
-        <View style={styles.menuOverlay}>
-          <Pressable
-            accessibilityLabel={strings.main.closeMenu}
-            onPress={() => setMenuOpen(false)}
-            style={StyleSheet.absoluteFill}
-          />
-          <Pressable
-            accessibilityRole="menu"
-            onPress={() => undefined}
-            style={[
-              styles.menu,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-              { marginTop: insets.top + 56 },
-            ]}
-            testID="main-menu"
-          >
-            <MenuItem
-              label={strings.main.assistant}
-              onPress={() => navigate('assistant')}
-              testID="menu-assistant"
-            />
-            <MenuItem
-              label={strings.main.memory}
-              onPress={() => navigate('memory')}
-              testID="menu-memory"
-            />
-            <MenuItem
-              label={strings.main.tasks}
-              onPress={() => navigate('tasks')}
-              testID="menu-tasks"
-            />
-            <MenuItem
-              label={strings.main.settings}
-              onPress={() => navigate('settings')}
-              testID="menu-settings"
-            />
-            <MenuItem
-              label={strings.main.profile}
-              onPress={() => navigate('account')}
-              testID="menu-profile"
-            />
-            <MenuItem
-              destructive
-              label={strings.main.signOut}
-              onPress={signOut}
-              testID="menu-sign-out"
-            />
-          </Pressable>
-        </View>
-      </Modal>
+      <BottomTabBar
+        activeRoute={route}
+        onNavigate={tab => navigate(tab as MainRoute)}
+      />
     </View>
   );
 }
 
-function MenuItem({
-  destructive = false,
-  label,
-  onPress,
-  testID,
-}: {
-  destructive?: boolean;
-  label: string;
-  onPress: () => void;
-  testID: string;
-}) {
-  const { colors } = useAppTheme();
-
-  return (
-    <Pressable
-      accessibilityLabel={label}
-      accessibilityRole="menuitem"
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.menuItem,
-        { opacity: pressed ? 0.65 : 1 },
-      ]}
-      testID={testID}
-    >
-      <AppText
-        style={[
-          styles.menuItemText,
-          destructive ? { color: colors.error } : null,
-        ]}
-      >
-        {label}
-      </AppText>
-    </Pressable>
-  );
-}
-
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  appBar: { borderBottomWidth: 1 },
+  container: {
+    flex: 1,
+  },
+  appBar: {
+    borderBottomWidth: 1,
+    zIndex: 10,
+  },
   appBarContent: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    minHeight: 56,
-    paddingHorizontal: spacing.lg,
+    minHeight: 52,
+    paddingHorizontal: spacing.md,
   },
-  appBarTitle: { fontSize: typography.heading, fontWeight: '700' },
-  menuButton: {
+  brandIconContainer: {
+    alignItems: 'center',
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
+  },
+  brandIcon: {
+    fontSize: 20,
+    lineHeight: 24,
+  },
+  backButton: {
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 44,
     minWidth: 44,
   },
-  menuDots: { fontSize: 30, fontWeight: '700', lineHeight: 34 },
-  content: { flex: 1 },
-  menuOverlay: {
-    alignItems: 'flex-end',
-    flex: 1,
-    paddingHorizontal: spacing.lg,
+  backArrow: {
+    fontSize: 22,
+    fontWeight: '700',
+    lineHeight: 26,
   },
-  menu: {
-    borderRadius: radii.md,
-    borderWidth: 1,
-    elevation: 8,
-    minWidth: 220,
-    paddingVertical: spacing.sm,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.18,
-    shadowRadius: 10,
+  appBarTitle: {
+    fontSize: typography.heading,
+    fontWeight: '700',
+    letterSpacing: -0.2,
   },
-  menuItem: {
-    minHeight: 52,
+  headerActionButton: {
+    alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: spacing.lg,
+    minHeight: 44,
+    paddingHorizontal: spacing.sm,
   },
-  menuItemText: { fontWeight: '600' },
+  headerActionText: {
+    fontSize: typography.label,
+    fontWeight: '600',
+  },
+  headerRightSpacer: {
+    minHeight: 36,
+    minWidth: 36,
+  },
+  content: {
+    flex: 1,
+  },
 });

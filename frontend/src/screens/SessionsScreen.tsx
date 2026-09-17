@@ -1,21 +1,23 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { StyleSheet } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import { toClientError, safeUserMessage } from '../api/errors';
 import {
-  ActionButton,
   AppText,
-  Card,
   Heading,
   Screen,
   StatusBanner,
 } from '../components/ui/Primitives';
-import { spacing } from '../design/tokens';
+import { useAppTheme } from '../design/ThemeProvider';
+import { spacing, typography } from '../theme';
 import { strings } from '../i18n/strings';
 import { useAuth } from '../auth/AuthProvider';
 import { AuthSession, Device } from '../auth/types';
 
+import { SessionDeviceCard } from '../components/settings/SessionDeviceCard';
+
 export function SessionsScreen() {
-  const { controller } = useAuth();
+  const { controller, status } = useAuth();
+  const { colors } = useAppTheme();
   const [sessions, setSessions] = useState<AuthSession[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
@@ -40,8 +42,9 @@ export function SessionsScreen() {
   }, [controller]);
 
   useEffect(() => {
+    if (status !== 'authenticated') return;
     load().catch(() => undefined);
-  }, [load]);
+  }, [load, status]);
 
   const revokeSession = async (id: string) => {
     setRevoking(id);
@@ -69,64 +72,73 @@ export function SessionsScreen() {
 
   return (
     <Screen testID="sessions-screen">
-      <Heading>{strings.sessions.title}</Heading>
-      <AppText style={styles.body}>{strings.sessions.body}</AppText>
-      {error ? <StatusBanner tone="error">{error}</StatusBanner> : null}
-      {loading ? <AppText>{strings.sessions.loading}</AppText> : null}
-      {!loading && sessions.length === 0 ? (
-        <AppText>{strings.sessions.empty}</AppText>
-      ) : null}
-      {sessions.map(session => (
-        <Card key={session.id} style={styles.card}>
-          <AppText>
-            {strings.sessions.device}: {deviceName(session.device_id, devices)}
+      <ScrollView contentContainerStyle={styles.content}>
+        {/* Stitch-inspired Hero Header */}
+        <View style={styles.header}>
+          <AppText style={[styles.overline, { color: colors.primary }]}>
+            SECURITY & DEVICES
           </AppText>
-          <AppText style={styles.caption}>
-            {formatDate(session.last_used_at)}
+          <Heading>{strings.sessions.title}</Heading>
+          <AppText style={[styles.body, { color: colors.textMuted }]}>
+            {strings.sessions.body}
           </AppText>
-          {session.revoked_at ? (
-            <AppText>{strings.sessions.revoked}</AppText>
-          ) : (
-            <ActionButton
-              disabled={revoking === session.id}
-              label={
-                revoking === session.id
-                  ? strings.sessions.revoked
-                  : strings.sessions.revoke
-              }
-              onPress={() => revokeSession(session.id)}
-              variant="secondary"
-              style={styles.action}
-            />
-          )}
-        </Card>
-      ))}
-      {devices.length > 0 ? (
-        <AppText style={styles.devicesTitle}>
-          {strings.sessions.devices}
-        </AppText>
-      ) : null}
-      {devices.map(device => (
-        <Card key={device.id} style={styles.card}>
-          <AppText>{device.name || device.platform}</AppText>
-          <AppText style={styles.caption}>{device.device_identifier}</AppText>
-          {device.revoked_at ? (
-            <AppText>{strings.sessions.revoked}</AppText>
-          ) : (
-            <ActionButton
-              disabled={revoking === device.id}
-              label={
-                revoking === device.id
-                  ? strings.sessions.revoked
-                  : strings.sessions.revoke
-              }
-              onPress={() => revokeDevice(device.id)}
-              variant="secondary"
-              style={styles.action}
-            />
-          )}
-        </Card>
-      ))}
+        </View>
+
+        {error ? <StatusBanner tone="error">{error}</StatusBanner> : null}
+
+        {loading ? (
+          <AppText style={styles.loadingText}>
+            {strings.sessions.loading}
+          </AppText>
+        ) : null}
+
+        {!loading && sessions.length === 0 ? (
+          <AppText style={styles.emptyText}>{strings.sessions.empty}</AppText>
+        ) : null}
+
+        {/* Sessions Section */}
+        {sessions.length > 0 ? (
+          <View style={styles.section}>
+            <AppText style={[styles.sectionTitle, { color: colors.primary }]}>
+              Active Sessions
+            </AppText>
+            {sessions.map(session => (
+              <SessionDeviceCard
+                icon="🔐"
+                isRevoked={Boolean(session.revoked_at)}
+                key={session.id}
+                onRevoke={() => revokeSession(session.id)}
+                revoking={revoking === session.id}
+                subtitle={formatDate(session.last_used_at)}
+                title={`${strings.sessions.device}: ${deviceName(
+                  session.device_id,
+                  devices,
+                )}`}
+              />
+            ))}
+          </View>
+        ) : null}
+
+        {/* Devices Section */}
+        {devices.length > 0 ? (
+          <View style={styles.section}>
+            <AppText style={[styles.sectionTitle, { color: colors.primary }]}>
+              {strings.sessions.devices}
+            </AppText>
+            {devices.map(device => (
+              <SessionDeviceCard
+                icon="📱"
+                isRevoked={Boolean(device.revoked_at)}
+                key={device.id}
+                onRevoke={() => revokeDevice(device.id)}
+                revoking={revoking === device.id}
+                subtitle={device.device_identifier}
+                title={device.name || device.platform}
+              />
+            ))}
+          </View>
+        ) : null}
+      </ScrollView>
     </Screen>
   );
 }
@@ -142,9 +154,41 @@ function formatDate(value: string): string {
 }
 
 const styles = StyleSheet.create({
-  body: { marginBottom: spacing.md, marginTop: spacing.sm },
-  card: { marginTop: spacing.md },
-  caption: { marginTop: spacing.xs, opacity: 0.75 },
-  action: { marginTop: spacing.md },
-  devicesTitle: { fontWeight: '700', marginTop: spacing.lg },
+  content: {
+    gap: spacing.md,
+    paddingBottom: spacing.xxl,
+  },
+  header: {
+    gap: 2,
+    marginBottom: spacing.xs,
+  },
+  overline: {
+    fontSize: typography.caption,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  body: {
+    fontSize: typography.caption,
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  section: {
+    gap: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  sectionTitle: {
+    fontSize: typography.caption,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    paddingHorizontal: 2,
+    textTransform: 'uppercase',
+  },
+  loadingText: {
+    fontSize: typography.body,
+    paddingVertical: spacing.md,
+  },
+  emptyText: {
+    fontSize: typography.body,
+    paddingVertical: spacing.md,
+  },
 });
