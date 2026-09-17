@@ -30,6 +30,10 @@ VOICE_TOOL_ROUTING_INSTRUCTIONS = """Tool-routing policy:
   for current-date questions.
 - Treat current-time/date tool results as authoritative; never guess, convert
   offsets, or calculate DST.
+- For questions about a previously created or scheduled task, reminder, call,
+  meeting, appointment, event, or to-do, MUST first call the read-only
+  list_tasks tool. Treat its results as authoritative and match natural
+  speech-recognition spelling variations when identifying the requested item.
 - Answer other informational questions and ordinary conversation without a tool.
 - For an explicit task or reminder request, MUST first call the registered
   create_task tool with only the user-provided task fields.
@@ -74,6 +78,14 @@ _SCHEDULED_ITEM = re.compile(
     r"\b(?:meeting|appointment|call|event|deadline|todo|to\s+do)\b",
     re.IGNORECASE,
 )
+_TASK_LOOKUP = re.compile(
+    r"(?=.*\b(?:when|what\s+(?:time|date)|which\s+day|"
+    r"what(?:'s|\s+is)\s+(?:my|the)|do\s+i\s+have|"
+    r"did\s+i\s+(?:schedule|create|set)|show|list|tell\s+me)\b)"
+    r"(?=.*\b(?:tasks?|reminders?|calls?|meetings?|appointments?|events?|todos?|"
+    r"to\s+dos?)\b)",
+    re.IGNORECASE,
+)
 
 
 def classify_voice_tool_choice(
@@ -96,6 +108,8 @@ def classify_voice_tool_choice(
         return LLMNamedToolChoice(function={"name": "get_current_date"})
     if not user_text or _INFORMATIONAL_PREFIX.search(user_text):
         return "auto"
+    if "list_tasks" in available_tools and _TASK_LOOKUP.search(user_text):
+        return LLMNamedToolChoice(function={"name": "list_tasks"})
     if "create_task" in available_tools and (
         _REMINDER_ACTION.search(user_text) or _TASK_ACTION.search(user_text)
     ):

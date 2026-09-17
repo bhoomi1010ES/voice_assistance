@@ -100,6 +100,14 @@ internal class TtsAudioPlayer(
             writtenBytes: Int,
             queueBytesRemaining: Int,
         ) = Unit
+        /** Bytes accepted by AudioTrack, including the original PCM slice. */
+        fun onPcmRendered(
+            responseId: UUID,
+            sequence: Long,
+            payload: ByteArray,
+            offsetBytes: Int,
+            writtenBytes: Int,
+        ) = Unit
         fun onPlaybackSummary(responseId: UUID, summary: PlaybackSummary) = Unit
 
         companion object {
@@ -126,6 +134,7 @@ internal class TtsAudioPlayer(
         var writeInProgress = false
         var cancelRequested = false
         var resourcesStopped = false
+        var queueBackpressureLogged = false
     }
 
     private data class Chunk(val sequence: Long, val payload: ByteArray)
@@ -190,13 +199,38 @@ internal class TtsAudioPlayer(
         }
         synchronized(lock) {
             val session = active?.takeIf { it.responseId == responseId } ?: return false
-            if (session.queuedBytes + payload.size > maxQueueBytes) {
+            if (payload.size > maxQueueBytes) {
                 Log.e(
                     TAG,
-                    "TTS_QUEUE_FULL queued_bytes=${session.queuedBytes} incoming_bytes=${payload.size}",
+                    "TTS_PCM_REJECTED reason=frame_exceeds_queue " +
+                        "incoming_bytes=${payload.size} max_queue_bytes=$maxQueueBytes",
                 )
                 return false
             }
+            while (
+                active === session &&
+                !session.cancelRequested &&
+                !session.finishRequested &&
+                session.queuedBytes + payload.size > maxQueueBytes
+            ) {
+                if (!session.queueBackpressureLogged) {
+                    session.queueBackpressureLogged = true
+                    Log.w(
+                        TAG,
+                        "TTS_QUEUE_BACKPRESSURE queued_bytes=${session.queuedBytes} " +
+                            "incoming_bytes=${payload.size} max_queue_bytes=$maxQueueBytes",
+                    )
+                }
+                lock.wait(50L)
+            }
+            if (
+                active !== session ||
+                session.cancelRequested ||
+                session.finishRequested
+            ) {
+                return false
+            }
+            session.queueBackpressureLogged = false
             val copy = payload.copyOf()
             queue.addLast(Chunk(sequence, copy))
             session.queuedBytes += copy.size
@@ -348,6 +382,7 @@ internal class TtsAudioPlayer(
                 if (offset < chunk.payload.size) session.partialWrites += 1
                 queueBytesRemaining = session.queuedBytes
                 cancelled = session.cancelRequested
+                lock.notifyAll()
             }
             Log.i(
                 TAG,
@@ -370,6 +405,13 @@ internal class TtsAudioPlayer(
                 chunk.payload.size - offset + written,
                 written,
                 queueBytesRemaining,
+            )
+            listener.onPcmRendered(
+                session.responseId,
+                chunk.sequence,
+                chunk.payload,
+                offset - written,
+                written,
             )
             if (cancelled) {
                 synchronized(lock) { stopSessionResourcesLocked(session) }
@@ -423,9 +465,13 @@ internal class TtsAudioPlayer(
     }
 
     private fun stopSessionResourcesLocked(session: Session) {
-        if (session.resourcesStopped) return
+        if (session.resourcesStopped) {
+            lock.notifyAll()
+            return
+        }
         if (session.writeInProgress) {
             session.cancelRequested = true
+            lock.notifyAll()
             return
         }
         session.resourcesStopped = true
@@ -435,6 +481,7 @@ internal class TtsAudioPlayer(
         runCatching { session.track.stop() }
         runCatching { session.track.flush() }
         runCatching { session.track.release() }
+        lock.notifyAll()
     }
 
     private fun summary(session: Session): PlaybackSummary = synchronized(lock) {

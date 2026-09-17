@@ -93,13 +93,13 @@ from app.websocket.cancellation import CancellationGuard
 from app.websocket.protocol import (
     AudioCommitMessage,
     ClientPingMessage,
-    ConversationResetMessage,
     ConfirmationResolveMessage,
     ControlMessageType,
+    ConversationResetMessage,
     DeviceTimeContextPayload,
     ProtocolError,
-    ResponseCancelMessage,
     ResponseAbortAllMessage,
+    ResponseCancelMessage,
     ResponseRetryMessage,
     SessionEndMessage,
     SessionStartMessage,
@@ -1200,34 +1200,50 @@ class VoiceGateway:
                 self._turn_started = None
                 with latency_span(
                     self._trace_latency,
-                    component="voice_registry",
-                    event="turn_clear",
-                    turn_id=turn_id,
-                    response_id=response_id,
-                    metadata={"registry_type": type(self.registry).__name__},
-                ):
-                    await self.registry.clear_turn(
-                        self.owner,
-                        self._active_session_id(),
-                        turn_id=counters.turn_id,
-                    )
-                with latency_span(
-                    self._trace_latency,
-                    component="voice_registry",
-                    event="session_refresh",
-                    turn_id=turn_id,
-                    response_id=response_id,
-                    metadata={"registry_type": type(self.registry).__name__},
-                ):
-                    await self.registry.refresh(self.owner, self._active_session_id())
-                with latency_span(
-                    self._trace_latency,
                     component="postgres",
                     event="turn_commit",
                     turn_id=turn_id,
                     response_id=response_id,
                 ):
                     await self.db.commit()
+                # Redis owns ephemeral turn/response markers. A transient
+                # registry outage must not roll back the durable turn,
+                # transcript, or memory extraction job that was just written.
+                try:
+                    with latency_span(
+                        self._trace_latency,
+                        component="voice_registry",
+                        event="turn_clear",
+                        turn_id=turn_id,
+                        response_id=response_id,
+                        metadata={"registry_type": type(self.registry).__name__},
+                    ):
+                        await self.registry.clear_turn(
+                            self.owner,
+                            self._active_session_id(),
+                            turn_id=counters.turn_id,
+                        )
+                    with latency_span(
+                        self._trace_latency,
+                        component="voice_registry",
+                        event="session_refresh",
+                        turn_id=turn_id,
+                        response_id=response_id,
+                        metadata={"registry_type": type(self.registry).__name__},
+                    ):
+                        await self.registry.refresh(self.owner, self._active_session_id())
+                except Exception as error:  # noqa: BLE001 - Redis cleanup is best effort
+                    LOGGER.warning(
+                        "Voice registry cleanup failed after durable turn commit",
+                        extra={
+                            "event": "voice.registry.cleanup.failed",
+                            "session_id": str(self._active_session_id()),
+                            "turn_id": str(turn_id),
+                            "response_id": str(response_id),
+                            "exception": type(error).__name__,
+                            "exception_message": str(error),
+                        },
+                    )
             if stt_result is not None:
                 with latency_span(
                     self._trace_latency,
@@ -2288,6 +2304,40 @@ class VoiceGateway:
             return None
 
         resolution = resolve_confirmation(transcript)
+
+        # Terminal confirmation records remain briefly available for replay
+        # protection and auditability. They must not intercept a later,
+        # unrelated voice request such as a task or memory lookup. Preserve
+        # the existing response for an explicit replayed yes/no, but let
+        # ordinary speech continue through normal LLM/tool routing.
+        if pending.status in {"REJECTED", "CANCELLED", "CONSUMED"}:
+            if resolution == "AMBIGUOUS":
+                return None
+            text = "That confirmation has already been handled."
+            await self._send_confirmation_response(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+                confirmation_id=pending.confirmation_id,
+                status=pending.status,
+            )
+            await self._record_confirmation_turn(
+                turn_id,
+                pending,
+                status=pending.status,
+                resolution=resolution,
+                execution_count=0,
+                final_response=text,
+            )
+            return {"status": "completed", "confirmation": "already_handled"}
+
+        # An expired confirmation should only answer an explicit yes/no. A
+        # new question must be allowed to reach ordinary routing.
+        if pending.status == "EXPIRED" or pending.is_expired():
+            if resolution == "AMBIGUOUS":
+                return None
+
         if resolution == "AMBIGUOUS":
             text = "Confirmation unclear. Please speak YES to approve or NO to cancel."
             await self._send_confirmation_response(
@@ -2339,26 +2389,6 @@ class VoiceGateway:
                 final_response=text,
             )
             return {"status": "completed", "confirmation": "expired"}
-
-        if pending.status in {"REJECTED", "CANCELLED", "CONSUMED"}:
-            text = "That confirmation has already been handled."
-            await self._send_confirmation_response(
-                session_id=session_id,
-                turn_id=turn_id,
-                response_id=response_id,
-                text=text,
-                confirmation_id=pending.confirmation_id,
-                status=pending.status,
-            )
-            await self._record_confirmation_turn(
-                turn_id,
-                pending,
-                status=pending.status,
-                resolution=resolution,
-                execution_count=0,
-                final_response=text,
-            )
-            return {"status": "completed", "confirmation": "already_handled"}
 
         if resolution == "REJECTED":
             await store.transition(scope, pending.confirmation_id, "REJECTED")
@@ -3218,10 +3248,15 @@ class VoiceGateway:
             pending_confirmation = await confirmation_store.get(
                 self._confirmation_scope(self._active_session_id())
             )
-        if pending_confirmation is not None and message.response_id in {
-            pending_confirmation.original_response_id,
-            self._last_response_id,
-        }:
+        if (
+            message.reason != "barge_in"
+            and pending_confirmation is not None
+            and message.response_id
+            in {
+                pending_confirmation.original_response_id,
+                self._last_response_id,
+            }
+        ):
             await confirmation_store.transition(
                 self._confirmation_scope(self._active_session_id()),
                 pending_confirmation.confirmation_id,
@@ -3269,11 +3304,15 @@ class VoiceGateway:
             self._cancelled_response_ids = set(list(self._cancelled_response_ids)[-32:])
         self.stats.cancellation_count += 1
         await self._cancel_tts_response(message.response_id)
-        await self.registry.cancel_response(
-            self.owner,
-            self._active_session_id(),
-            message.response_id,
-        )
+        # Cancellation must still complete locally when Redis is temporarily
+        # unavailable. The durable turn state is committed below, and the
+        # registry marker can expire or be cleaned up by the next session.
+        with contextlib.suppress(Exception):
+            await self.registry.cancel_response(
+                self.owner,
+                self._active_session_id(),
+                message.response_id,
+            )
         await self.llm_service.cancel(message.response_id)
         await self._cancel_stt_finalize_task()
         if self.stt_turn is not None:
@@ -3298,11 +3337,12 @@ class VoiceGateway:
             self._add_session_totals(counters.frame_count, counters.byte_count)
             self.active_turn = None
             self._turn_started = None
-            await self.registry.clear_turn(
-                self.owner,
-                self._active_session_id(),
-                turn_id=counters.turn_id,
-            )
+            with contextlib.suppress(Exception):
+                await self.registry.clear_turn(
+                    self.owner,
+                    self._active_session_id(),
+                    turn_id=counters.turn_id,
+                )
         elif cancelled_turn_id is not None:
             provider_info = self.llm_service.provider_info
             await self.persistence.merge_turn_metadata(

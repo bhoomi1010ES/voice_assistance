@@ -16,6 +16,7 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.voiceaipoc.audio.AudioConfig
 import com.voiceaipoc.audio.AudioEngine
 import com.voiceaipoc.audio.AudioEffectsManager
+import com.voiceaipoc.audio.PlaybackEchoReference
 import com.voiceaipoc.auth.SecureTokenStorage
 import com.voiceaipoc.audio.AudioEngine.ManualWakeWordTrialStatus
 import com.voiceaipoc.vad.VadEngine
@@ -52,10 +53,12 @@ class VoiceModule(
     )
     @Volatile
     private var voiceOutputEnabled = voicePreferences.getBoolean("enabled", true)
+    private val playbackEchoReference = PlaybackEchoReference()
 
     private val voiceGateway = VoiceWebSocketTransport(
         tokenStorage = authTokenStorage,
         isTtsOutputEnabled = { voiceOutputEnabled },
+        playbackEchoReference = playbackEchoReference,
         listener = object : VoiceWebSocketTransport.Listener {
             override fun onStatus(status: VoiceWebSocketTransport.Status) {
                 emitVoiceGatewayStatus(status)
@@ -144,6 +147,7 @@ class VoiceModule(
     private val audioEngine = AudioEngine(
         context = reactContext.applicationContext,
         config = AudioConfig(),
+        playbackEchoReference = playbackEchoReference,
         pcmDataCallback = AudioEngine.PcmDataCallback { buffer, samplesRead ->
             // The transport copies the reusable frame immediately. PCM stays
             // native and is never sent through the React Native bridge.
@@ -183,7 +187,11 @@ class VoiceModule(
                         "inferenceIndex=${event.inferenceIndex} wallMs=${System.currentTimeMillis()} " +
                         "elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
-                emitSileroVadEvent(EVENT_SILERO_VAD_SPEECH_STARTED, event)
+                emitSileroVadEvent(
+                    EVENT_SILERO_VAD_SPEECH_STARTED,
+                    event,
+                    playbackEchoReference.latestAssessment(),
+                )
             }
 
             override fun onSpeechStopped(event: SileroVadEngine.Event) {
@@ -194,11 +202,19 @@ class VoiceModule(
                         "wallMs=${System.currentTimeMillis()} " +
                         "elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
-                emitSileroVadEvent(EVENT_SILERO_VAD_SPEECH_STOPPED, event)
+                emitSileroVadEvent(
+                    EVENT_SILERO_VAD_SPEECH_STOPPED,
+                    event,
+                    playbackEchoReference.latestAssessment(),
+                )
             }
 
             override fun onSpeechActivity(event: SileroVadEngine.Event) {
-                emitSileroVadEvent(EVENT_SILERO_VAD_SPEECH_ACTIVITY, event)
+                emitSileroVadEvent(
+                    EVENT_SILERO_VAD_SPEECH_ACTIVITY,
+                    event,
+                    playbackEchoReference.latestAssessment(),
+                )
             }
 
             override fun onEngineError(status: SileroVadEngine.Status) {
@@ -843,9 +859,50 @@ class VoiceModule(
             .emit(eventName, toWritableWakeWordMap(status).apply { putString("event", eventName) })
     }
 
-    private fun emitSileroVadEvent(eventName: String, event: SileroVadEngine.Event) {
+    private fun emitSileroVadEvent(
+        eventName: String,
+        event: SileroVadEngine.Event,
+        playback: PlaybackEchoReference.Assessment,
+    ) {
         if (!reactApplicationContext.hasActiveReactInstance()) {
             return
+        }
+
+        val gatewayStatus = voiceGateway.getStatus()
+        if (playback.playbackActive && eventName == EVENT_SILERO_VAD_SPEECH_STARTED) {
+            Log.i(
+                TAG,
+                "SILERO_PLAYBACK_CANDIDATE_STARTED session_id=${gatewayStatus.sessionId ?: "NONE"} " +
+                    "turn_id=${gatewayStatus.turnId ?: "NONE"} " +
+                    "response_id=${playback.responseId ?: gatewayStatus.responseId ?: "NONE"} " +
+                    "probability=${event.probability} duration_ms=${event.speechDurationMs} " +
+                    "playback_position_ms=${playback.playbackPositionMs} " +
+                    "echo_similarity=${playback.similarity ?: -1.0} " +
+                    "lag_ms=${playback.lagMs ?: -1} elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
+        } else if (playback.playbackActive && eventName == EVENT_SILERO_VAD_SPEECH_STOPPED) {
+            Log.i(
+                TAG,
+                "SILERO_PLAYBACK_CANDIDATE_ENDED session_id=${gatewayStatus.sessionId ?: "NONE"} " +
+                    "turn_id=${gatewayStatus.turnId ?: "NONE"} " +
+                    "response_id=${playback.responseId ?: gatewayStatus.responseId ?: "NONE"} " +
+                    "probability=${event.probability} duration_ms=${event.speechDurationMs} " +
+                    "playback_position_ms=${playback.playbackPositionMs} " +
+                    "echo_similarity=${playback.similarity ?: -1.0} " +
+                    "lag_ms=${playback.lagMs ?: -1} elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
+        }
+        if (playback.echoLikely) {
+            Log.i(
+                TAG,
+                "PLAYBACK_REFERENCE_MATCH session_id=${gatewayStatus.sessionId ?: "NONE"} " +
+                    "turn_id=${gatewayStatus.turnId ?: "NONE"} " +
+                    "response_id=${playback.responseId ?: gatewayStatus.responseId ?: "NONE"} " +
+                    "echo_similarity=${playback.similarity ?: -1.0} " +
+                    "lag_ms=${playback.lagMs ?: -1} " +
+                    "playback_position_ms=${playback.playbackPositionMs} " +
+                    "elapsedMs=${SystemClock.elapsedRealtime()}",
+            )
         }
 
         val payload = Arguments.createMap().apply {
@@ -856,6 +913,20 @@ class VoiceModule(
             putDouble("inferenceIndex", event.inferenceIndex.toDouble())
             putDouble("speechDurationMs", event.speechDurationMs.toDouble())
             putString("reason", event.reason)
+            putString("playbackState", playback.state.name)
+            putBoolean("playbackActive", playback.playbackActive)
+            putBoolean("playbackReferenceAvailable", playback.referenceAvailable)
+            putBoolean("echoLikely", playback.echoLikely)
+            if (playback.responseId == null) putNull("playbackResponseId") else {
+                putString("playbackResponseId", playback.responseId)
+            }
+            if (playback.similarity == null) putNull("echoSimilarity") else {
+                putDouble("echoSimilarity", playback.similarity)
+            }
+            if (playback.lagMs == null) putNull("echoLagMs") else {
+                putInt("echoLagMs", playback.lagMs)
+            }
+            putDouble("playbackPositionMs", playback.playbackPositionMs.toDouble())
         }
         reactApplicationContext
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)

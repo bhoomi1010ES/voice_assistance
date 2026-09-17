@@ -265,31 +265,46 @@ class VoiceConfirmationStore(Protocol):
 class InMemoryVoiceConfirmationStore:
     """Deterministic store used by unit tests; production uses Redis."""
 
+    @staticmethod
+    def _key(scope: Scope) -> tuple[uuid.UUID, uuid.UUID]:
+        user_id, device_id, _session_id = scope
+        return user_id, device_id
+
+    @staticmethod
+    def _bind_to_scope(current: PendingConfirmation, scope: Scope) -> PendingConfirmation:
+        current.session_id = scope[2]
+        return current
+
     def __init__(self) -> None:
-        self._values: dict[Scope, PendingConfirmation] = {}
+        # A confirmation belongs to the authenticated user/device, not to a
+        # particular WebSocket connection. Reconnects can create a new voice
+        # session while the user is still answering the confirmation prompt.
+        self._values: dict[tuple[uuid.UUID, uuid.UUID], PendingConfirmation] = {}
         self._lock = asyncio.Lock()
 
     async def create_or_get(self, pending: PendingConfirmation) -> PendingConfirmation:
         scope = (pending.authenticated_user_id, pending.device_id, pending.session_id)
+        key = self._key(scope)
         async with self._lock:
-            current = self._values.get(scope)
+            current = self._values.get(key)
             if current is not None and current.status in {"PENDING", "APPROVED"}:
-                return current
-            self._values[scope] = pending
+                return self._bind_to_scope(current, scope)
+            self._values[key] = pending
             return pending
 
     async def get(self, scope: Scope) -> PendingConfirmation | None:
         async with self._lock:
-            current = self._values.get(scope)
+            current = self._values.get(self._key(scope))
             if current is not None and current.status == "PENDING" and current.is_expired():
                 current.status = "EXPIRED"
-            return current
+            return self._bind_to_scope(current, scope) if current is not None else None
 
     async def claim(self, scope: Scope, confirmation_id: uuid.UUID) -> PendingConfirmation | None:
         async with self._lock:
-            current = self._values.get(scope)
+            current = self._values.get(self._key(scope))
             if current is None or current.confirmation_id != confirmation_id:
                 return None
+            self._bind_to_scope(current, scope)
             if current.status != "PENDING":
                 return None
             if current.is_expired():
@@ -307,9 +322,10 @@ class InMemoryVoiceConfirmationStore:
         result_content: str | None = None,
     ) -> PendingConfirmation | None:
         async with self._lock:
-            current = self._values.get(scope)
+            current = self._values.get(self._key(scope))
             if current is None or current.confirmation_id != confirmation_id:
                 return None
+            self._bind_to_scope(current, scope)
             if not self._can_transition(current.status, status):
                 return None
             current.status = status
@@ -318,9 +334,10 @@ class InMemoryVoiceConfirmationStore:
 
     async def cancel_scope(self, scope: Scope) -> bool:
         async with self._lock:
-            current = self._values.get(scope)
+            current = self._values.get(self._key(scope))
             if current is None or current.status not in {"PENDING", "APPROVED"}:
                 return False
+            self._bind_to_scope(current, scope)
             current.status = "CANCELLED"
             return True
 
@@ -336,7 +353,7 @@ class InMemoryVoiceConfirmationStore:
 
 
 class RedisVoiceConfirmationStore:
-    """Redis-backed confirmation state scoped to one authenticated voice session."""
+    """Redis-backed confirmation state scoped to one authenticated user/device."""
 
     def __init__(self, redis: Redis | None, *, ttl_seconds: int) -> None:
         self.redis = redis
@@ -349,8 +366,15 @@ class RedisVoiceConfirmationStore:
 
     @staticmethod
     def _key(scope: Scope) -> str:
-        user_id, device_id, session_id = scope
-        return f"voice:confirmation:{user_id}:{device_id}:{session_id}"
+        user_id, device_id, _session_id = scope
+        return f"voice:confirmation:{user_id}:{device_id}"
+
+    @staticmethod
+    def _bind_to_scope(current: PendingConfirmation, scope: Scope) -> PendingConfirmation:
+        # Keep the original turn/response IDs for audit and idempotency, but
+        # attach the pending action to the current reconnecting voice session.
+        current.session_id = scope[2]
+        return current
 
     @staticmethod
     def _decode(raw: str | bytes | None) -> PendingConfirmation | None:
@@ -396,6 +420,13 @@ class RedisVoiceConfirmationStore:
         if current is not None and current.status == "PENDING" and current.is_expired():
             current.status = "EXPIRED"
             await redis.set(key, json.dumps(current.to_dict(), separators=(",", ":")), ex=1)
+        elif current is not None and current.session_id != scope[2]:
+            # A reconnect may deliberately create a fresh durable voice
+            # session after auth or transport recovery. Keep the pending
+            # confirmation available to that new session.
+            self._bind_to_scope(current, scope)
+            ttl = max(1, int((current.expires_at - _utc_now()).total_seconds()))
+            await redis.set(key, json.dumps(current.to_dict(), separators=(",", ":")), ex=ttl)
         return current
 
     async def claim(self, scope: Scope, confirmation_id: uuid.UUID) -> PendingConfirmation | None:
@@ -409,6 +440,7 @@ class RedisVoiceConfirmationStore:
                     if current is None or current.confirmation_id != confirmation_id:
                         await pipe.reset()
                         return None
+                    self._bind_to_scope(current, scope)
                     if current.status != "PENDING":
                         await pipe.reset()
                         return None
@@ -448,6 +480,7 @@ class RedisVoiceConfirmationStore:
                     if current is None or current.confirmation_id != confirmation_id:
                         await pipe.reset()
                         return None
+                    self._bind_to_scope(current, scope)
                     if not InMemoryVoiceConfirmationStore._can_transition(current.status, status):
                         await pipe.reset()
                         return None

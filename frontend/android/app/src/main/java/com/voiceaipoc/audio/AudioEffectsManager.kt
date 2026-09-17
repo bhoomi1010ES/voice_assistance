@@ -302,6 +302,22 @@ class AudioEffectsManager(
     private fun logStatusLocked() {
         val status = statusLocked()
         Log.i(TAG, "Audio session ID=${status.audioSessionId}")
+        Log.i(
+            TAG,
+            "AEC_RUNTIME_STATE audio_session_id=${status.audioSessionId} " +
+                "available=${status.aec.available} created=${status.aec.created} " +
+                "enabled=${status.aec.enabled} requested=${status.aec.requested} " +
+                "error=${status.aec.lastError ?: "NONE"}",
+        )
+        Log.i(
+            TAG,
+            "NS_RUNTIME_STATE audio_session_id=${status.audioSessionId} " +
+                "available=${status.noiseSuppression.available} " +
+                "created=${status.noiseSuppression.created} " +
+                "enabled=${status.noiseSuppression.enabled} " +
+                "requested=${status.noiseSuppression.requested} " +
+                "error=${status.noiseSuppression.lastError ?: "NONE"}",
+        )
         Log.i(TAG, "AEC supported=${status.aec.supported}")
         Log.i(TAG, "AEC available=${status.aec.available}")
         Log.i(TAG, "AEC enabled=${status.aec.enabled}")

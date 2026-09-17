@@ -50,6 +50,8 @@ import {
 } from './conversation';
 import {
   evaluatePlaybackBargeIn,
+  PLAYBACK_BARGE_IN_CONFIRMATION_MS,
+  PLAYBACK_ECHO_SIMILARITY_THRESHOLD,
   PLAYBACK_SPEECH_PROBABILITY_THRESHOLD,
   PLAYBACK_START_GUARD_MS,
 } from './playbackBargeInPolicy';
@@ -661,13 +663,22 @@ export class VoiceSocket {
   }
 
   async startTurn(options: VoiceTurnStartOptions = {}): Promise<void> {
-    if (this.snapshot.session !== 'ready') {
+    if (
+      this.snapshot.session !== 'ready' ||
+      this.snapshot.connection !== 'connected' ||
+      this.snapshot.heartbeat !== 'healthy' ||
+      this.reconnectTimer
+    ) {
       throw new Error('Start a voice session before starting a turn.');
+    }
+    if (this.snapshot.ttsPlaybackState === 'speaking') {
+      throw new Error(
+        'Wait for playback-aware speech confirmation before starting a turn.',
+      );
     }
     this.clearAutoListenTimer();
     const queueFollowUp =
       ['committing', 'waiting'].includes(this.snapshot.turn) &&
-      this.snapshot.ttsPlaybackState !== 'speaking' &&
       !this.confirmationAwaitingVoice;
     if (queueFollowUp) {
       options = {
@@ -1287,6 +1298,7 @@ export class VoiceSocket {
         error: safeVoiceError(status.lastError),
         heartbeat: 'missed',
       });
+      this.suppressAudioForTransportFailure('native_transport_error');
       if (
         this.allowAutoReconnect &&
         this.desiredConnection &&
@@ -1303,6 +1315,7 @@ export class VoiceSocket {
         return;
       }
       if (this.hadConnected || this.allowAutoReconnect) {
+        this.suppressAudioForTransportFailure('transport_closed');
         this.scheduleReconnect('transport-close');
         return;
       }
@@ -1423,6 +1436,18 @@ export class VoiceSocket {
         break;
       case 'server.session.ready':
         this.sessionStartInFlight = false;
+        this.autoListenSuppressed = false;
+        console.info('TRANSPORT_HEALTHY_AUDIO_RESUMED', {
+          sessionId: event.sessionId,
+          timestampMs: this.now(),
+        });
+        emitLatencyTrace({
+          sessionId: event.sessionId,
+          turnId: event.turnId,
+          responseId: event.responseId,
+          component: 'client',
+          event: 'transport_healthy_audio_resumed',
+        });
         this.setSnapshot({
           connection: 'connected',
           session: 'ready',
@@ -1787,6 +1812,9 @@ export class VoiceSocket {
             ? serverError.message
             : 'The voice session reported an error. Try again.',
         });
+        this.suppressAudioForTransportFailure(
+          `server_error:${event.errorCode ?? 'unknown'}`,
+        );
         if (this.allowAutoReconnect && this.desiredConnection) {
           this.scheduleReconnect('server-error');
         }
@@ -1935,6 +1963,7 @@ export class VoiceSocket {
       this.confirmationAwaitingVoice ||
       this.confirmationTurnStartInFlight ||
       this.snapshot.connection !== 'connected' ||
+      this.snapshot.heartbeat !== 'healthy' ||
       this.snapshot.session !== 'ready' ||
       this.snapshot.turn !== 'idle' ||
       this.autoListenTimer
@@ -1946,7 +1975,9 @@ export class VoiceSocket {
       if (
         this.autoListenSuppressed ||
         this.snapshot.turn !== 'idle' ||
-        this.snapshot.session !== 'ready'
+        this.snapshot.session !== 'ready' ||
+        this.snapshot.connection !== 'connected' ||
+        this.snapshot.heartbeat !== 'healthy'
       ) {
         return;
       }
@@ -1997,14 +2028,20 @@ export class VoiceSocket {
       });
   }
 
-  private shouldBargeIn(eventType: string): boolean {
+  private canBargeInDuringPlayback(): boolean {
     return (
-      (eventType === 'SILERO_VAD_SPEECH_STARTED' ||
-        eventType === 'SILERO_VAD_SPEECH_ACTIVITY') &&
       Boolean(this.snapshot.turnId && this.snapshot.responseId) &&
       this.snapshot.ttsPlaybackState === 'speaking' &&
       ['committing', 'waiting'].includes(this.snapshot.turn) &&
+      !this.confirmationAwaitingVoice &&
       !this.bargeInInFlight
+    );
+  }
+
+  private shouldBargeIn(eventType: string): boolean {
+    return (
+      eventType === 'SILERO_VAD_SPEECH_STARTED' &&
+      this.canBargeInDuringPlayback()
     );
   }
 
@@ -2019,11 +2056,30 @@ export class VoiceSocket {
       typeof rawProbability === 'number' && Number.isFinite(rawProbability)
         ? rawProbability
         : null;
+    const echoLikely =
+      typeof event.echoLikely === 'boolean' ? event.echoLikely : null;
+    const echoSimilarity =
+      typeof event.echoSimilarity === 'number' &&
+      Number.isFinite(event.echoSimilarity)
+        ? event.echoSimilarity
+        : null;
+    const playbackReferenceAvailable =
+      typeof event.playbackReferenceAvailable === 'boolean'
+        ? event.playbackReferenceAvailable
+        : null;
+    const playbackState =
+      typeof event.playbackState === 'string' ? event.playbackState : null;
     return evaluatePlaybackBargeIn({
-      playbackActive: this.snapshot.ttsPlaybackState === 'speaking',
+      playbackActive:
+        this.snapshot.ttsPlaybackState === 'speaking' ||
+        event.playbackActive === true,
       playbackStartedAtMs: this.ttsPlaybackStartedAtMs,
       candidateAtMs,
       probability,
+      echoLikely,
+      echoSimilarity,
+      playbackReferenceAvailable,
+      playbackState,
     });
   }
 
@@ -2042,6 +2098,11 @@ export class VoiceSocket {
     }
 
     this.bargeInInFlight = true;
+    console.info('BARGE_IN_REAL_SPEECH_CONFIRMED', {
+      oldTurnId: turnId,
+      oldResponseId: responseId,
+      timestampMs: this.now(),
+    });
     console.info('BARGE_IN_CONFIRMED', {
       oldTurnId: turnId,
       oldResponseId: responseId,
@@ -2295,10 +2356,41 @@ export class VoiceSocket {
           probability >= PLAYBACK_SPEECH_PROBABILITY_THRESHOLD,
         timestampMs: this.now(),
       });
+      console.info('PLAYBACK_ECHO_THRESHOLD_CHECK', {
+        echoSimilarity: decision.echoSimilarity,
+        required: PLAYBACK_ECHO_SIMILARITY_THRESHOLD,
+        passed:
+          decision.echoSimilarity !== null &&
+          decision.echoSimilarity >= PLAYBACK_ECHO_SIMILARITY_THRESHOLD,
+        timestampMs: this.now(),
+      });
       const continuationOfGuardSegment =
         eventType === 'SILERO_VAD_SPEECH_ACTIVITY' &&
         this.sileroSpeechSegmentStartedDuringGuard;
       if (!decision.accepted || continuationOfGuardSegment) {
+        if (decision.reason === 'likely_playback_echo') {
+          console.info('BARGE_IN_ECHO_REJECTED', {
+            responseId: this.snapshot.responseId,
+            candidateStartMs: candidateAtMs,
+            candidateDurationMs: effectiveSpeechDurationMs,
+            echoSimilarity: decision.echoSimilarity,
+            playbackPositionMs: event.playbackPositionMs ?? null,
+            timestampMs: this.now(),
+          });
+          emitLatencyTrace({
+            sessionId: this.snapshot.sessionId,
+            turnId: this.snapshot.turnId,
+            responseId: this.snapshot.responseId,
+            component: 'client',
+            event: 'barge_in_echo_rejected',
+            metadata: {
+              candidate_start_ms: candidateAtMs,
+              candidate_duration_ms: effectiveSpeechDurationMs,
+              echo_similarity: decision.echoSimilarity,
+              playback_position_ms: event.playbackPositionMs,
+            },
+          });
+        }
         console.info('BARGE_IN_REJECTED', {
           reason: continuationOfGuardSegment
             ? 'segment_started_during_playback_guard'
@@ -2319,20 +2411,130 @@ export class VoiceSocket {
       }
       if (eventType === 'SILERO_VAD_SPEECH_STARTED') {
         console.info('BARGE_IN_CONFIRM_TIMER_STARTED', {
-          required_ms: 160,
+          required_ms: PLAYBACK_BARGE_IN_CONFIRMATION_MS,
           speech_duration_ms: effectiveSpeechDurationMs,
           source: 'native_silero_confirmation',
           timestampMs: this.now(),
         });
+        // Native SPEECH_STARTED is only the first confirmed VAD transition.
+        // Wait for a later activity event so one speaker-echo transition cannot
+        // cancel an otherwise healthy response.
+        return;
       }
-      if (effectiveSpeechDurationMs < 160) {
-        console.info('BARGE_IN_CONFIRM_TIMER_STARTED', {
-          required_ms: 160,
-          speech_duration_ms: effectiveSpeechDurationMs,
+      console.info('BARGE_IN_REAL_SPEECH_CONFIRMED', {
+        responseId: this.snapshot.responseId,
+        echoSimilarity: decision.echoSimilarity,
+        playbackPositionMs: event.playbackPositionMs ?? null,
+        timestampMs: this.now(),
+      });
+      console.info('BARGE_IN_SPEECH_DETECTED', {
+        responseId: this.snapshot.responseId,
+        timestampMs: this.now(),
+      });
+      this.interruptForBargeIn().catch(() => undefined);
+      return;
+    }
+    if (
+      eventType === 'SILERO_VAD_SPEECH_ACTIVITY' &&
+      this.canBargeInDuringPlayback()
+    ) {
+      const decision = this.playbackBargeInDecision(event);
+      const candidateAtMs =
+        typeof event.timestampMs === 'number' &&
+        Number.isFinite(event.timestampMs)
+          ? event.timestampMs
+          : this.now();
+      const speechDurationMs =
+        typeof event.speechDurationMs === 'number' &&
+        Number.isFinite(event.speechDurationMs)
+          ? event.speechDurationMs
+          : 0;
+      const speechSegmentAgeMs =
+        this.sileroSpeechSegmentStartedAtMs === null
+          ? 0
+          : Math.max(0, candidateAtMs - this.sileroSpeechSegmentStartedAtMs);
+      const sustainedSpeechMs = Math.max(speechDurationMs, speechSegmentAgeMs);
+      const continuationOfGuardSegment =
+        this.sileroSpeechSegmentStartedDuringGuard;
+      const confirmed =
+        decision.accepted &&
+        !continuationOfGuardSegment &&
+        this.sileroSpeechSegmentStartedAtMs !== null &&
+        sustainedSpeechMs >= PLAYBACK_BARGE_IN_CONFIRMATION_MS;
+      emitLatencyTrace({
+        sessionId: this.snapshot.sessionId,
+        turnId: this.snapshot.turnId,
+        responseId: this.snapshot.responseId,
+        component: 'client',
+        event: 'barge_in_candidate',
+        metadata: {
+          probability: event.probability,
+          playback_age_ms: decision.playbackAgeMs,
+          speech_duration_ms: sustainedSpeechMs,
+          accepted: confirmed,
+          reason: confirmed
+            ? 'near_end_speech'
+            : continuationOfGuardSegment
+            ? 'segment_started_during_playback_guard'
+            : decision.reason,
+          event_type: eventType,
+        },
+      });
+      console.info('BARGE_IN_ACTIVITY_CHECK', {
+        probability: event.probability ?? null,
+        playbackAgeMs: decision.playbackAgeMs,
+        speechDurationMs,
+        speechSegmentAgeMs,
+        sustainedSpeechMs,
+        requiredMs: PLAYBACK_BARGE_IN_CONFIRMATION_MS,
+        continuationOfGuardSegment,
+        decision: decision.reason,
+        confirmed,
+        timestampMs: this.now(),
+      });
+      if (!confirmed) {
+        if (decision.reason === 'likely_playback_echo') {
+          console.info('BARGE_IN_ECHO_REJECTED', {
+            responseId: this.snapshot.responseId,
+            candidateStartMs: this.sileroSpeechSegmentStartedAtMs,
+            candidateDurationMs: sustainedSpeechMs,
+            echoSimilarity: decision.echoSimilarity,
+            playbackPositionMs: event.playbackPositionMs ?? null,
+            timestampMs: this.now(),
+          });
+          emitLatencyTrace({
+            sessionId: this.snapshot.sessionId,
+            turnId: this.snapshot.turnId,
+            responseId: this.snapshot.responseId,
+            component: 'client',
+            event: 'barge_in_echo_rejected',
+            metadata: {
+              candidate_start_ms: this.sileroSpeechSegmentStartedAtMs,
+              candidate_duration_ms: sustainedSpeechMs,
+              echo_similarity: decision.echoSimilarity,
+              playback_position_ms: event.playbackPositionMs,
+            },
+          });
+        }
+        console.info('BARGE_IN_REJECTED', {
+          reason: continuationOfGuardSegment
+            ? 'segment_started_during_playback_guard'
+            : sustainedSpeechMs < PLAYBACK_BARGE_IN_CONFIRMATION_MS
+            ? 'speech_confirmation_incomplete'
+            : decision.reason,
+          probability: event.probability ?? null,
+          playbackAgeMs: decision.playbackAgeMs,
+          speech_duration_ms: sustainedSpeechMs,
           timestampMs: this.now(),
         });
         return;
       }
+      console.info('BARGE_IN_REAL_SPEECH_CONFIRMED', {
+        responseId: this.snapshot.responseId,
+        echoSimilarity: decision.echoSimilarity,
+        playbackPositionMs: event.playbackPositionMs ?? null,
+        timestampMs: this.now(),
+      });
       console.info('BARGE_IN_SPEECH_DETECTED', {
         responseId: this.snapshot.responseId,
         timestampMs: this.now(),
@@ -2795,6 +2997,38 @@ export class VoiceSocket {
     });
   }
 
+  private suppressAudioForTransportFailure(reason: string): void {
+    this.clearAutoListenTimer();
+    this.autoListenSuppressed = true;
+    this.sileroSpeechSegmentStartedAtMs = null;
+    this.sileroSpeechSegmentStartedDuringGuard = false;
+    this.bargeInSpeechEndedPending = false;
+    this.autoCommitBargeInTurn = false;
+    console.info('TRANSPORT_UNHEALTHY_AUDIO_SUPPRESSED', {
+      reason,
+      sessionId: this.snapshot.sessionId,
+      turnId: this.snapshot.turnId,
+      responseId: this.snapshot.responseId,
+      timestampMs: this.now(),
+    });
+    emitLatencyTrace({
+      sessionId: this.snapshot.sessionId,
+      turnId: this.snapshot.turnId,
+      responseId: this.snapshot.responseId,
+      component: 'client',
+      event: 'transport_unhealthy_audio_suppressed',
+      metadata: { reason },
+    });
+    this.adapter.stopMicrophone?.().catch(() => undefined);
+    if (
+      ['buffering', 'speaking', 'stopping'].includes(
+        this.snapshot.ttsPlaybackState,
+      )
+    ) {
+      this.adapter.stopPlayback?.().catch(() => undefined);
+    }
+  }
+
   private checkHeartbeat(): void {
     if (!['connected', 'degraded'].includes(this.snapshot.connection)) {
       return;
@@ -2811,6 +3045,7 @@ export class VoiceSocket {
       heartbeat: 'missed',
       error: 'Voice connection heartbeat was missed. Reconnecting…',
     });
+    this.suppressAudioForTransportFailure('heartbeat_missed');
     if (this.desiredConnection && !this.explicitStop) {
       this.scheduleReconnect('heartbeat');
       this.closeTransportForReconnect().catch(() => undefined);

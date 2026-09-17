@@ -35,6 +35,7 @@ import kotlin.math.max
 class AudioEngine(
     private val context: Context,
     val config: AudioConfig = AudioConfig(),
+    private val playbackEchoReference: PlaybackEchoReference = PlaybackEchoReference(),
     private val pcmDataCallback: PcmDataCallback = PcmDataCallback { _, _ -> },
     private val vadEventListener: VadEngine.Listener? = null,
     private val sileroVadEventListener: SileroVadEngine.Listener? = null,
@@ -170,6 +171,8 @@ class AudioEngine(
     }
 
     private val stateLock = Any()
+    @Volatile
+    private var latestPlaybackEchoAssessment = PlaybackEchoReference.Assessment.idle()
     private val audioEffectsManager = AudioEffectsManager(
         AudioEffectsManager.Config(
             enableAcousticEchoCancellation = config.enableAcousticEchoCancellation,
@@ -231,6 +234,11 @@ class AudioEngine(
             // and Silero work are offered to their own bounded worker queues
             // and never block this callback with inference. No stage forwards
             // PCM to JS.
+            latestPlaybackEchoAssessment = playbackEchoReference.assess(
+                buffer,
+                samplesRead,
+                SystemClock.elapsedRealtimeNanos(),
+            )
             vadEngine.processFrame(buffer, samplesRead)
             sileroVadEngine.offerPcmFrame(buffer, samplesRead)
             wakeWordEngine.offerPcmFrame(buffer, samplesRead)
@@ -386,6 +394,9 @@ class AudioEngine(
 
     fun getAudioProcessingStatus(): AudioEffectsManager.Status =
         audioEffectsManager.getStatus()
+
+    fun getPlaybackEchoAssessment(): PlaybackEchoReference.Assessment =
+        latestPlaybackEchoAssessment
 
     fun getWakeWordStatus(): WakeWordEngine.Status = wakeWordEngine.getStatus()
 
@@ -576,6 +587,7 @@ class AudioEngine(
         Log.i(
             TAG,
             "AudioRecord config: sampleRate=${config.sampleRateHz}, " +
+                "audioSource=${MediaRecorder.AudioSource.MIC}, " +
                 "channels=${config.channelCount}, channelConfig=$channelConfig, " +
                 "encoding=$encoding ($PCM_FORMAT_LABEL), minBufferBytes=$minSize, " +
                 "bufferBytes=$safeBufferBytes",

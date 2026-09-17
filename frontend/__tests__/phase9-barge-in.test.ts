@@ -279,6 +279,56 @@ test('spoken confirmation starts a hands-free auto-committing answer turn', asyn
   expect(adapter.calls.filter(call => call === 'commitAudio')).toHaveLength(2);
 });
 
+test('does not interrupt a pending confirmation prompt from playback VAD', async () => {
+  const { socket, adapter } = await prepareTurn();
+
+  adapter.emitEvent({
+    event: 'confirmation.required',
+    sessionId: SESSION_ID,
+    turnId: 'turn-1',
+    responseId: 'response-1',
+    eventId: 'confirmation-required',
+    confirmationId: 'confirmation-1',
+    toolCallId: 'call-1',
+    toolName: 'create_task',
+    status: 'PENDING',
+    timestampMs: 5,
+  });
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_STARTED',
+    probability: 0.99,
+    speechDurationMs: 160,
+    timestampMs: 1_505,
+  });
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_ACTIVITY',
+    probability: 0.99,
+    speechDurationMs: 2_000,
+    timestampMs: 2_500,
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  expect(adapter.calls).not.toContain('stopPlayback');
+  expect(adapter.calls).not.toContain('cancelResponse');
+  expect(socket.getSnapshot().confirmationAwaitingVoice).toBe(true);
+});
+
+test('ignores Silero activity events as standalone playback interruptions', async () => {
+  const { socket, adapter } = await prepareTurn();
+
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_ACTIVITY',
+    probability: 0.99,
+    speechDurationMs: 2_000,
+    timestampMs: 1_505,
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  expect(adapter.calls).not.toContain('stopPlayback');
+  expect(adapter.calls).not.toContain('cancelResponse');
+  expect(socket.getSnapshot().ttsPlaybackState).toBe('speaking');
+});
+
 test('keeps capture alive after commit for playback-time VAD', async () => {
   const { socket, adapter } = await prepareTurn();
 
@@ -295,8 +345,15 @@ test('Silero confirmed speech stops playback, cancels the old response, and star
 
   adapter.emitVad({
     event: 'SILERO_VAD_SPEECH_STARTED',
+    probability: 0.9,
     speechDurationMs: 0,
     timestampMs: 1_505,
+  });
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_ACTIVITY',
+    probability: 0.9,
+    speechDurationMs: 480,
+    timestampMs: 1_985,
   });
   await new Promise<void>(resolve => setTimeout(resolve, 0));
 
@@ -319,6 +376,22 @@ test('Silero confirmed speech stops playback, cancels the old response, and star
     timestampMs: 6,
   });
   expect(socket.getSnapshot().ttsPlaybackState).toBe('idle');
+});
+
+test('does not interrupt playback from a single confirmed VAD transition', async () => {
+  const { socket, adapter } = await prepareTurn();
+
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_STARTED',
+    probability: 0.99,
+    speechDurationMs: 160,
+    timestampMs: 1_505,
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  expect(adapter.calls).not.toContain('stopPlayback');
+  expect(adapter.calls).not.toContain('cancelResponse');
+  expect(socket.getSnapshot().ttsPlaybackState).toBe('speaking');
 });
 
 test('rejects a Silero candidate during the measured playback startup echo window', async () => {
@@ -361,6 +434,39 @@ test('does not reclassify a continuous guard-started echo after the guard expire
   expect(socket.getSnapshot().ttsPlaybackState).toBe('speaking');
 });
 
+test('does not interrupt when a high-confidence candidate matches rendered TTS', async () => {
+  const { socket, adapter } = await prepareTurn();
+
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_STARTED',
+    probability: 0.99,
+    speechDurationMs: 160,
+    timestampMs: 1_505,
+    playbackActive: true,
+    playbackState: 'TTS_PLAYING',
+    playbackReferenceAvailable: true,
+    echoLikely: true,
+    echoSimilarity: 0.92,
+  });
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_ACTIVITY',
+    probability: 0.99,
+    speechDurationMs: 2_000,
+    timestampMs: 3_505,
+    playbackActive: true,
+    playbackState: 'TTS_PLAYING',
+    playbackReferenceAvailable: true,
+    echoLikely: true,
+    echoSimilarity: 0.92,
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  expect(adapter.calls).not.toContain('stopPlayback');
+  expect(adapter.calls).not.toContain('cancelResponse');
+  expect(adapter.calls.filter(call => call === 'startTurn')).toHaveLength(1);
+  expect(socket.getSnapshot().ttsPlaybackState).toBe('speaking');
+});
+
 test('keeps the playback guard anchored when playback-start is reported twice', async () => {
   const { socket, adapter } = await prepareTurn();
 
@@ -378,6 +484,12 @@ test('keeps the playback guard anchored when playback-start is reported twice', 
     speechDurationMs: 160,
     timestampMs: 1_301,
   });
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_ACTIVITY',
+    probability: 0.9,
+    speechDurationMs: 480,
+    timestampMs: 1_781,
+  });
   await new Promise<void>(resolve => setTimeout(resolve, 0));
 
   expect(adapter.calls).toContain('stopPlayback');
@@ -391,8 +503,15 @@ test('creates and commits the replacement turn before delayed cancellation ackno
 
   adapter.emitVad({
     event: 'SILERO_VAD_SPEECH_STARTED',
+    probability: 0.9,
     speechDurationMs: 160,
     timestampMs: 1_505,
+  });
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_ACTIVITY',
+    probability: 0.9,
+    speechDurationMs: 480,
+    timestampMs: 1_985,
   });
   await new Promise<void>(resolve => setTimeout(resolve, 0));
 
@@ -469,8 +588,15 @@ test('late old-response cancellation does not reset the replacement turn', async
 
   adapter.emitVad({
     event: 'SILERO_VAD_SPEECH_STARTED',
+    probability: 0.9,
     speechDurationMs: 160,
     timestampMs: 1_505,
+  });
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_ACTIVITY',
+    probability: 0.9,
+    speechDurationMs: 480,
+    timestampMs: 1_985,
   });
   await new Promise<void>(resolve => setTimeout(resolve, 0));
 
@@ -508,8 +634,15 @@ test('holds pending speech until the replacement server turn is ready', async ()
 
   adapter.emitVad({
     event: 'SILERO_VAD_SPEECH_STARTED',
+    probability: 0.9,
     speechDurationMs: 160,
     timestampMs: 1_505,
+  });
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_ACTIVITY',
+    probability: 0.9,
+    speechDurationMs: 480,
+    timestampMs: 1_985,
   });
   await new Promise<void>(resolve => setTimeout(resolve, 0));
 

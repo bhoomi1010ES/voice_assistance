@@ -3,6 +3,7 @@ package com.voiceaipoc.voice
 import android.os.SystemClock
 import android.util.Log
 import com.voiceaipoc.auth.AuthTokenStorage
+import com.voiceaipoc.audio.PlaybackEchoReference
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -12,6 +13,7 @@ import okio.ByteString
 import org.json.JSONObject
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -32,6 +34,7 @@ class VoiceWebSocketTransport(
     private val tokenStorage: AuthTokenStorage,
     private val listener: Listener,
     private val isTtsOutputEnabled: () -> Boolean = { true },
+    private val playbackEchoReference: PlaybackEchoReference = PlaybackEchoReference(),
     private val client: OkHttpClient = OkHttpClient(),
     private val networkExecutor: ExecutorService = Executors.newSingleThreadExecutor {
         Thread(it, "VoiceAI-VoiceGateway")
@@ -39,6 +42,9 @@ class VoiceWebSocketTransport(
     private val sendQueue: PcmSendQueue = PcmSendQueue(),
     private val heartbeatScheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor {
         Thread(it, "VoiceAI-VoiceHeartbeat")
+    },
+    private val ttsFrameExecutor: ExecutorService = Executors.newSingleThreadExecutor {
+        Thread(it, "VoiceAI-TtsFrameIngress")
     },
 ) {
     enum class State {
@@ -183,16 +189,43 @@ class VoiceWebSocketTransport(
     }
     private val ttsAudioPlayer = TtsAudioPlayer(
         listener = object : TtsAudioPlayer.Listener {
-            override fun onPlaybackStarted(responseId: java.util.UUID) =
+            override fun onPlaybackStarted(responseId: java.util.UUID) {
+                playbackEchoReference.onPlaybackStarted(responseId.toString())
+                Log.i(
+                    TAG,
+                    "TTS_AUDIO_RENDER_STARTED response_id=$responseId " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
                 notifyTtsPlayback("tts.playback.started", responseId)
+            }
 
-            override fun onPlaybackCompleted(responseId: java.util.UUID) =
+            override fun onPlaybackCompleted(responseId: java.util.UUID) {
+                playbackEchoReference.onPlaybackEnded(responseId.toString())
+                Log.i(
+                    TAG,
+                    "TTS_AUDIO_RENDER_ENDED response_id=$responseId reason=completed " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
                 notifyTtsPlayback("tts.playback.completed", responseId)
+            }
 
-            override fun onPlaybackStopped(responseId: java.util.UUID) =
+            override fun onPlaybackStopped(responseId: java.util.UUID) {
+                playbackEchoReference.onPlaybackEnded(responseId.toString())
+                Log.i(
+                    TAG,
+                    "TTS_AUDIO_RENDER_ENDED response_id=$responseId reason=stopped " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
                 notifyTtsPlayback("tts.playback.stopped", responseId)
+            }
 
             override fun onPlaybackError(responseId: java.util.UUID, errorCode: String) {
+                playbackEchoReference.onPlaybackEnded(responseId.toString())
+                Log.i(
+                    TAG,
+                    "TTS_AUDIO_RENDER_ENDED response_id=$responseId reason=error:$errorCode " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
                 Log.e(TAG, "TTS_PLAYBACK_ERROR response_id=$responseId code=$errorCode")
                 notifyTtsPlayback("tts.playback.stopped", responseId)
             }
@@ -230,6 +263,22 @@ class VoiceWebSocketTransport(
                 queueBytesRemaining: Int,
             ) {
                 lastTtsFrameWrittenSequence = sequence
+            }
+
+            override fun onPcmRendered(
+                responseId: java.util.UUID,
+                sequence: Long,
+                payload: ByteArray,
+                offsetBytes: Int,
+                writtenBytes: Int,
+            ) {
+                playbackEchoReference.onPcmRendered(
+                    responseId = responseId.toString(),
+                    payload = payload,
+                    offsetBytes = offsetBytes,
+                    byteCount = writtenBytes,
+                    sampleRateHz = TtsAudioFrame.TTS_SAMPLE_RATE_HZ,
+                )
             }
 
             override fun onPlaybackSummary(
@@ -760,6 +809,7 @@ class VoiceWebSocketTransport(
         disconnect()
         networkExecutor.shutdownNow()
         heartbeatScheduler.shutdownNow()
+        ttsFrameExecutor.shutdownNow()
         client.dispatcher.executorService.shutdown()
         client.connectionPool.evictAll()
         ttsAudioPlayer.shutdown()
@@ -813,6 +863,7 @@ class VoiceWebSocketTransport(
             )
             stopHeartbeat()
             ttsAudioPlayer.cancel()
+            playbackEchoReference.reset()
             sendQueue.clear()
             sendQueue.clearPreRoll()
             bargeInTurn = false
@@ -850,6 +901,7 @@ class VoiceWebSocketTransport(
             cancelledBargeInResponseId = null
             bargeInState = BargeInState.IDLE
             ttsAudioPlayer.cancel()
+            playbackEchoReference.reset()
             notifyStatus()
         }
 
@@ -875,6 +927,7 @@ class VoiceWebSocketTransport(
             Log.e(TAG, "WS_FAILURE stacktrace", t)
             stopHeartbeat()
             ttsAudioPlayer.cancel()
+            playbackEchoReference.reset()
             sendQueue.clear()
             sendQueue.clearPreRoll()
             bargeInTurn = false
@@ -1349,20 +1402,29 @@ class VoiceWebSocketTransport(
                 return
             }
         }
-        if (!ttsAudioPlayer.write(frame.responseId, frame.sequence, frame.payload)) {
-            if (!ttsAudioPlayer.isActive(frame.responseId)) {
-                Log.w(
-                    TAG,
-                    "TTS_STALE_FRAME response_id=${frame.responseId} sequence=${frame.sequence} " +
-                        "reason=playback_inactive",
-                )
-                return
+        try {
+            // TtsAudioPlayer may wait for its bounded PCM queue to drain. Keep
+            // that wait off OkHttp's WebSocket callback thread so control
+            // messages and application heartbeats remain responsive.
+            ttsFrameExecutor.execute {
+                if (!ttsAudioPlayer.write(frame.responseId, frame.sequence, frame.payload)) {
+                    if (!ttsAudioPlayer.isActive(frame.responseId)) {
+                        Log.w(
+                            TAG,
+                            "TTS_STALE_FRAME response_id=${frame.responseId} sequence=${frame.sequence} " +
+                                "reason=playback_inactive",
+                        )
+                        return@execute
+                    }
+                    recordError("E_TTS_PLAYBACK", "TTS PCM could not be queued for playback.")
+                    return@execute
+                }
+                if (frame.endsResponse) {
+                    ttsAudioPlayer.finish(frame.responseId)
+                }
             }
-            recordError("E_TTS_PLAYBACK", "TTS PCM could not be queued for playback.")
-            return
-        }
-        if (frame.endsResponse) {
-            ttsAudioPlayer.finish(frame.responseId)
+        } catch (_: RejectedExecutionException) {
+            recordError("E_TTS_PLAYBACK", "TTS PCM worker is not available.")
         }
     }
 

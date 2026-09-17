@@ -58,6 +58,26 @@ def test_informational_and_ordinary_voice_intent_remains_auto(prompt: str) -> No
     assert choice == "auto"
 
 
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "When should I call Path?",
+        "What time is my call with Parth?",
+        "What tasks do I have tomorrow?",
+        "Did I create a reminder for the doctor?",
+    ],
+)
+def test_saved_task_lookup_selects_read_only_list_tasks(prompt: str) -> None:
+    choice = classify_voice_tool_choice(prompt, create_default_tool_registry().definitions())
+
+    assert isinstance(choice, LLMNamedToolChoice)
+    assert choice.function.name == "list_tasks"
+
+
+def test_task_lookup_requires_registered_list_tasks_tool() -> None:
+    assert classify_voice_tool_choice("When should I call Path?", ()) == "auto"
+
+
 def test_routing_requires_registered_create_task_tool() -> None:
     assert (
         classify_voice_tool_choice(

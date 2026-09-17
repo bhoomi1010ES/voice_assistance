@@ -184,6 +184,19 @@ async def test_approval_executes_once_and_replay_cannot_mutate_again() -> None:
         response_id=response_id,
         transcript="Yes",
     )
+    assert first == {
+        "status": "completed",
+        "confirmation": "approved",
+        "tool_execution_count": 1,
+        "database_mutation": True,
+    }
+    lookup = await gateway._resolve_pending_confirmation(
+        session_id=pending.session_id,
+        turn_id=uuid.uuid4(),
+        response_id=response_id,
+        transcript="When should I call Rahul?",
+    )
+
     second = await gateway._resolve_pending_confirmation(
         session_id=pending.session_id,
         turn_id=uuid.uuid4(),
@@ -191,13 +204,8 @@ async def test_approval_executes_once_and_replay_cannot_mutate_again() -> None:
         transcript="Yes",
     )
 
-    assert first == {
-        "status": "completed",
-        "confirmation": "approved",
-        "tool_execution_count": 1,
-        "database_mutation": True,
-    }
     assert second == {"status": "completed", "confirmation": "already_handled"}
+    assert lookup is None
     assert count() == 1
     stored = await store.get((pending.authenticated_user_id, pending.device_id, pending.session_id))
     assert stored is not None and stored.status == "CONSUMED"
@@ -288,6 +296,30 @@ async def test_pending_confirmation_is_cancelled_on_disconnect_scope_cleanup() -
 
 
 @pytest.mark.asyncio
+async def test_pending_confirmation_survives_voice_session_reconnect() -> None:
+    principal = _principal()
+    old_session_id = uuid.uuid4()
+    new_session_id = uuid.uuid4()
+    pending = _pending(principal, old_session_id)
+    store = InMemoryVoiceConfirmationStore()
+
+    await store.create_or_get(pending)
+
+    rebound = await store.get((principal.user_id, principal.device_id, new_session_id))
+    assert rebound is not None
+    assert rebound.confirmation_id == pending.confirmation_id
+    assert rebound.session_id == new_session_id
+
+    claimed = await store.claim(
+        (principal.user_id, principal.device_id, new_session_id),
+        pending.confirmation_id,
+    )
+    assert claimed is not None
+    assert claimed.session_id == new_session_id
+    assert claimed.status == "APPROVED"
+
+
+@pytest.mark.asyncio
 async def test_cancel_message_invalidates_completed_turn_pending_action() -> None:
     principal = _principal()
     pending = _pending(principal, uuid.uuid4())
@@ -311,6 +343,59 @@ async def test_cancel_message_invalidates_completed_turn_pending_action() -> Non
         "confirmation.resolved",
         "response.cancelled",
     ]
+
+
+@pytest.mark.asyncio
+async def test_barge_in_does_not_cancel_pending_confirmation() -> None:
+    principal = _principal()
+    pending = _pending(principal, uuid.uuid4())
+    gateway, store, outbound, _response_id, count = await _gateway(pending=pending)
+    gateway.cancel_guard.clear()
+    gateway.cancel_guard.activate(pending.original_response_id)
+    gateway._last_response_id = pending.original_response_id
+    gateway._response_turn_id = pending.original_turn_id
+
+    class _Registry:
+        async def cancel_response(self, *_args, **_kwargs):
+            return True
+
+    class _LLM:
+        provider_info = None
+
+        async def cancel(self, _response_id):
+            return None
+
+    async def _completed():
+        return None
+
+    gateway.registry = _Registry()
+    gateway.llm_service = _LLM()
+    gateway._tts_tasks = {}
+    gateway._stt_finalize_task = None
+    gateway._stt_finalize_cancel_requested = False
+    gateway.stt_turn = None
+    gateway.active_turn = None
+    gateway._cancelled_response_ids = set()
+    gateway.stats = SimpleNamespace(cancellation_count=0)
+    gateway._cancel_tts_response = lambda _response_id: _completed()
+    gateway._persist_conversation_log = lambda *_args, **_kwargs: _completed()
+    gateway._create_pending_turn_if_ready = lambda: _completed()
+    gateway.state = SimpleNamespace(session_id=pending.session_id)
+
+    await gateway._handle_response_cancel(
+        ResponseCancelMessage(
+            type="client.response.cancel",
+            response_id=pending.original_response_id,
+            reason="barge_in",
+        )
+    )
+
+    stored = await store.get(
+        (pending.authenticated_user_id, pending.device_id, pending.session_id)
+    )
+    assert stored is not None and stored.status == "PENDING"
+    assert count() == 0
+    assert outbound[-1]["type"] == "response.cancelled"
 
 
 @pytest.mark.asyncio

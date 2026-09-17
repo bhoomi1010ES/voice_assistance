@@ -3,6 +3,7 @@ package com.voiceaipoc.voice
 import java.util.Collections
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.CopyOnWriteArrayList
 import org.junit.Assert.assertEquals
@@ -61,6 +62,45 @@ class TtsAudioPlayerTest {
             waitUntil { factory.tracks.singleOrNull()?.released == true }
             assertEquals(10, factory.tracks.single().writtenBytes)
         } finally {
+            player.shutdown()
+        }
+    }
+
+    @Test
+    fun queueBackpressureWaitsForAudioTrackToDrain() {
+        val writeStarted = CountDownLatch(1)
+        val releaseWrite = CountDownLatch(1)
+        val factory = FakeTrackFactory(
+            writeStarted = writeStarted,
+            releaseWrite = releaseWrite,
+        )
+        val player = TtsAudioPlayer(
+            trackFactory = factory,
+            startupPrebufferBytes = 4,
+            maxQueueBytes = 8,
+        )
+        val responseId = UUID.randomUUID()
+        val writer = Executors.newSingleThreadExecutor()
+        try {
+            assertTrue(player.start(responseId, 24_000))
+            assertTrue(player.write(responseId, ByteArray(4)))
+            assertTrue(writeStarted.await(1, TimeUnit.SECONDS))
+            assertTrue(player.write(responseId, ByteArray(4)))
+
+            val thirdFrame = writer.submit<Boolean> {
+                player.write(responseId, ByteArray(4))
+            }
+            Thread.sleep(50)
+            assertFalse(thirdFrame.isDone)
+
+            releaseWrite.countDown()
+            assertTrue(thirdFrame.get(1, TimeUnit.SECONDS))
+            assertTrue(player.finish(responseId))
+            waitUntil { factory.tracks.singleOrNull()?.released == true }
+            assertEquals(12, factory.tracks.single().writtenBytes)
+        } finally {
+            releaseWrite.countDown()
+            writer.shutdownNow()
             player.shutdown()
         }
     }
@@ -175,17 +215,25 @@ class TtsAudioPlayerTest {
         }
     }
 
-    private class FakeTrackFactory(private val writeLimit: Int = Int.MAX_VALUE) :
+    private class FakeTrackFactory(
+        private val writeLimit: Int = Int.MAX_VALUE,
+        private val writeStarted: CountDownLatch? = null,
+        private val releaseWrite: CountDownLatch? = null,
+    ) :
         TtsAudioTrackFactory {
         val tracks = Collections.synchronizedList(mutableListOf<FakeTrack>())
 
         override fun minBufferSize(sampleRateHz: Int): Int = 4
 
         override fun create(sampleRateHz: Int, bufferSizeBytes: Int): TtsAudioTrack =
-            FakeTrack(writeLimit).also(tracks::add)
+            FakeTrack(writeLimit, writeStarted, releaseWrite).also(tracks::add)
     }
 
-    private class FakeTrack(private val writeLimit: Int) : TtsAudioTrack {
+    private class FakeTrack(
+        private val writeLimit: Int,
+        private val writeStarted: CountDownLatch?,
+        private val releaseWrite: CountDownLatch?,
+    ) : TtsAudioTrack {
         override val isInitialized = true
         var playCalls = 0
         var writtenBytes = 0
@@ -196,6 +244,8 @@ class TtsAudioPlayerTest {
         }
 
         override fun write(data: ByteArray, offsetInBytes: Int, sizeInBytes: Int, mode: Int): Int {
+            writeStarted?.countDown()
+            releaseWrite?.await(1, TimeUnit.SECONDS)
             val written = minOf(sizeInBytes, writeLimit)
             writtenBytes += written
             return written
