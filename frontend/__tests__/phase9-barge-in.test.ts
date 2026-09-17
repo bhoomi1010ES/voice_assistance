@@ -215,6 +215,70 @@ async function prepareTurn() {
   return { socket, adapter };
 }
 
+test('spoken confirmation starts a hands-free auto-committing answer turn', async () => {
+  const { socket, adapter } = await prepareTurn();
+
+  adapter.emitEvent({
+    event: 'confirmation.required',
+    sessionId: SESSION_ID,
+    turnId: 'turn-1',
+    responseId: 'response-1',
+    eventId: 'confirmation-required',
+    confirmationId: 'confirmation-1',
+    toolCallId: 'call-1',
+    toolName: 'create_task',
+    status: 'PENDING',
+    timestampMs: 5,
+  });
+  expect(socket.getSnapshot().confirmationAwaitingVoice).toBe(true);
+
+  adapter.emitEvent({
+    event: 'server.turn.completed',
+    sessionId: SESSION_ID,
+    turnId: 'turn-1',
+    responseId: 'response-1',
+    eventId: 'confirmation-turn-completed',
+    timestampMs: 6,
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  expect(adapter.calls.filter(call => call === 'startTurn')).toHaveLength(1);
+
+  adapter.emitEvent({
+    event: 'tts.playback.completed',
+    sessionId: SESSION_ID,
+    turnId: 'turn-1',
+    responseId: 'response-1',
+    eventId: 'confirmation-playback-completed',
+    timestampMs: 7,
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  expect(adapter.calls.filter(call => call === 'startTurn')).toHaveLength(2);
+  expect(socket.getSnapshot().turn).toBe('starting');
+
+  adapter.emitEvent({
+    event: 'server.turn.ready',
+    sessionId: SESSION_ID,
+    turnId: 'turn-2',
+    responseId: 'response-2',
+    eventId: 'confirmation-answer-ready',
+    timestampMs: 8,
+  });
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_STARTED',
+    speechDurationMs: 160,
+    timestampMs: 9,
+  });
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_STOPPED',
+    speechDurationMs: 500,
+    timestampMs: 10,
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  expect(adapter.calls.filter(call => call === 'commitAudio')).toHaveLength(2);
+});
+
 test('keeps capture alive after commit for playback-time VAD', async () => {
   const { socket, adapter } = await prepareTurn();
 

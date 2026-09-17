@@ -326,6 +326,45 @@ async def test_gateway_emits_ordered_server_owned_tool_lifecycle() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gateway_treats_confirmation_request_as_terminal_without_llm_failure() -> None:
+    gateway, outbound = _gateway(lambda _request: ())
+    gateway.principal = SimpleNamespace(user_id=uuid.uuid4())
+    gateway.voice_session = None
+    gateway.tool_registry = SimpleNamespace(definitions=lambda: ())
+
+    class FakeToolLoop:
+        async def stream(self, request, *, context):
+            del context
+            call = LLMToolCall(
+                tool_call_id="call-create-task",
+                name="create_task",
+                arguments={"title": "Call Rahul"},
+            )
+            yield _event(
+                request,
+                "confirmation_required",
+                1,
+                tool_call=call,
+                error_code="llm_tool_confirmation_required",
+            )
+
+    gateway.tool_loop = FakeToolLoop()
+    response_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._stream_llm_response(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=response_id,
+        transcript="Remind me to call Rahul tomorrow.",
+    )
+
+    assert result == {"status": "confirmation_required"}
+    assert outbound == []
+    assert gateway.persistence.metadata == []
+
+
+@pytest.mark.asyncio
 async def test_gateway_preserves_typed_provider_failure_without_text_final() -> None:
     def events(request):
         yield _event(request, "request_started", 0)

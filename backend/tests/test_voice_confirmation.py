@@ -111,6 +111,7 @@ async def _gateway(*, pending: PendingConfirmation | None = None):
     )
     db = _FakeDatabase()
     outbound: list[dict] = []
+    spoken_texts: list[str] = []
     gateway = object.__new__(VoiceGateway)
     gateway.settings = Settings(
         _env_file=None,
@@ -136,6 +137,12 @@ async def _gateway(*, pending: PendingConfirmation | None = None):
         outbound.append(event)
 
     gateway._send = send
+
+    async def speak_text(**kwargs) -> None:
+        spoken_texts.append(kwargs["text"])
+
+    gateway._speak_text = speak_text
+    gateway._spoken_texts = spoken_texts
     if pending is not None:
         await store.create_or_get(pending)
     return gateway, store, outbound, current_response_id, lambda: execution_count
@@ -153,6 +160,8 @@ async def _gateway(*, pending: PendingConfirmation | None = None):
         ("no", "REJECTED"),
         ("No thanks.", "REJECTED"),
         ("nevermind", "REJECTED"),
+        ("reject it", "REJECTED"),
+        ("decline", "REJECTED"),
         ("No, do not approve 10 AM", "REJECTED"),
         ("maybe", "AMBIGUOUS"),
         ("I don't know", "AMBIGUOUS"),
@@ -208,6 +217,10 @@ async def test_approval_executes_once_and_replay_cannot_mutate_again() -> None:
     ]
     assert outbound[4]["text"].startswith("Done.")
     assert outbound[6]["text"] == "That confirmation has already been handled."
+    assert gateway._spoken_texts == [
+        outbound[4]["text"],
+        outbound[6]["text"],
+    ]
 
 
 @pytest.mark.asyncio
@@ -388,3 +401,33 @@ async def test_existing_pending_confirmation_is_terminal_for_new_tool_proposal()
     )
     assert stored is not None
     assert stored.confirmation_id == pending.confirmation_id
+
+
+def test_confirmation_prompt_identifies_action_and_spoken_choices() -> None:
+    principal = _principal()
+    pending = _pending(principal, uuid.uuid4())
+
+    prompt = VoiceGateway._confirmation_prompt_text(pending)
+
+    assert 'create task (titled "Call Rahul")' in prompt
+    assert "Say yes to approve, or no to reject." in prompt
+
+
+@pytest.mark.asyncio
+async def test_confirmation_prompt_is_spoken_with_the_same_text_shown_to_the_user() -> None:
+    gateway, _store, outbound, response_id, _count = await _gateway()
+    gateway._response_turn_id = uuid.uuid4()
+    gateway._last_response_id = response_id
+
+    result = await gateway._persist_confirmation_request(
+        SimpleNamespace(tool_call_id="call-voice-confirmation", name="create_task"),
+        CreateTaskArguments(title="Call Rahul"),
+        SimpleNamespace(name="create_task"),
+    )
+
+    assert result is True
+    assert gateway._spoken_texts == [
+        'I can create task (titled "Call Rahul"). Say yes to approve, or no to reject.'
+    ]
+    assert outbound[-1]["type"] == "assistant.text.final"
+    assert outbound[-1]["text"] == gateway._spoken_texts[0]

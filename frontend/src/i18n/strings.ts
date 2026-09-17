@@ -118,20 +118,14 @@ export const strings = {
     cancel: 'Cancel',
     confirm: 'Start new',
     toolUnderstanding: 'Understanding assistant actionâ€¦',
-    toolConfirmationRequired:
-      'Confirmation required before this action can run.',
+    toolConfirmationRequired: 'Waiting for your spoken approval or rejection.',
+    voiceConfirmationListening:
+      'Listening for you to say yes to approve or no to reject.',
     toolApproved: 'Assistant action approved.',
     toolExecuting: 'Assistant action in progressâ€¦',
     toolSuccess: 'Assistant action completed.',
     toolFailed: 'Assistant action failed.',
     toolCancelled: 'Assistant action cancelled.',
-    toolConfirmTitle: 'Approve assistant action?',
-    toolConfirmBody:
-      'The server validated this action. Approve it to run, or cancel it without changing your data.',
-    toolApprove: 'Approve',
-    toolDeny: 'Cancel action',
-    toolConfirmUnavailable:
-      'This confirmation could not be sent. Keep the action pending and try again when connected.',
     performanceFirstText: 'First visible text',
     performanceRender: 'Message render complete',
   },

@@ -38,9 +38,13 @@ def normalize_confirmation(text: str) -> str:
 
 def resolve_confirmation(text: str) -> ConfirmationResolution:
     normalized = normalize_confirmation(text)
-    if re.match(r"^(?:no|cancel|stop|never mind|nevermind)(?:\s|$)", normalized) or re.search(
-        r"\b(?:don't|do not)\s+(?:approve|confirm|accept|proceed|save|create)\b",
-        normalized,
+    if (
+        re.match(r"^(?:no|cancel|stop|never mind|nevermind)(?:\s|$)", normalized)
+        or re.search(
+            r"\b(?:don't|do not)\s+(?:approve|confirm|accept|proceed|save|create)\b",
+            normalized,
+        )
+        or re.search(r"\b(?:reject|decline|deny)(?:\s+(?:it|that|this))?\b", normalized)
     ):
         return "REJECTED"
     if normalized in {
@@ -73,6 +77,9 @@ def resolve_confirmation(text: str) -> ConfirmationResolution:
         "no thanks",
         "cancel",
         "stop",
+        "reject",
+        "decline",
+        "deny",
         "don't",
         "do not",
         "never mind",

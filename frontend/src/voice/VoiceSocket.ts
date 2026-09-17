@@ -141,6 +141,7 @@ export type VoiceSocketSnapshot = {
   ttsPlaybackState: VoiceTtsPlaybackState;
   ttsResponseId: string | null;
   ttsError: string | null;
+  confirmationAwaitingVoice: boolean;
   speechDetected: boolean;
   transcriptMessages: VoiceTranscriptMessage[];
   conversationMessages: ConversationMessage[];
@@ -235,6 +236,7 @@ const INITIAL_SNAPSHOT: VoiceSocketSnapshot = {
   ttsPlaybackState: 'idle',
   ttsResponseId: null,
   ttsError: null,
+  confirmationAwaitingVoice: false,
   speechDetected: false,
   transcriptMessages: [],
   conversationMessages: [],
@@ -354,6 +356,7 @@ export type NormalizedVoiceEvent = {
   timestampMs: number | null;
   transcript?: CanonicalTranscriptEvent;
   assistant?: VoiceEvent;
+  confirmationStatus?: string;
   errorCode?: string;
   errorMessage?: string;
   retryable?: boolean;
@@ -403,6 +406,7 @@ export function normalizeVoiceGatewayEvent(
   const errorCode = readString(record.code ?? record.errorCode, MAX_ID_LENGTH);
   const errorMessage = readString(record.message ?? record.errorMessage, 180);
   const retryable = readBoolean(record.retryable);
+  const confirmationStatus = readString(record.status, 32);
   const sampleRateHz = readNumber(record.sampleRateHz ?? record.sample_rate_hz);
   return {
     type: rawType as VoiceServerEventType,
@@ -416,6 +420,7 @@ export function normalizeVoiceGatewayEvent(
     timestampMs,
     ...(transcript ? { transcript } : {}),
     ...(assistant ? { assistant } : {}),
+    ...(confirmationStatus ? { confirmationStatus } : {}),
     ...(errorCode ? { errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(retryable !== null ? { retryable } : {}),
@@ -468,6 +473,9 @@ export class VoiceSocket {
   private bargeInTurnId: string | null = null;
   private ttsPlaybackStartedAtMs: number | null = null;
   private ttsPlaybackResponseId: string | null = null;
+  private confirmationAwaitingVoice = false;
+  private confirmationPromptPlaybackCompleted = false;
+  private confirmationTurnStartInFlight = false;
   private sileroSpeechSegmentStartedAtMs: number | null = null;
   private sileroSpeechSegmentStartedDuringGuard = false;
 
@@ -1281,6 +1289,15 @@ export class VoiceSocket {
     }
     if (event.assistant) {
       this.applyConversationEvent(event.assistant);
+      if (
+        event.assistant.type === 'tool.status' &&
+        event.assistant.confirmationId &&
+        event.assistant.status !== 'confirmation_required'
+      ) {
+        this.confirmationAwaitingVoice = false;
+        this.confirmationPromptPlaybackCompleted = false;
+        this.setSnapshot({ confirmationAwaitingVoice: false });
+      }
     }
 
     if (event.type === 'server.pong') {
@@ -1321,6 +1338,9 @@ export class VoiceSocket {
           event.responseId ?? this.snapshot.responseId,
         );
         this.sessionStartInFlight = false;
+        this.confirmationAwaitingVoice = false;
+        this.confirmationPromptPlaybackCompleted = false;
+        this.confirmationTurnStartInFlight = false;
         this.desiredSession = false;
         this.setSnapshot({
           session: 'idle',
@@ -1331,6 +1351,7 @@ export class VoiceSocket {
           ttsPlaybackState: 'idle',
           ttsResponseId: null,
           ttsError: null,
+          confirmationAwaitingVoice: false,
           speechDetected: false,
           transcriptMessages: [],
           transcriptError: null,
@@ -1345,6 +1366,9 @@ export class VoiceSocket {
           event.responseId ?? this.snapshot.responseId,
         );
         this.sessionStartInFlight = false;
+        this.confirmationAwaitingVoice = false;
+        this.confirmationPromptPlaybackCompleted = false;
+        this.confirmationTurnStartInFlight = false;
         this.desiredSession = false;
         this.desiredConnection = false;
         this.explicitStop = true;
@@ -1355,6 +1379,7 @@ export class VoiceSocket {
           sessionId: null,
           turnId: null,
           responseId: null,
+          confirmationAwaitingVoice: false,
           speechDetected: false,
           transcriptMessages: [],
           transcriptError: null,
@@ -1456,14 +1481,19 @@ export class VoiceSocket {
         this.ttsPlaybackTerminal = true;
         this.ttsPlaybackStartedAtMs = null;
         this.ttsPlaybackResponseId = null;
+        if (this.confirmationAwaitingVoice) {
+          this.confirmationPromptPlaybackCompleted = true;
+        }
         this.setSnapshot({
           ttsPlaybackState: 'completed',
           ttsResponseId: event.responseId,
         });
         this.finalizeResponseIfReady();
+        this.maybeStartVoiceConfirmationTurn();
         break;
       case 'tts.playback.stopped':
       case 'tts.cancelled':
+        this.confirmationPromptPlaybackCompleted = false;
         this.ttsPlaybackTerminal = true;
         this.ttsPlaybackStartedAtMs = null;
         this.ttsPlaybackResponseId = null;
@@ -1473,8 +1503,10 @@ export class VoiceSocket {
           ttsError: null,
         });
         this.finalizeResponseIfReady();
+        this.maybeStartVoiceConfirmationTurn();
         break;
       case 'tts.failed':
+        this.confirmationPromptPlaybackCompleted = false;
         this.ttsPlaybackTerminal = true;
         this.ttsPlaybackStartedAtMs = null;
         this.ttsPlaybackResponseId = null;
@@ -1485,6 +1517,23 @@ export class VoiceSocket {
             event.errorMessage ?? event.errorCode ?? 'Voice output failed.',
         });
         this.finalizeResponseIfReady();
+        break;
+      case 'voice.confirmation.required':
+      case 'confirmation.required':
+        this.confirmationAwaitingVoice = true;
+        this.confirmationPromptPlaybackCompleted = false;
+        this.setSnapshot({ confirmationAwaitingVoice: true });
+        this.maybeStartVoiceConfirmationTurn();
+        break;
+      case 'confirmation.resolved':
+        if (
+          event.confirmationStatus &&
+          event.confirmationStatus.toUpperCase() !== 'PENDING'
+        ) {
+          this.confirmationAwaitingVoice = false;
+          this.confirmationPromptPlaybackCompleted = false;
+          this.setSnapshot({ confirmationAwaitingVoice: false });
+        }
         break;
       case 'transcript.partial':
       case 'voice.transcript.partial':
@@ -1510,6 +1559,7 @@ export class VoiceSocket {
           session: 'ready',
         });
         this.finalizeResponseIfReady();
+        this.maybeStartVoiceConfirmationTurn();
         break;
       case 'response.cancelled':
         this.applyConversationEvent({
@@ -1527,12 +1577,16 @@ export class VoiceSocket {
         this.turnStartedAtMs = null;
         this.responseServerCompleted = true;
         this.ttsPlaybackTerminal = true;
+        this.confirmationAwaitingVoice = false;
+        this.confirmationPromptPlaybackCompleted = false;
+        this.confirmationTurnStartInFlight = false;
         this.markCurrentTranscriptCancelled();
         this.setSnapshot({
           turn: 'cancelled',
           speechDetected: false,
           turnId: null,
           responseId: null,
+          confirmationAwaitingVoice: false,
           session: 'ready',
         });
         this.setSnapshot({ turn: 'idle' });
@@ -1599,6 +1653,9 @@ export class VoiceSocket {
     this.responseServerCompleted = false;
     this.ttsPlaybackTerminal = true;
     this.bargeInInFlight = false;
+    this.confirmationAwaitingVoice = false;
+    this.confirmationPromptPlaybackCompleted = false;
+    this.confirmationTurnStartInFlight = false;
     this.stopMicrophoneSafely().catch(() => undefined);
 
     const shouldReconnect = this.desiredConnection && !this.explicitStop;
@@ -1611,6 +1668,7 @@ export class VoiceSocket {
       sessionId: null,
       turnId: null,
       responseId: null,
+      confirmationAwaitingVoice: false,
       speechDetected: false,
       transcriptMessages: [],
       transcriptError: null,
@@ -1644,6 +1702,9 @@ export class VoiceSocket {
     this.sessionStartInFlight = false;
     this.turnStartedAtMs = null;
     this.speechEndedAtMs = null;
+    this.confirmationAwaitingVoice = false;
+    this.confirmationPromptPlaybackCompleted = false;
+    this.confirmationTurnStartInFlight = false;
     this.stopMicrophoneSafely().catch(() => undefined);
 
     const shouldReconnect = this.desiredConnection && !this.explicitStop;
@@ -1657,6 +1718,7 @@ export class VoiceSocket {
       sessionId: null,
       turnId: null,
       responseId: null,
+      confirmationAwaitingVoice: false,
       speechDetected: false,
       transcriptMessages: [],
       transcriptError: null,
@@ -1694,6 +1756,37 @@ export class VoiceSocket {
     });
     this.setSnapshot({ turn: 'idle' });
     this.stopMicrophoneSafely().catch(() => undefined);
+  }
+
+  private maybeStartVoiceConfirmationTurn(): void {
+    if (
+      !this.confirmationAwaitingVoice ||
+      this.confirmationTurnStartInFlight ||
+      this.snapshot.connection !== 'connected' ||
+      this.snapshot.session !== 'ready' ||
+      this.snapshot.turn !== 'idle' ||
+      !this.responseServerCompleted ||
+      !this.ttsPlaybackTerminal ||
+      !this.confirmationPromptPlaybackCompleted
+    ) {
+      return;
+    }
+
+    this.confirmationTurnStartInFlight = true;
+    console.info('VOICE_CONFIRMATION_TURN_STARTING', {
+      sessionId: this.snapshot.sessionId,
+      timestampMs: this.now(),
+    });
+    this.startTurn({ autoCommitOnSpeechEnd: true })
+      .catch(error => {
+        console.warn('VOICE_CONFIRMATION_TURN_START_FAILED', {
+          message: safeVoiceError(error),
+          timestampMs: this.now(),
+        });
+      })
+      .finally(() => {
+        this.confirmationTurnStartInFlight = false;
+      });
   }
 
   private shouldBargeIn(eventType: string): boolean {
@@ -2594,6 +2687,9 @@ export class VoiceSocket {
     this.responseServerCompleted = false;
     this.ttsPlaybackTerminal = true;
     this.bargeInInFlight = false;
+    this.confirmationAwaitingVoice = false;
+    this.confirmationPromptPlaybackCompleted = false;
+    this.confirmationTurnStartInFlight = false;
     this.setSnapshot({
       connection: 'disconnected',
       session: 'idle',
@@ -2603,6 +2699,7 @@ export class VoiceSocket {
       sessionId: null,
       turnId: null,
       responseId: null,
+      confirmationAwaitingVoice: false,
       ttsPlaybackState: 'idle',
       ttsResponseId: null,
       ttsError: null,

@@ -78,6 +78,13 @@ function createVoiceSocket(
     sessionId: null,
     turnId: null,
     responseId: null,
+    ttsPlaybackState: 'idle' as const,
+    ttsResponseId: null,
+    ttsError: null,
+    confirmationAwaitingVoice: conversationMessages.some(
+      (message: any) =>
+        message.role === 'tool' && message.status === 'confirmation_required',
+    ),
     transcriptMessages: [],
     conversationMessages,
     transcriptError: null,
@@ -324,8 +331,7 @@ test('temporal clarification does not render a success acknowledgement', async (
   await act(async () => renderer.unmount());
 });
 
-test('assistant confirmation sheet sends only the correlated server identities', async () => {
-  const resolveConfirmation = jest.fn().mockResolvedValue(undefined);
+test('assistant confirmation is voice-only and renders no approval controls', async () => {
   const pendingTool = {
     id: 'tool-call-1',
     role: 'tool' as const,
@@ -343,7 +349,7 @@ test('assistant confirmation sheet sends only the correlated server identities',
     fetchImpl,
     storage: new EmptyTokenStorage(),
   });
-  const socket = createVoiceSocket([pendingTool], resolveConfirmation);
+  const socket = createVoiceSocket([pendingTool]);
   let renderer: ReactTestRenderer.ReactTestRenderer;
 
   await act(async () => {
@@ -360,17 +366,13 @@ test('assistant confirmation sheet sends only the correlated server identities',
   });
 
   expect(
-    renderer!.root.findByProps({ testID: 'tool-confirm-approve' }),
+    renderer!.root.findByProps({ testID: 'voice-confirmation-status' }),
   ).toBeTruthy();
-  await act(async () => {
-    await renderer!.root
-      .findByProps({ testID: 'tool-confirm-approve' })
-      .props.onPress();
-  });
-  expect(resolveConfirmation).toHaveBeenCalledWith(
-    'confirmation-1',
-    'call-1',
-    'approve',
-  );
+  expect(
+    renderer!.root.findAllByProps({ testID: 'tool-confirm-approve' }),
+  ).toHaveLength(0);
+  expect(
+    renderer!.root.findAllByProps({ testID: 'tool-confirm-deny' }),
+  ).toHaveLength(0);
   await act(async () => renderer!.unmount());
 });

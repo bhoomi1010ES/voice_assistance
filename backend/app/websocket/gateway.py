@@ -1341,6 +1341,7 @@ class VoiceGateway:
         tool_call_at: float | None = None
         tool_execution_started_at: float | None = None
         tool_execution_finished_at: float | None = None
+        confirmation_required = False
         tts_queue: asyncio.Queue[str | None] | None = None
         tts_task: asyncio.Task[None] | None = None
         tts_segmenter: SentenceSegmenter | None = None
@@ -1659,7 +1660,8 @@ class VoiceGateway:
                         )
                     continue
                 if event.event_type == "confirmation_required":
-                    return {"status": "confirmation_required"}
+                    confirmation_required = True
+                    break
                 if event.event_type == "usage":
                     usage = event.usage
                     continue
@@ -1720,6 +1722,12 @@ class VoiceGateway:
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await tts_task
                 self._tts_tasks.pop(response_id, None)
+
+        if confirmation_required:
+            # The server has already persisted the validated proposal and
+            # emitted the spoken confirmation request. This is a successful
+            # terminal state for this turn, not an LLM failure.
+            return {"status": "confirmation_required"}
 
         # Providers should emit a terminal event. This fallback preserves a
         # truthful boundary for an abnormal stream without borrowing a value
@@ -2070,6 +2078,34 @@ class VoiceGateway:
                     "confirmation_id": str(stored.confirmation_id),
                 },
             )
+        confirmation_prompt = self._confirmation_prompt_text(stored)
+        await self._send(
+            server_event(
+                "assistant.response.started",
+                session_id=stored.session_id,
+                turn_id=stored.original_turn_id,
+                response_id=stored.original_response_id,
+                confirmation=True,
+            )
+        )
+        await self._speak_text(
+            session_id=stored.session_id,
+            turn_id=stored.original_turn_id,
+            response_id=stored.original_response_id,
+            text=confirmation_prompt,
+        )
+        await self._send(
+            server_event(
+                "assistant.text.final",
+                session_id=stored.session_id,
+                turn_id=stored.original_turn_id,
+                response_id=stored.original_response_id,
+                text=confirmation_prompt,
+                provider="server",
+                model="confirmation-request",
+                finish_reason="confirmation_required",
+            )
+        )
         LOGGER.info(
             "Voice confirmation required",
             extra={
@@ -2089,6 +2125,25 @@ class VoiceGateway:
             },
         )
         return True
+
+    @staticmethod
+    def _confirmation_prompt_text(pending: PendingConfirmation) -> str:
+        """Build the only confirmation question the client needs to hear."""
+
+        tool_label = pending.tool_name.replace("_", " ")
+        arguments = pending.validated_tool_arguments
+        title = str(arguments.get("title", "")).strip()
+        details: list[str] = []
+        if title:
+            details.append(f'titled "{title[:160]}"')
+        due_at = _confirmation_due_at_local(pending)
+        if due_at:
+            details.append(f"scheduled for {due_at}")
+        detail_text = f" ({', '.join(details)})" if details else ""
+        return (
+            f"I can {tool_label}{detail_text}. "
+            "Say yes to approve, or no to reject."
+        )
 
     def _confirmation_scope(self, session_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
         return (self.principal.user_id, self.principal.device_id, session_id)
