@@ -78,6 +78,8 @@ yarn-error.log
 # Local work records
 /docs/*
 !/docs/
+!/docs/20260918_110210_phase0-baseline.md
+!/docs/20260918_111832_phase0-oppo-physical-profiles.md
 !/docs/phase_1_status_report.md
 !/docs/20260917_172859_stt_speech_end_grace_fix.md
 !/docs/20260917_173828_start_turn_session_race_fix.md

@@ -4,6 +4,7 @@ import android.os.SystemClock
 import android.util.Log
 import com.voiceaipoc.auth.AuthTokenStorage
 import com.voiceaipoc.audio.PlaybackEchoReference
+import com.voiceaipoc.diagnostics.DiagnosticSessionContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -46,6 +47,7 @@ class VoiceWebSocketTransport(
     private val ttsFrameExecutor: ExecutorService = Executors.newSingleThreadExecutor {
         Thread(it, "VoiceAI-TtsFrameIngress")
     },
+    private val diagnosticSession: DiagnosticSessionContext = DiagnosticSessionContext(),
 ) {
     enum class State {
         DISCONNECTED,
@@ -77,6 +79,7 @@ class VoiceWebSocketTransport(
         val lastServerEvent: String? = null,
         val lastServerEventTimestampMs: Long = 0,
         val lastError: String? = null,
+        val diagnosticSessionId: String = DiagnosticSessionContext.NONE,
     )
 
     data class ServerEventPayload(
@@ -188,11 +191,11 @@ class VoiceWebSocketTransport(
         NEW_TURN_COMMITTING,
     }
     private val ttsAudioPlayer = TtsAudioPlayer(
+        diagnosticSession = diagnosticSession,
         listener = object : TtsAudioPlayer.Listener {
             override fun onPlaybackStarted(responseId: java.util.UUID) {
                 playbackEchoReference.onPlaybackStarted(responseId.toString())
-                Log.i(
-                    TAG,
+                ttsLogInfo(
                     "TTS_AUDIO_RENDER_STARTED response_id=$responseId " +
                         "elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
@@ -201,8 +204,7 @@ class VoiceWebSocketTransport(
 
             override fun onPlaybackCompleted(responseId: java.util.UUID) {
                 playbackEchoReference.onPlaybackEnded(responseId.toString())
-                Log.i(
-                    TAG,
+                ttsLogInfo(
                     "TTS_AUDIO_RENDER_ENDED response_id=$responseId reason=completed " +
                         "elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
@@ -211,8 +213,7 @@ class VoiceWebSocketTransport(
 
             override fun onPlaybackStopped(responseId: java.util.UUID) {
                 playbackEchoReference.onPlaybackEnded(responseId.toString())
-                Log.i(
-                    TAG,
+                ttsLogInfo(
                     "TTS_AUDIO_RENDER_ENDED response_id=$responseId reason=stopped " +
                         "elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
@@ -221,12 +222,11 @@ class VoiceWebSocketTransport(
 
             override fun onPlaybackError(responseId: java.util.UUID, errorCode: String) {
                 playbackEchoReference.onPlaybackEnded(responseId.toString())
-                Log.i(
-                    TAG,
+                ttsLogInfo(
                     "TTS_AUDIO_RENDER_ENDED response_id=$responseId reason=error:$errorCode " +
                         "elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
-                Log.e(TAG, "TTS_PLAYBACK_ERROR response_id=$responseId code=$errorCode")
+                ttsLogError("TTS_PLAYBACK_ERROR response_id=$responseId code=$errorCode")
                 notifyTtsPlayback("tts.playback.stopped", responseId)
             }
 
@@ -241,14 +241,12 @@ class VoiceWebSocketTransport(
                 ttsPcmBytesEnqueued += bytes
                 if (firstTtsEnqueueResponseId != responseId.toString()) {
                     firstTtsEnqueueResponseId = responseId.toString()
-                    Log.i(
-                        TAG,
+                    ttsLogInfo(
                         "TTS_FIRST_PCM_ENQUEUED response_id=$responseId seq=$sequence " +
                             "bytes=$bytes elapsedMs=${SystemClock.elapsedRealtime()}",
                     )
                 }
-                Log.i(
-                    TAG,
+                ttsLogInfo(
                     "TTS_FRAME_ENQUEUED response_id=$responseId seq=$sequence " +
                         "bytes=$bytes queued_bytes=$queuedBytes " +
                         "elapsedMs=${SystemClock.elapsedRealtime()}",
@@ -285,8 +283,7 @@ class VoiceWebSocketTransport(
                 responseId: java.util.UUID,
                 summary: TtsAudioPlayer.PlaybackSummary,
             ) {
-                Log.i(
-                    TAG,
+                ttsLogInfo(
                     "TTS_RESPONSE_SUMMARY response_id=$responseId " +
                         "frames_received=$ttsFramesReceived frames_enqueued=$ttsFramesEnqueued " +
                         "frames_written=${summary.framesWritten} " +
@@ -402,6 +399,7 @@ class VoiceWebSocketTransport(
     }
 
     fun startSession(resumeSessionId: String? = null): Result {
+        diagnosticSession.ensureActive()
         synchronized(stateLock) {
             if (status.state != State.CONNECTED) {
                 return Result(false, "E_VOICE_STATE", "Connect to the voice gateway first.")
@@ -487,15 +485,13 @@ class VoiceWebSocketTransport(
         if (includePreRoll) {
             if (preRoll.isNotEmpty()) {
                 val bytes = preRoll.sumOf { it.payload.size }
-                Log.i(
-                    TAG,
+                bargeInLog(
                     "BARGE_IN_PREROLL_ATTACHED bytes=$bytes " +
                         "duration_ms=${preRoll.size * 20} " +
                         "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
             }
-            Log.i(
-                TAG,
+            bargeInLog(
                 "BARGE_IN_NEW_TURN_REQUESTED generation=$nextGeneration " +
                     "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
             )
@@ -539,8 +535,7 @@ class VoiceWebSocketTransport(
         } else if (accepted && turnId == null) {
             val pending = sendQueue.pendingSnapshot()
             if (pending.depth == 1 || pending.depth % 50 == 0) {
-                Log.i(
-                    TAG,
+                bargeInLog(
                     "BARGE_IN_PCM_BUFFERING frames=${pending.depth} " +
                         "bytes=${pending.depth * PcmSendQueue.FRAME_SAMPLES * PcmSendQueue.BYTES_PER_SAMPLE} " +
                         "generation=$generation wallMs=${System.currentTimeMillis()} " +
@@ -585,8 +580,7 @@ class VoiceWebSocketTransport(
         )
         notifyStatus()
         if (waitForTurnReady) {
-            Log.i(
-                TAG,
+            bargeInLog(
                 "BARGE_IN_COMMIT_WAITING_FOR_TURN_READY wallMs=${System.currentTimeMillis()} " +
                     "elapsedMs=${SystemClock.elapsedRealtime()}",
             )
@@ -625,8 +619,7 @@ class VoiceWebSocketTransport(
             )
             synchronized(stateLock) {
                 if (bargeInTurn) {
-                    Log.i(
-                        TAG,
+                    bargeInLog(
                         "BARGE_IN_NEW_TURN_COMMIT_SENT frames=${committed.first} bytes=${committed.second} " +
                             "lastSequence=${committed.third} wallMs=${System.currentTimeMillis()} " +
                             "elapsedMs=${SystemClock.elapsedRealtime()}",
@@ -797,7 +790,9 @@ class VoiceWebSocketTransport(
     }
 
     fun getStatus(): Status = synchronized(stateLock) {
-        status.copyFromQueue(sendQueue.snapshot(), sendQueue.pendingSnapshot())
+        status.copyFromQueue(sendQueue.snapshot(), sendQueue.pendingSnapshot()).copy(
+            diagnosticSessionId = diagnosticSession.currentId() ?: DiagnosticSessionContext.NONE,
+        )
     }
 
     fun stopTtsPlayback() {
@@ -1044,16 +1039,14 @@ class VoiceWebSocketTransport(
                 )
                 if (bargeInTurn) {
                     if (!bargeInLivePcmLogged) {
-                        Log.i(
-                            TAG,
+                        bargeInLog(
                             "BARGE_IN_LIVE_PCM_STARTED turnId=${frame.ownerTurnId} " +
                                 "generation=${frame.generation} wallMs=${System.currentTimeMillis()} " +
                                 "elapsedMs=${SystemClock.elapsedRealtime()}",
                         )
                         bargeInLivePcmLogged = true
                     }
-                    Log.i(
-                        TAG,
+                    bargeInLog(
                         "BARGE_IN_PCM_FORWARDING turnId=${frame.ownerTurnId} " +
                             "seq=${frame.sequenceNo} bytes=${frame.payload.size} " +
                             "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
@@ -1085,8 +1078,7 @@ class VoiceWebSocketTransport(
                 .put("byte_count", committed.second)
                 .put("duration_ms", durationMs),
         )
-        Log.i(
-            TAG,
+        bargeInLog(
             "BARGE_IN_NEW_TURN_COMMIT_SENT frames=${committed.first} bytes=${committed.second} " +
                 "lastSequence=${committed.third} wallMs=${System.currentTimeMillis()} " +
                 "elapsedMs=${SystemClock.elapsedRealtime()}",
@@ -1239,8 +1231,7 @@ class VoiceWebSocketTransport(
         }
         if (binding != null) {
             if (wasBargeInTurn) {
-                Log.i(
-                    TAG,
+                bargeInLog(
                     "BARGE_IN_BUFFER_FLUSH_STARTED frames=${binding.frames} bytes=${binding.bytes} " +
                         "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
@@ -1251,14 +1242,12 @@ class VoiceWebSocketTransport(
                     transitionBargeInStateLocked(BargeInState.NEW_TURN_READY)
                 }
             }
-            Log.i(
-                TAG,
+            bargeInLog(
                 "BARGE_IN_NEW_TURN_BOUND turnId=$turnId frames=${binding.frames} " +
                     "bytes=${binding.bytes} wallMs=${System.currentTimeMillis()} " +
                     "elapsedMs=${SystemClock.elapsedRealtime()}",
             )
-            Log.i(
-                TAG,
+            bargeInLog(
                 "BARGE_IN_BUFFER_FLUSH_COMPLETED frames=${binding.frames} bytes=${binding.bytes} " +
                     "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
             )
@@ -1272,8 +1261,7 @@ class VoiceWebSocketTransport(
             )
         }
         if (binding != null && wasBargeInTurn) {
-            Log.i(
-                TAG,
+            bargeInLog(
                 "BARGE_IN_NEW_TURN_CREATED turnId=${turnId ?: "NONE"} " +
                     "responseId=${responseId ?: "NONE"} " +
                     "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
@@ -1650,10 +1638,21 @@ class VoiceWebSocketTransport(
         listener.onStatus(getStatus())
     }
 
+    private fun ttsLogInfo(message: String) {
+        Log.i(TAG, diagnosticSession.tag(message))
+    }
+
+    private fun ttsLogError(message: String) {
+        Log.e(TAG, diagnosticSession.tag(message))
+    }
+
+    private fun bargeInLog(message: String) {
+        Log.i(TAG, diagnosticSession.tag(message))
+    }
+
     private fun transitionBargeInStateLocked(next: BargeInState) {
         if (bargeInState == next) return
-        Log.i(
-            TAG,
+        bargeInLog(
             "BARGE_IN_STATE from=${bargeInState.name} to=${next.name} " +
                 "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
         )

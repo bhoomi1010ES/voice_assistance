@@ -24,6 +24,7 @@ export type MicrophoneStatus = {
   bufferSizeBytes: number;
   minBufferSizeBytes: number;
   audioSessionId: number;
+  diagnosticSessionId?: string;
   pcmFramesCaptured: number;
   captureDurationMs: number;
   microphoneErrorCount: number;
@@ -554,6 +555,7 @@ export type VoiceGatewayStatus = {
   lastServerEvent: string | null;
   lastServerEventTimestampMs: number;
   lastError: string | null;
+  diagnosticSessionId?: string;
 };
 
 export type VoiceGatewayEvent = {

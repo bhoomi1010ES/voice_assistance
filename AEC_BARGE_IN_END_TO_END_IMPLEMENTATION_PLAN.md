@@ -290,29 +290,29 @@ Create a reliable before-state and unblock native tests before changing signal b
 
 ### Development steps
 
-- [ ] Remove the reparse/copy anomaly from `frontend/node_modules` using a clean dependency reinstall; do not commit generated dependency contents.
-- [ ] Run the focused Android JVM suites and record their results:
+- [x] Remove the reparse/copy anomaly from `frontend/node_modules` using a clean dependency reinstall; do not commit generated dependency contents.
+- [x] Run the focused Android JVM suites and record their results:
   - `AudioPipelineTest`
   - `PlaybackEchoReferenceTest`
   - `TtsAudioPlayerTest`
   - `SileroVadStateMachineTest`
   - `SileroVadEngineTest`
-- [ ] Run the focused React Native suites:
+- [x] Run the focused React Native suites:
   - `playback-barge-in-policy.test.ts`
   - `phase9-barge-in.test.ts`
   - `continuous-chat.test.ts`
-- [ ] Add a repeatable diagnostic-session identifier to native TTS, capture, VAD, and barge-in logs.
-- [ ] Record a baseline physical run on each currently available reference device, including Samsung SM-M336BU and RMX5070 where available.
-- [ ] Capture four effect profiles separately: disabled, AEC-only, NS-only, and AEC+NS.
+- [x] Add a repeatable diagnostic-session identifier to native TTS, capture, VAD, and barge-in logs.
+- [x] Record a baseline physical run on each currently available reference device, including Samsung SM-M336BU and RMX5070 where available.
+- [x] Capture four effect profiles separately: disabled, AEC-only, NS-only, and AEC+NS.
 - [ ] Record route, Android mode, capture source, playback usage, audio session ID, AEC/NS support/created/enabled state, Silero probability, echo similarity, and barge-in result.
-- [ ] Do not store diagnostic PCM by default. Require an explicit diagnostic toggle and keep any captures app-private with a deletion path.
+- [x] Do not store diagnostic PCM by default. Require an explicit diagnostic toggle and keep any captures app-private with a deletion path.
 
 ### Gate
 
-- All focused automated tests reach execution.
+- [x] All focused automated tests reach execution.
 - Baseline false-interruption reproduction has timestamped logs.
 - At least one TTS-only failure and one real-user interruption attempt can be traced from playback start through VAD and cancellation.
-- The chosen baseline is archived in a dated document under `docs/`.
+- [x] The chosen baseline is archived in a dated document under `docs/`.
 
 ---
 
@@ -901,4 +901,3 @@ This project is complete only when all of the following are true:
 - [ ] A dated implementation record is created under `docs/` with changed files, test commands, results, device evidence, thresholds, and remaining limitations.
 
 Until these gates pass, Phase 9 should be described as **software lifecycle implemented; acoustic acceptance pending**, not fully complete.
-

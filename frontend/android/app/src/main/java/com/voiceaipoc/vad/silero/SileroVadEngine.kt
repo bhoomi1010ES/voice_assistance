@@ -3,6 +3,7 @@ package com.voiceaipoc.vad.silero
 import android.util.Log
 import com.voiceaipoc.audio.AudioEngine
 import com.voiceaipoc.audio.AudioRingBuffer
+import com.voiceaipoc.diagnostics.DiagnosticSessionContext
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
@@ -27,6 +28,7 @@ class SileroVadEngine(
     private val listener: Listener? = null,
     private val nanoClock: () -> Long = System::nanoTime,
     private val wallClockMs: () -> Long = System::currentTimeMillis,
+    private val diagnosticSession: DiagnosticSessionContext = DiagnosticSessionContext(),
 ) {
     interface Listener {
         fun onEngineStarted(status: Status)
@@ -257,9 +259,9 @@ class SileroVadEngine(
 
         Log.i(
             AudioEngine.TAG,
-            "Silero VAD worker starting: runtime=$runtimeName, " +
+            diagnosticSession.tag("Silero VAD worker starting: runtime=$runtimeName, " +
                 "model=${config.modelAssetPath}, chunkSamples=${config.inferenceChunkSamples}, " +
-                "threshold=${config.speechProbabilityThreshold}",
+                "threshold=${config.speechProbabilityThreshold}"),
         )
         val runtimeReady = try {
             requireNotNull(readyLatch).await(
@@ -402,9 +404,9 @@ class SileroVadEngine(
             val status = getStatus()
             Log.i(
                 AudioEngine.TAG,
-                "Silero VAD worker stopped: inference=${status.inferenceCount}, " +
+                diagnosticSession.tag("Silero VAD worker stopped: inference=${status.inferenceCount}, " +
                     "successful=${status.successfulInferenceCount}, " +
-                    "failed=${status.failedInferenceCount}, dropped=${status.droppedFrames}",
+                    "failed=${status.failedInferenceCount}, dropped=${status.droppedFrames}"),
             )
             listener?.onEngineStopped(status)
         }
@@ -510,8 +512,10 @@ class SileroVadEngine(
             }
             Log.i(
                 AudioEngine.TAG,
-                "Silero VAD engine started: runtime=${runtime.runtimeName} " +
-                    "${runtime.runtimeVersion}",
+                diagnosticSession.tag(
+                    "Silero VAD engine started: runtime=${runtime.runtimeName} " +
+                        "${runtime.runtimeVersion}",
+                ),
             )
             listener?.onEngineStarted(getStatus())
 
@@ -655,16 +659,20 @@ class SileroVadEngine(
             EVENT_SPEECH_STARTED -> {
                 Log.i(
                     AudioEngine.TAG,
-                    "SILERO_VAD_SPEECH_STARTED probability=${event.probability} " +
-                        "inference=${event.inferenceIndex}",
+                    diagnosticSession.tag(
+                        "SILERO_VAD_SPEECH_STARTED probability=${event.probability} " +
+                            "inference=${event.inferenceIndex}",
+                    ),
                 )
                 listener?.onSpeechStarted(event)
             }
             EVENT_SPEECH_STOPPED -> {
                 Log.i(
                     AudioEngine.TAG,
-                    "SILERO_VAD_SPEECH_STOPPED durationMs=${event.speechDurationMs} " +
-                        "inference=${event.inferenceIndex}",
+                    diagnosticSession.tag(
+                        "SILERO_VAD_SPEECH_STOPPED durationMs=${event.speechDurationMs} " +
+                            "inference=${event.inferenceIndex}",
+                    ),
                 )
                 listener?.onSpeechStopped(event)
             }
@@ -686,8 +694,10 @@ class SileroVadEngine(
         )
         Log.i(
             AudioEngine.TAG,
-            "SILERO_VAD_SPEECH_ACTIVITY probability=${event.probability} " +
-                "durationMs=${event.speechDurationMs} inference=${event.inferenceIndex}",
+            diagnosticSession.tag(
+                "SILERO_VAD_SPEECH_ACTIVITY probability=${event.probability} " +
+                    "durationMs=${event.speechDurationMs} inference=${event.inferenceIndex}",
+            ),
         )
         listener?.onSpeechActivity(event)
     }

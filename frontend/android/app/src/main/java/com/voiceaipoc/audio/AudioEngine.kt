@@ -3,11 +3,13 @@ package com.voiceaipoc.audio
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.SystemClock
 import android.util.Log
+import com.voiceaipoc.diagnostics.DiagnosticSessionContext
 import com.voiceaipoc.vad.VadEngine
 import com.voiceaipoc.vad.silero.AndroidSileroVadModelAsset
 import com.voiceaipoc.vad.silero.AndroidSileroVadRuntimeFactory
@@ -41,6 +43,7 @@ class AudioEngine(
     private val sileroVadEventListener: SileroVadEngine.Listener? = null,
     private val wakeWordEventListener: WakeWordEngine.Listener? = null,
     private val listener: Listener? = null,
+    private val diagnosticSession: DiagnosticSessionContext = DiagnosticSessionContext(),
 ) {
     fun interface PcmDataCallback {
         /**
@@ -70,6 +73,7 @@ class AudioEngine(
         val captureDurationMs: Long,
         val microphoneErrorCount: Int,
         val lastError: String?,
+        val diagnosticSessionId: String = DiagnosticSessionContext.NONE,
     )
 
     data class AudioPipelineStatus(
@@ -184,6 +188,7 @@ class AudioEngine(
         frameDurationMs = config.frameDurationMs,
         frameSizeSamples = config.frameSizeSamples,
         listener = vadEventListener,
+        diagnosticSession = diagnosticSession,
     )
     private val wakeWordRuntimeFactory = AndroidWakeWordRuntimeFactory(
         context,
@@ -226,6 +231,7 @@ class AudioEngine(
         runtimeAvailable = true,
         runtimeFactory = AndroidSileroVadRuntimeFactory(context, config.sileroVadConfig),
         listener = sileroVadEventListener,
+        diagnosticSession = diagnosticSession,
     )
     private val pcmPipeline = PcmAudioPipeline(
         config,
@@ -389,6 +395,7 @@ class AudioEngine(
             captureDurationMs = activeDuration,
             microphoneErrorCount = microphoneErrorCount,
             lastError = lastError,
+            diagnosticSessionId = diagnosticSession.currentId() ?: DiagnosticSessionContext.NONE,
         )
     }
 
@@ -544,6 +551,7 @@ class AudioEngine(
     }
 
     private fun startRecordingLocked(): OperationResult {
+        diagnosticSession.ensureActive()
         if (recording || session != null) {
             return OperationResult(
                 succeeded = false,
@@ -586,11 +594,11 @@ class AudioEngine(
 
         Log.i(
             TAG,
-            "AudioRecord config: sampleRate=${config.sampleRateHz}, " +
+            diagnosticSession.tag("AudioRecord config: sampleRate=${config.sampleRateHz}, " +
                 "audioSource=${MediaRecorder.AudioSource.MIC}, " +
                 "channels=${config.channelCount}, channelConfig=$channelConfig, " +
                 "encoding=$encoding ($PCM_FORMAT_LABEL), minBufferBytes=$minSize, " +
-                "bufferBytes=$safeBufferBytes",
+                "bufferBytes=$safeBufferBytes"),
         )
 
         val recorder = try {
@@ -653,6 +661,21 @@ class AudioEngine(
         actualEncoding = PCM_FORMAT_LABEL
         audioSessionId = recorder.audioSessionId
         val effectStatus = audioEffectsManager.attachToAudioSession(audioSessionId)
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        Log.i(
+            TAG,
+            diagnosticSession.tag(
+                "CAPTURE_SESSION_STARTED android_mode=${audioManager?.mode ?: -1} " +
+                    "output_route=${describeOutputRoute(audioManager)} capture_source=MIC " +
+                    "audio_session_id=$audioSessionId " +
+                    "aec_supported=${effectStatus.aec.supported} " +
+                    "aec_created=${effectStatus.aec.created} " +
+                    "aec_enabled=${effectStatus.aec.enabled} " +
+                    "ns_supported=${effectStatus.noiseSuppression.supported} " +
+                    "ns_created=${effectStatus.noiseSuppression.created} " +
+                    "ns_enabled=${effectStatus.noiseSuppression.enabled}",
+            ),
+        )
         wakeWordEngine.setAudioProcessingState(
             aecEnabled = effectStatus.aec.enabled,
             noiseSuppressionEnabled = effectStatus.noiseSuppression.enabled,
@@ -729,7 +752,10 @@ class AudioEngine(
             )
         }
 
-        Log.i(TAG, "Microphone capture started: audioSessionId=$audioSessionId")
+        Log.i(
+            TAG,
+            diagnosticSession.tag("Microphone capture started: audioSessionId=$audioSessionId"),
+        )
         return OperationResult(succeeded = true)
     }
 
@@ -962,6 +988,17 @@ class AudioEngine(
 
     private fun hasRecordAudioPermission(): Boolean =
         context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    private fun describeOutputRoute(audioManager: AudioManager?): String {
+        if (audioManager == null) return "UNKNOWN"
+        return runCatching {
+            audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                .map { it.type.toString() }
+                .distinct()
+                .joinToString(",")
+                .ifEmpty { "NONE" }
+        }.getOrDefault("UNKNOWN")
+    }
 
     private fun safeBufferSizeBytes(minSizeBytes: Int, pcmSampleFrameBytes: Int): Int {
         val minimumSafeSize = max(

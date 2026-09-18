@@ -4,6 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.util.Log
+import com.voiceaipoc.diagnostics.DiagnosticSessionContext
 import java.util.ArrayDeque
 import java.util.UUID
 import java.util.concurrent.ExecutorService
@@ -76,6 +77,7 @@ internal class TtsAudioPlayer(
     private val writerExecutor: ExecutorService = Executors.newSingleThreadExecutor {
         Thread(it, "VoiceAI-TtsAudioWriter").apply { isDaemon = true }
     },
+    private val diagnosticSession: DiagnosticSessionContext = DiagnosticSessionContext(),
 ) {
     data class PlaybackSummary(
         val framesQueued: Int,
@@ -144,9 +146,22 @@ internal class TtsAudioPlayer(
     private var generation = 0L
     private var active: Session? = null
 
+    private fun logInfo(message: String) = Log.i(TAG, diagnosticSession.tag(message))
+
+    private fun logWarn(message: String) = Log.w(TAG, diagnosticSession.tag(message))
+
+    private fun logError(message: String, error: Throwable? = null) {
+        if (error == null) {
+            Log.e(TAG, diagnosticSession.tag(message))
+        } else {
+            Log.e(TAG, diagnosticSession.tag(message), error)
+        }
+    }
+
     fun start(responseId: UUID, sampleRateHz: Int): Boolean {
+        diagnosticSession.ensureActive()
         if (sampleRateHz != TTS_SAMPLE_RATE_HZ) {
-            Log.e(TAG, "TTS_PLAYER_REJECTED sample_rate=$sampleRateHz expected=$TTS_SAMPLE_RATE_HZ")
+            logError("TTS_PLAYER_REJECTED sample_rate=$sampleRateHz expected=$TTS_SAMPLE_RATE_HZ")
             return false
         }
         var stoppedResponse: UUID? = null
@@ -155,29 +170,29 @@ internal class TtsAudioPlayer(
             stoppedResponse = stopLocked(notifyStopped = true)
             val minBuffer = trackFactory.minBufferSize(sampleRateHz)
             if (minBuffer <= 0) {
-                Log.e(TAG, "TTS_PLAYER_REJECTED reason=invalid_min_buffer")
+                logError("TTS_PLAYER_REJECTED reason=invalid_min_buffer")
                 return false
             }
             val bufferSize = maxOf(minBuffer, startupPrebufferBytes)
             val track = runCatching { trackFactory.create(sampleRateHz, bufferSize) }
                 .getOrElse {
-                    Log.e(TAG, "TTS_PLAYER_REJECTED reason=track_create_failed")
+                    logError("TTS_PLAYER_REJECTED reason=track_create_failed")
                     return false
                 }
             if (!track.isInitialized) {
                 track.release()
-                Log.e(TAG, "TTS_PLAYER_REJECTED reason=track_not_initialized")
+                logError("TTS_PLAYER_REJECTED reason=track_not_initialized")
                 return false
             }
             generation += 1
             val session = Session(responseId, track, generation)
             active = session
             queue.clear()
-            Log.i(
-                TAG,
+            logInfo(
                 "TTS_PLAYER_CREATED sample_rate=$sampleRateHz channels=1 " +
                     "encoding=PCM16 buffer_size_bytes=$bufferSize " +
-                    "prebuffer_bytes=$startupPrebufferBytes",
+                    "prebuffer_bytes=$startupPrebufferBytes playback_usage=USAGE_MEDIA " +
+                    "content_type=CONTENT_TYPE_SPEECH",
             )
             writerExecutor.execute { runWriter(session) }
             lock.notifyAll()
@@ -194,14 +209,13 @@ internal class TtsAudioPlayer(
     fun write(responseId: UUID, sequence: Long, payload: ByteArray): Boolean {
         if (payload.isEmpty()) return true
         if (payload.size % BYTES_PER_SAMPLE != 0) {
-            Log.e(TAG, "TTS_PCM_REJECTED reason=odd_pcm_payload bytes=${payload.size}")
+            logError("TTS_PCM_REJECTED reason=odd_pcm_payload bytes=${payload.size}")
             return false
         }
         synchronized(lock) {
             val session = active?.takeIf { it.responseId == responseId } ?: return false
             if (payload.size > maxQueueBytes) {
-                Log.e(
-                    TAG,
+                logError(
                     "TTS_PCM_REJECTED reason=frame_exceeds_queue " +
                         "incoming_bytes=${payload.size} max_queue_bytes=$maxQueueBytes",
                 )
@@ -215,8 +229,7 @@ internal class TtsAudioPlayer(
             ) {
                 if (!session.queueBackpressureLogged) {
                     session.queueBackpressureLogged = true
-                    Log.w(
-                        TAG,
+                    logWarn(
                         "TTS_QUEUE_BACKPRESSURE queued_bytes=${session.queuedBytes} " +
                             "incoming_bytes=${payload.size} max_queue_bytes=$maxQueueBytes",
                     )
@@ -236,8 +249,7 @@ internal class TtsAudioPlayer(
             session.queuedBytes += copy.size
             session.framesQueued += 1
             session.pcmBytesQueued += copy.size
-            Log.i(
-                TAG,
+            logInfo(
                 "TTS_PREBUFFER queued_bytes=${session.queuedBytes} " +
                     "queued_duration_ms=${queuedDurationMs(session.queuedBytes)}",
             )
@@ -255,8 +267,7 @@ internal class TtsAudioPlayer(
         synchronized(lock) {
             val session = active?.takeIf { it.responseId == responseId } ?: return false
             session.finishRequested = true
-            Log.i(
-                TAG,
+            logInfo(
                 "TTS_END_RECEIVED response_id=$responseId elapsedMs=${android.os.SystemClock.elapsedRealtime()}",
             )
             lock.notifyAll()
@@ -305,15 +316,13 @@ internal class TtsAudioPlayer(
                             session.underrunsBefore = session.track.underrunCount()
                             session.track.play()
                             session.playbackStarted = true
-                            Log.i(
-                                TAG,
+                            logInfo(
                                 "TTS_PREBUFFER_READY response_id=${session.responseId} " +
                                     "queued_bytes=${session.queuedBytes} " +
                                     "queued_duration_ms=${queuedDurationMs(session.queuedBytes)} " +
                                     "elapsedMs=${android.os.SystemClock.elapsedRealtime()}",
                             )
-                            Log.i(
-                                TAG,
+                            logInfo(
                                 "TTS_PLAY_STARTED response_id=${session.responseId} " +
                                     "elapsedMs=${android.os.SystemClock.elapsedRealtime()}",
                             )
@@ -364,7 +373,7 @@ internal class TtsAudioPlayer(
             }
             synchronized(lock) { session.writeInProgress = false }
             if (written < 0) {
-                Log.e(TAG, "TTS_PCM_WRITE_ERROR code=$written")
+                logError("TTS_PCM_WRITE_ERROR code=$written")
                 fail(session, "write_error_$written")
                 return
             }
@@ -384,8 +393,7 @@ internal class TtsAudioPlayer(
                 cancelled = session.cancelRequested
                 lock.notifyAll()
             }
-            Log.i(
-                TAG,
+            logInfo(
                     "TTS_PCM_WRITE response_id=${session.responseId} seq=${chunk.sequence} " +
                         "requested_bytes=${chunk.payload.size - offset + written} " +
                         "written_bytes=$written queue_bytes_remaining=$queueBytesRemaining " +
@@ -393,8 +401,7 @@ internal class TtsAudioPlayer(
             )
             if (!session.firstPcmWriteLogged) {
                 session.firstPcmWriteLogged = true
-                Log.i(
-                    TAG,
+                logInfo(
                     "TTS_FIRST_PCM_WRITE response_id=${session.responseId} seq=${chunk.sequence} " +
                         "bytes=$written elapsedMs=${android.os.SystemClock.elapsedRealtime()}",
                 )
@@ -428,16 +435,16 @@ internal class TtsAudioPlayer(
             val underrunsAfter = session.track.underrunCount()
             val underrunDelta = (underrunsAfter - session.underrunsBefore).coerceAtLeast(0)
             if (underrunDelta > 0) {
-                Log.w(TAG, "TTS_UNDERRUN count=$underrunsAfter delta=$underrunDelta")
+                logWarn("TTS_UNDERRUN count=$underrunsAfter delta=$underrunDelta")
             } else {
-                Log.i(TAG, "TTS_UNDERRUN count=$underrunsAfter delta=0")
+                logInfo("TTS_UNDERRUN count=$underrunsAfter delta=0")
             }
             summary = summaryLocked(session, underrunDelta)
             stopSessionResourcesLocked(session)
             notify = session.playbackStarted
         }
         if (notify) {
-            Log.i(TAG, "TTS_PLAYBACK_COMPLETED response_id=${session.responseId}")
+            logInfo("TTS_PLAYBACK_COMPLETED response_id=${session.responseId}")
             listener.onPlaybackSummary(session.responseId, summary!!)
             listener.onPlaybackCompleted(session.responseId)
         }

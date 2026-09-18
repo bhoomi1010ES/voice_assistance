@@ -2,6 +2,7 @@ package com.voiceaipoc.vad
 
 import android.util.Log
 import com.voiceaipoc.audio.AudioEngine
+import com.voiceaipoc.diagnostics.DiagnosticSessionContext
 import kotlin.math.ceil
 import kotlin.math.log10
 import kotlin.math.max
@@ -19,6 +20,7 @@ class VadEngine(
     private val frameDurationMs: Int,
     private val frameSizeSamples: Int,
     private val listener: Listener? = null,
+    private val diagnosticSession: DiagnosticSessionContext = DiagnosticSessionContext(),
 ) {
     enum class State {
         SILENCE,
@@ -130,10 +132,10 @@ class VadEngine(
 
         Log.i(
             AudioEngine.TAG,
-            "VAD initialized: enabled=${config.enabled}, thresholdDbFs=${config.speechThresholdDbFs}, " +
+            diagnosticSession.tag("VAD initialized: enabled=${config.enabled}, thresholdDbFs=${config.speechThresholdDbFs}, " +
                 "frameDurationMs=$frameDurationMs, frameSamples=$frameSizeSamples, " +
                 "speechStartFrames=$effectiveSpeechStartFrames, " +
-                "speechEndFrames=$effectiveSpeechEndFrames",
+                "speechEndFrames=$effectiveSpeechEndFrames"),
         )
     }
 
@@ -168,9 +170,10 @@ class VadEngine(
         stopEvent?.let(::emitSpeechStopped)
         Log.i(
             AudioEngine.TAG,
-            "VAD stopped/reset: frames=${summary.vadFramesProcessed}, " +
+            diagnosticSession.tag("VAD stopped/reset: frames=${summary.vadFramesProcessed}, " +
                 "speechFrames=${summary.speechFrames}, nonSpeechFrames=${summary.nonSpeechFrames}, " +
                 "segments=${summary.speechSegments}, errors=${summary.vadErrorCount}",
+            ),
         )
     }
 
@@ -314,8 +317,10 @@ class VadEngine(
     private fun emitSpeechStarted(event: Event) {
         Log.i(
             AudioEngine.TAG,
-            "VAD SPEECH_STARTED: frameIndex=${event.frameIndex}, " +
-                "energyDbFs=${formatDb(event.energyDbFs)}, segment=${event.speechSegmentCount}",
+            diagnosticSession.tag(
+                "VAD SPEECH_STARTED: frameIndex=${event.frameIndex}, " +
+                    "energyDbFs=${formatDb(event.energyDbFs)}, segment=${event.speechSegmentCount}",
+            ),
         )
         listener?.onSpeechStarted(event)
     }
@@ -323,9 +328,11 @@ class VadEngine(
     private fun emitSpeechStopped(event: Event) {
         Log.i(
             AudioEngine.TAG,
-            "VAD SPEECH_STOPPED: frameIndex=${event.frameIndex}, " +
-                "energyDbFs=${formatDb(event.energyDbFs)}, " +
-                "speechDurationMs=${event.speechDurationMs}, reason=${event.reason}",
+            diagnosticSession.tag(
+                "VAD SPEECH_STOPPED: frameIndex=${event.frameIndex}, " +
+                    "energyDbFs=${formatDb(event.energyDbFs)}, " +
+                    "speechDurationMs=${event.speechDurationMs}, reason=${event.reason}",
+            ),
         )
         listener?.onSpeechStopped(event)
     }

@@ -19,6 +19,7 @@ import com.voiceaipoc.audio.AudioEffectsManager
 import com.voiceaipoc.audio.PlaybackEchoReference
 import com.voiceaipoc.auth.SecureTokenStorage
 import com.voiceaipoc.audio.AudioEngine.ManualWakeWordTrialStatus
+import com.voiceaipoc.diagnostics.DiagnosticSessionContext
 import com.voiceaipoc.vad.VadEngine
 import com.voiceaipoc.vad.silero.SileroVadEngine
 import com.voiceaipoc.voice.VoiceWebSocketTransport
@@ -53,12 +54,14 @@ class VoiceModule(
     )
     @Volatile
     private var voiceOutputEnabled = voicePreferences.getBoolean("enabled", true)
+    private val diagnosticSession = DiagnosticSessionContext()
     private val playbackEchoReference = PlaybackEchoReference()
 
     private val voiceGateway = VoiceWebSocketTransport(
         tokenStorage = authTokenStorage,
         isTtsOutputEnabled = { voiceOutputEnabled },
         playbackEchoReference = playbackEchoReference,
+        diagnosticSession = diagnosticSession,
         listener = object : VoiceWebSocketTransport.Listener {
             override fun onStatus(status: VoiceWebSocketTransport.Status) {
                 emitVoiceGatewayStatus(status)
@@ -148,6 +151,7 @@ class VoiceModule(
         context = reactContext.applicationContext,
         config = AudioConfig(),
         playbackEchoReference = playbackEchoReference,
+        diagnosticSession = diagnosticSession,
         pcmDataCallback = AudioEngine.PcmDataCallback { buffer, samplesRead ->
             // The transport copies the reusable frame immediately. PCM stays
             // native and is never sent through the React Native bridge.
@@ -324,11 +328,13 @@ class VoiceModule(
     @ReactMethod
     fun disconnectVoiceGateway(promise: Promise) {
         voiceGateway.disconnect()
+        if (!audioEngine.isRecording()) diagnosticSession.end()
         promise.resolve(toWritableVoiceGatewayMap(voiceGateway.getStatus()))
     }
 
     @ReactMethod
     fun startVoiceSession(resumeSessionId: String?, promise: Promise) {
+        diagnosticSession.ensureActive()
         resolveVoiceResult(voiceGateway.startSession(resumeSessionId), promise)
     }
 
@@ -416,7 +422,9 @@ class VoiceModule(
 
     @ReactMethod
     fun endVoiceSession(reason: String?, promise: Promise) {
-        resolveVoiceResult(voiceGateway.endSession(reason ?: "client_requested"), promise)
+        val result = voiceGateway.endSession(reason ?: "client_requested")
+        resolveVoiceResult(result, promise)
+        if (result.succeeded && !audioEngine.isRecording()) diagnosticSession.end()
     }
 
     @ReactMethod
@@ -438,6 +446,7 @@ class VoiceModule(
 
     @ReactMethod
     fun startMicrophone(promise: Promise) {
+        diagnosticSession.ensureActive()
         val result = audioEngine.startRecording()
         if (result.succeeded) {
             promise.resolve(toWritableMap(audioEngine.getStatus()))
@@ -454,6 +463,7 @@ class VoiceModule(
         } else {
             promise.reject(result.errorCode, result.errorMessage)
         }
+        if (result.succeeded && !voiceGateway.getStatus().sessionStarted) diagnosticSession.end()
     }
 
     @ReactMethod
@@ -614,6 +624,7 @@ class VoiceModule(
     override fun invalidate() {
         audioEngine.release()
         voiceGateway.shutdown()
+        diagnosticSession.end()
         diagnosticExecutor.shutdownNow()
         super.invalidate()
     }
@@ -982,6 +993,7 @@ class VoiceModule(
         putInt("bufferSizeBytes", status.bufferSizeBytes)
         putInt("minBufferSizeBytes", status.minBufferSizeBytes)
         putInt("audioSessionId", status.audioSessionId)
+        putString("diagnosticSessionId", status.diagnosticSessionId)
         putDouble("pcmFramesCaptured", status.pcmFramesCaptured.toDouble())
         putDouble("captureDurationMs", status.captureDurationMs.toDouble())
         putInt("microphoneErrorCount", status.microphoneErrorCount)
@@ -1015,6 +1027,7 @@ class VoiceModule(
             putString("lastServerEvent", status.lastServerEvent)
         }
         putDouble("lastServerEventTimestampMs", status.lastServerEventTimestampMs.toDouble())
+        putString("diagnosticSessionId", status.diagnosticSessionId)
         if (status.lastError == null) putNull("lastError") else putString("lastError", status.lastError)
     }
 
