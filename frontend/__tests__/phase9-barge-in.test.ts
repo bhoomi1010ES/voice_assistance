@@ -2,7 +2,11 @@ import {
   VoiceGatewayEvent,
   VoiceGatewayStatus,
 } from '../src/native/VoiceModule';
-import { VoiceSocket, VoiceSocketAdapter } from '../src/voice/VoiceSocket';
+import {
+  SPEECH_END_COMMIT_GRACE_MS,
+  VoiceSocket,
+  VoiceSocketAdapter,
+} from '../src/voice/VoiceSocket';
 
 const SESSION_ID = 'phase9-session';
 
@@ -170,6 +174,7 @@ const activeSockets: VoiceSocket[] = [];
 
 afterEach(async () => {
   await Promise.all(activeSockets.splice(0).map(socket => socket.dispose()));
+  jest.useRealTimers();
 });
 
 async function prepareTurn() {
@@ -269,13 +274,14 @@ test('spoken confirmation starts a hands-free auto-committing answer turn', asyn
     speechDurationMs: 160,
     timestampMs: 9,
   });
+  jest.useFakeTimers();
   adapter.emitVad({
     event: 'SILERO_VAD_SPEECH_STOPPED',
     speechDurationMs: 500,
     timestampMs: 10,
   });
-  await new Promise<void>(resolve => setTimeout(resolve, 0));
-
+  expect(adapter.calls.filter(call => call === 'commitAudio')).toHaveLength(1);
+  await jest.advanceTimersByTimeAsync(SPEECH_END_COMMIT_GRACE_MS);
   expect(adapter.calls.filter(call => call === 'commitAudio')).toHaveLength(2);
 });
 
@@ -535,12 +541,28 @@ test('creates and commits the replacement turn before delayed cancellation ackno
     eventId: 'new-turn-ready',
     timestampMs: 6,
   });
+  jest.useFakeTimers();
   adapter.emitVad({
     event: 'SILERO_VAD_SPEECH_STOPPED',
     speechDurationMs: 700,
     timestampMs: 2_200,
   });
-  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  expect(adapter.calls.filter(call => call === 'commitAudio')).toHaveLength(1);
+
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_STARTED',
+    speechDurationMs: 160,
+    timestampMs: 2_500,
+  });
+  await jest.advanceTimersByTimeAsync(SPEECH_END_COMMIT_GRACE_MS);
+  expect(adapter.calls.filter(call => call === 'commitAudio')).toHaveLength(1);
+
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_STOPPED',
+    speechDurationMs: 900,
+    timestampMs: 3_500,
+  });
+  await jest.advanceTimersByTimeAsync(SPEECH_END_COMMIT_GRACE_MS);
 
   expect(adapter.calls).toContain('commitAudio');
   adapter.emitEvent({
@@ -580,6 +602,7 @@ test('creates and commits the replacement turn before delayed cancellation ackno
     responseId: 'response-2',
   });
   expect(socket.getSnapshot().connection).toBe('connected');
+  jest.useRealTimers();
   await new Promise<void>(resolve => setTimeout(resolve, 300));
 });
 
@@ -649,13 +672,13 @@ test('holds pending speech until the replacement server turn is ready', async ()
   expect(socket.getSnapshot().turnId).toBeNull();
   expect(adapter.calls.filter(call => call === 'startTurn')).toHaveLength(2);
 
+  jest.useFakeTimers();
   adapter.emitVad({
     event: 'SILERO_VAD_SPEECH_STOPPED',
     speechDurationMs: 700,
     timestampMs: 2_200,
   });
   expect(adapter.calls.filter(call => call === 'commitAudio')).toHaveLength(1);
-  await new Promise<void>(resolve => setTimeout(resolve, 0));
 
   adapter.emitEvent({
     event: 'server.turn.ready',
@@ -665,7 +688,7 @@ test('holds pending speech until the replacement server turn is ready', async ()
     eventId: 'replacement-ready-early-end',
     timestampMs: 8,
   });
-  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  await jest.advanceTimersByTimeAsync(SPEECH_END_COMMIT_GRACE_MS);
   expect(adapter.calls.filter(call => call === 'commitAudio')).toHaveLength(2);
 });
 

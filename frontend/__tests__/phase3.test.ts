@@ -256,6 +256,40 @@ test('connects once and exposes the authenticated gateway state', async () => {
   });
 });
 
+test('waits for a session-ready event when start turn is pressed during startup', async () => {
+  const { socket, adapter } = createSocket(new FakeVoiceAdapter(), {
+    continuousListening: false,
+  });
+  await socket.connect();
+  await socket.startSession();
+  expect(socket.getSnapshot()).toMatchObject({
+    connection: 'connected',
+    session: 'starting',
+    heartbeat: 'healthy',
+  });
+
+  const startTurnPromise = socket.startTurn();
+  expect(adapter.startTurnCalls).toBe(0);
+
+  adapter.emitEvent({
+    event: 'server.session.ready',
+    sessionId: SESSION_ID,
+    turnId: null,
+    responseId: null,
+    eventId: 'session-ready-before-turn',
+    timestampMs: 1,
+  });
+  expect(socket.getSnapshot()).toMatchObject({
+    connection: 'connected',
+    session: 'ready',
+    heartbeat: 'healthy',
+  });
+  await startTurnPromise;
+
+  expect(adapter.startTurnCalls).toBe(1);
+  expect(socket.getSnapshot().turn).toBe('starting');
+});
+
 test('rejects duplicate, stale-response, and out-of-order events', async () => {
   const { socket, adapter } = createSocket();
   await prepareSession(socket, adapter);
@@ -505,7 +539,7 @@ test('refreshes expired authentication and starts a fresh voice session', async 
   expect(adapter.startSessionResumeIds).toEqual([null, null]);
   expect(socket.getSnapshot()).toMatchObject({
     connection: 'connected',
-    session: 'idle',
+    session: 'starting',
     sessionId: null,
   });
 });

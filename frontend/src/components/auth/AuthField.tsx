@@ -112,7 +112,7 @@ const styles = StyleSheet.create({
   },
   iconContainer: {
     alignItems: 'center',
-    height: '100%',
+    alignSelf: 'stretch',
     justifyContent: 'center',
     paddingLeft: spacing.sm,
     width: 36,

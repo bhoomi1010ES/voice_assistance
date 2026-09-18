@@ -59,6 +59,11 @@ import { emitLatencyTrace } from './latencyTrace';
 
 export const VOICE_GATEWAY_URL = `${publicApiConfig.websocketBaseUrl}/v1/voice`;
 
+// Native Silero VAD confirms silence after 320 ms. Keep the turn open a little
+// longer so a normal pause inside a sentence can be followed by more speech.
+// A new speech-start event cancels this timer and preserves the same STT turn.
+export const SPEECH_END_COMMIT_GRACE_MS = 900;
+
 export const VOICE_SERVER_EVENT_TYPES = [
   'voice.connection.opened',
   'voice.connection.closed',
@@ -492,6 +497,7 @@ export class VoiceSocket {
   private connectPromise: Promise<void> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private autoListenTimer: ReturnType<typeof setTimeout> | null = null;
+  private speechEndCommitTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private statusUnsubscribe: (() => void) | null = null;
   private eventUnsubscribe: (() => void) | null = null;
@@ -662,7 +668,71 @@ export class VoiceSocket {
     await this.requestSessionStart(null);
   }
 
+  private waitForReadySession(): Promise<void> {
+    if (
+      this.snapshot.connection === 'connected' &&
+      this.snapshot.session === 'ready' &&
+      this.snapshot.heartbeat === 'healthy' &&
+      !this.reconnectTimer
+    ) {
+      return Promise.resolve();
+    }
+
+    if (
+      this.snapshot.connection !== 'connected' ||
+      this.snapshot.session !== 'starting'
+    ) {
+      return Promise.reject(new Error('Start a voice session before starting a turn.'));
+    }
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let unsubscribe: (() => void) | null = null;
+      const finish = (error?: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        unsubscribe?.();
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      };
+      const timeout = setTimeout(() => {
+        finish(new Error('Voice session startup timed out. Try again.'));
+      }, this.connectTimeoutMs);
+
+      unsubscribe = this.subscribe(snapshot => {
+        if (
+          snapshot.connection === 'connected' &&
+          snapshot.session === 'ready' &&
+          snapshot.heartbeat === 'healthy' &&
+          !this.reconnectTimer
+        ) {
+          finish();
+        } else if (
+          ['failed', 'degraded', 'reconnecting', 'disconnected'].includes(
+            snapshot.connection,
+          ) ||
+          snapshot.session === 'idle'
+        ) {
+          finish(
+            new Error(
+              snapshot.error ?? 'Voice session failed to start. Try again.',
+            ),
+          );
+        }
+      });
+    });
+  }
+
   async startTurn(options: VoiceTurnStartOptions = {}): Promise<void> {
+    if (this.snapshot.session === 'starting') {
+      await this.waitForReadySession();
+    }
     if (
       this.snapshot.session !== 'ready' ||
       this.snapshot.connection !== 'connected' ||
@@ -677,6 +747,7 @@ export class VoiceSocket {
       );
     }
     this.clearAutoListenTimer();
+    this.clearSpeechEndCommitTimer();
     const queueFollowUp =
       ['committing', 'waiting'].includes(this.snapshot.turn) &&
       !this.confirmationAwaitingVoice;
@@ -777,6 +848,7 @@ export class VoiceSocket {
     ) {
       throw new Error('There is no active voice turn to finish.');
     }
+    this.clearSpeechEndCommitTimer();
 
     const durationMs = Math.max(
       0,
@@ -818,6 +890,7 @@ export class VoiceSocket {
       return;
     }
     this.clearAutoListenTimer();
+    this.clearSpeechEndCommitTimer();
     this.autoListenSuppressed = true;
     const turnId = this.snapshot.turnId;
     const responseId = this.snapshot.responseId;
@@ -1042,6 +1115,7 @@ export class VoiceSocket {
     this.explicitStop = true;
     this.allowAutoReconnect = false;
     this.clearAutoListenTimer();
+    this.clearSpeechEndCommitTimer();
     this.clearReconnectTimer();
     this.setSnapshot({ session: 'ending', error: null });
     try {
@@ -1060,6 +1134,7 @@ export class VoiceSocket {
     this.explicitStop = true;
     this.allowAutoReconnect = false;
     this.clearAutoListenTimer();
+    this.clearSpeechEndCommitTimer();
     this.clearReconnectTimer();
     try {
       this.handleStatus(await this.adapter.disconnect());
@@ -1074,6 +1149,7 @@ export class VoiceSocket {
     this.explicitStop = true;
     this.allowAutoReconnect = false;
     this.clearAutoListenTimer();
+    this.clearSpeechEndCommitTimer();
     this.clearReconnectTimer();
 
     if (!this.started) {
@@ -1278,6 +1354,7 @@ export class VoiceSocket {
         ...(status.responseId ? { responseId: status.responseId } : {}),
       });
       if (this.desiredSession && !status.sessionStarted) {
+        this.setSnapshot({ session: 'starting', error: null });
         this.requestSessionStart(this.snapshot.sessionId).catch(
           () => undefined,
         );
@@ -1565,7 +1642,7 @@ export class VoiceSocket {
           });
           if (this.bargeInSpeechEndedPending && !this.bargeInCommitInFlight) {
             this.bargeInSpeechEndedPending = false;
-            this.commitBargeInTurn().catch(() => undefined);
+            this.scheduleSpeechEndCommit();
           }
         }
         break;
@@ -1995,6 +2072,31 @@ export class VoiceSocket {
       clearTimeout(this.autoListenTimer);
       this.autoListenTimer = null;
     }
+  }
+
+  private clearSpeechEndCommitTimer(): void {
+    if (this.speechEndCommitTimer) {
+      clearTimeout(this.speechEndCommitTimer);
+      this.speechEndCommitTimer = null;
+    }
+  }
+
+  private scheduleSpeechEndCommit(): void {
+    this.clearSpeechEndCommitTimer();
+    if (!this.autoCommitBargeInTurn) {
+      return;
+    }
+    this.speechEndCommitTimer = setTimeout(() => {
+      this.speechEndCommitTimer = null;
+      if (
+        !this.autoCommitBargeInTurn ||
+        this.snapshot.turn !== 'recording' ||
+        this.snapshot.speechDetected
+      ) {
+        return;
+      }
+      this.commitBargeInTurn().catch(() => undefined);
+    }, SPEECH_END_COMMIT_GRACE_MS);
   }
 
   private maybeStartVoiceConfirmationTurn(): void {
@@ -2562,6 +2664,14 @@ export class VoiceSocket {
     }
     if (!this.snapshot.turnId) {
       if (
+        eventType === 'VAD_SPEECH_STARTED' ||
+        eventType === 'SILERO_VAD_SPEECH_STARTED'
+      ) {
+        this.clearSpeechEndCommitTimer();
+        this.bargeInSpeechEndedPending = false;
+        this.speechEndedAtMs = null;
+      }
+      if (
         this.autoCommitBargeInTurn &&
         (eventType === 'VAD_SPEECH_STOPPED' ||
           eventType === 'SILERO_VAD_SPEECH_STOPPED')
@@ -2580,6 +2690,8 @@ export class VoiceSocket {
       eventType === 'VAD_SPEECH_STARTED' ||
       eventType === 'SILERO_VAD_SPEECH_STARTED'
     ) {
+      this.clearSpeechEndCommitTimer();
+      this.speechEndedAtMs = null;
       if (
         !['starting', 'recording', 'speech_detected'].includes(
           this.snapshot.turn,
@@ -2610,8 +2722,9 @@ export class VoiceSocket {
         console.info('BARGE_IN_SPEECH_END', {
           turnId: this.snapshot.turnId,
           timestampMs: this.speechEndedAtMs,
+          commit_grace_ms: SPEECH_END_COMMIT_GRACE_MS,
         });
-        this.commitBargeInTurn().catch(() => undefined);
+        this.scheduleSpeechEndCommit();
       }
     }
   }
@@ -2999,6 +3112,7 @@ export class VoiceSocket {
 
   private suppressAudioForTransportFailure(reason: string): void {
     this.clearAutoListenTimer();
+    this.clearSpeechEndCommitTimer();
     this.autoListenSuppressed = true;
     this.sileroSpeechSegmentStartedAtMs = null;
     this.sileroSpeechSegmentStartedDuringGuard = false;
@@ -3120,6 +3234,7 @@ export class VoiceSocket {
 
   private resetToDisconnected(): void {
     this.clearAutoListenTimer();
+    this.clearSpeechEndCommitTimer();
     this.clearConversationState();
     this.retireCorrelation(
       this.snapshot.sessionId,
