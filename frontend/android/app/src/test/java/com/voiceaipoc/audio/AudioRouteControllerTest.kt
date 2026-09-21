@@ -100,6 +100,26 @@ class AudioRouteControllerTest {
     }
 
     @Test
+    fun speakerPreferenceSelectsBuiltinSpeakerAndEnablesSpeakerphone() {
+        val platform = FakePlatform()
+        val controller = AudioRouteController(
+            platform,
+            AudioRouteController.Config(
+                devicePreference = AudioRouteController.DevicePreference.SPEAKER,
+            ),
+        )
+
+        val result = controller.acquire(AudioRouteController.Owner.PLAYBACK)
+
+        assertTrue(result.succeeded)
+        assertEquals(listOf("mode:3", "device:BUILTIN_SPEAKER", "focus"), platform.events)
+        assertTrue(platform.speakerphone)
+        assertEquals("SPEAKER", controller.getStatus().requestedCommunicationDevice)
+        result.lease!!.release()
+        assertFalse(platform.speakerphone)
+    }
+
+    @Test
     fun disabledCommunicationRouteDoesNotTouchPlatformState() {
         val platform = FakePlatform()
         val controller = AudioRouteController(

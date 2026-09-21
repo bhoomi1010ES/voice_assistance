@@ -21,9 +21,14 @@ data class AudioConfig(
     val enableNoiseSuppression: Boolean = true,
     /** Communication capture is the production duplex route. MIC is diagnostic-only A/B mode. */
     val captureSource: CaptureSource = CaptureSource.VOICE_COMMUNICATION,
-    /** Optional API 31+ communication-device target; AUTO preserves platform route choice. */
+    /**
+     * Hands-free assistant TTS is in-call audio, not media. AUTO prefers the
+     * earpiece, which follows the in-call volume stream and sounds nearly silent
+     * when only media volume is raised. SPEAKER keeps USAGE_VOICE_COMMUNICATION
+     * for AEC and plays through the loudspeaker.
+     */
     val communicationDevicePreference: AudioRouteController.DevicePreference =
-        AudioRouteController.DevicePreference.AUTO,
+        AudioRouteController.DevicePreference.SPEAKER,
     /** TTS uses the same communication usage so platform AEC sees the far-end render path. */
     val playbackUsage: Int = AudioAttributes.USAGE_VOICE_COMMUNICATION,
     val playbackContentType: Int = AudioAttributes.CONTENT_TYPE_SPEECH,

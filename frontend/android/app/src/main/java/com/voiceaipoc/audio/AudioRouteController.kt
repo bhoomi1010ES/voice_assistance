@@ -223,19 +223,25 @@ class AudioRouteController internal constructor(
             } else {
                 lastError = "Communication device selection failed for ${describeDevice(device)}"
             }
+            applySpeakerphoneLocked()
             return
         }
         when (config.devicePreference) {
-            DevicePreference.SPEAKER -> {
-                platform.setSpeakerphoneOn(true)
-                speakerphoneChanged = true
-            }
+            DevicePreference.SPEAKER -> applySpeakerphoneLocked()
             DevicePreference.BLUETOOTH, DevicePreference.BLE -> {
                 bluetoothScoStarted = platform.startBluetoothSco()
                 if (!bluetoothScoStarted) lastError = "Bluetooth route unavailable; using fallback"
             }
             DevicePreference.AUTO, DevicePreference.EARPIECE, DevicePreference.WIRED -> Unit
         }
+    }
+
+    private fun applySpeakerphoneLocked() {
+        if (config.devicePreference != DevicePreference.SPEAKER) return
+        // ColorOS and other OEM builds often ignore setCommunicationDevice unless
+        // speakerphone is also forced on, including API 31+.
+        platform.setSpeakerphoneOn(true)
+        speakerphoneChanged = true
     }
 
     private fun chooseDevice(

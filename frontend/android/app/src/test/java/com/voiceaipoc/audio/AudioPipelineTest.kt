@@ -15,6 +15,10 @@ class AudioPipelineTest {
     fun captureDefaultsToCommunicationSourceButKeepsMicDiagnosticOverride() {
         assertEquals(AudioConfig.CaptureSource.VOICE_COMMUNICATION, AudioConfig().captureSource)
         assertEquals(
+            AudioRouteController.DevicePreference.SPEAKER,
+            AudioConfig().communicationDevicePreference,
+        )
+        assertEquals(
             AudioConfig.CaptureSource.MIC,
             AudioConfig(captureSource = AudioConfig.CaptureSource.MIC).captureSource,
         )
