@@ -1,5 +1,6 @@
 package com.voiceaipoc.audio
 
+import android.os.SystemClock
 import android.util.Log
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -14,6 +15,7 @@ import java.util.concurrent.atomic.AtomicLong
 internal class PcmAudioPipeline(
     private val config: AudioConfig,
     private val frameCallback: AudioEngine.PcmDataCallback,
+    private val nanoClock: () -> Long = SystemClock::elapsedRealtimeNanos,
 ) {
     data class Status(
         val running: Boolean,
@@ -66,6 +68,7 @@ internal class PcmAudioPipeline(
     @Volatile
     private var partialFrameSamples = 0
     private var consumerThread: Thread? = null
+    private var nextFrameSequence = 0L
 
     fun start() {
         synchronized(stateLock) {
@@ -254,7 +257,17 @@ internal class PcmAudioPipeline(
                 try {
                     // The callback runs on this native consumer thread and must
                     // not retain the reusable consumerFrame array.
-                    frameCallback.onPcmData(consumerFrame, samplesRead)
+                    val captureEndNs = nanoClock()
+                    val captureStartNs = captureEndNs -
+                        samplesRead.toLong() * 1_000_000_000L / config.sampleRateHz.toLong()
+                    val frameSequence = nextFrameSequence++
+                    frameCallback.onPcmData(
+                        consumerFrame,
+                        samplesRead,
+                        frameSequence,
+                        captureStartNs,
+                        captureEndNs,
+                    )
                     framesConsumed.incrementAndGet()
                 } catch (exception: RuntimeException) {
                     processingErrorCount.incrementAndGet()
@@ -302,5 +315,6 @@ internal class PcmAudioPipeline(
         invalidInputCount.set(0L)
         processingErrorCount.set(0L)
         maxObservedBufferedFrames.set(0)
+        nextFrameSequence = 0L
     }
 }

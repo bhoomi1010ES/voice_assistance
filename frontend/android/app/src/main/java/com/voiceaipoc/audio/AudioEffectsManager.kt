@@ -33,6 +33,10 @@ class AudioEffectsManager(
         val created: Boolean,
         /** The attached effect reports itself enabled. */
         val enabled: Boolean,
+        /** Whether the effect was already enabled when the platform exposed it. */
+        val platformEnabledBeforeAttach: Boolean,
+        /** Capability/attachment state; CREATED is never reported as acoustic effectiveness. */
+        val effectiveness: String,
         val lastError: String?,
     )
 
@@ -64,6 +68,8 @@ class AudioEffectsManager(
     private var noiseSuppressionCreationSucceeded: Boolean? = null
     private var aecEnabled = false
     private var noiseSuppressionEnabled = false
+    private var aecEnabledBeforeAttach = false
+    private var noiseSuppressionEnabledBeforeAttach = false
     private var aecLastError: String? = null
     private var noiseSuppressionLastError: String? = null
 
@@ -161,6 +167,7 @@ class AudioEffectsManager(
         }
 
         acousticEchoCanceler = effect
+        aecEnabledBeforeAttach = runCatching { effect.enabled }.getOrDefault(false)
         aecCreationSucceeded = true
         val enableResult = enableEffect("AEC", effect)
         aecEnabled = enableResult.enabled
@@ -191,6 +198,7 @@ class AudioEffectsManager(
         }
 
         noiseSuppressor = effect
+        noiseSuppressionEnabledBeforeAttach = runCatching { effect.enabled }.getOrDefault(false)
         noiseSuppressionCreationSucceeded = true
         val enableResult = enableEffect("NS", effect)
         noiseSuppressionEnabled = enableResult.enabled
@@ -225,6 +233,10 @@ class AudioEffectsManager(
         attached = false
         aecEnabled = false
         noiseSuppressionEnabled = false
+        aecEnabledBeforeAttach = false
+        noiseSuppressionEnabledBeforeAttach = false
+        aecEnabledBeforeAttach = false
+        noiseSuppressionEnabledBeforeAttach = false
     }
 
     private fun releaseAecLocked(sessionId: Int) {
@@ -284,6 +296,13 @@ class AudioEffectsManager(
             requested = acousticEchoCancellationRequested,
             created = acousticEchoCanceler != null,
             enabled = aecEnabled,
+            platformEnabledBeforeAttach = aecEnabledBeforeAttach,
+            effectiveness = effectEffectiveness(
+                requested = acousticEchoCancellationRequested,
+                created = acousticEchoCanceler != null,
+                enabled = aecEnabled,
+                creationSucceeded = aecCreationSucceeded,
+            ),
             lastError = aecLastError,
         ),
         noiseSuppression = EffectStatus(
@@ -292,6 +311,13 @@ class AudioEffectsManager(
             requested = noiseSuppressionRequested,
             created = noiseSuppressor != null,
             enabled = noiseSuppressionEnabled,
+            platformEnabledBeforeAttach = noiseSuppressionEnabledBeforeAttach,
+            effectiveness = effectEffectiveness(
+                requested = noiseSuppressionRequested,
+                created = noiseSuppressor != null,
+                enabled = noiseSuppressionEnabled,
+                creationSucceeded = noiseSuppressionCreationSucceeded,
+            ),
             lastError = noiseSuppressionLastError,
         ),
         manufacturer = Build.MANUFACTURER.orEmpty(),
@@ -307,6 +333,7 @@ class AudioEffectsManager(
             "AEC_RUNTIME_STATE audio_session_id=${status.audioSessionId} " +
                 "available=${status.aec.available} created=${status.aec.created} " +
                 "enabled=${status.aec.enabled} requested=${status.aec.requested} " +
+                "effectiveness=${status.aec.effectiveness} " +
                 "error=${status.aec.lastError ?: "NONE"}",
         )
         Log.i(
@@ -316,6 +343,7 @@ class AudioEffectsManager(
                 "created=${status.noiseSuppression.created} " +
                 "enabled=${status.noiseSuppression.enabled} " +
                 "requested=${status.noiseSuppression.requested} " +
+                "effectiveness=${status.noiseSuppression.effectiveness} " +
                 "error=${status.noiseSuppression.lastError ?: "NONE"}",
         )
         Log.i(TAG, "AEC supported=${status.aec.supported}")
@@ -338,6 +366,19 @@ class AudioEffectsManager(
     } catch (exception: RuntimeException) {
         Log.e(TAG, "NS capability detection failed", exception)
         false
+    }
+
+    private fun effectEffectiveness(
+        requested: Boolean,
+        created: Boolean,
+        enabled: Boolean,
+        creationSucceeded: Boolean?,
+    ): String = when {
+        !requested -> "DISABLED_BY_POLICY"
+        enabled -> "ENABLED_PLATFORM_REPORTED_UNVERIFIED_ACOUSTIC"
+        creationSucceeded == false -> "CREATE_FAILED"
+        created -> "CREATED_NOT_ENABLED"
+        else -> "NOT_ATTACHED"
     }
 
     private data class EnableResult(

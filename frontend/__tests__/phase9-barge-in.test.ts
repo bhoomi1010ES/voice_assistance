@@ -7,6 +7,10 @@ import {
   VoiceSocket,
   VoiceSocketAdapter,
 } from '../src/voice/VoiceSocket';
+import {
+  DEFAULT_VOICE_ROLLOUT_CONFIG,
+  VoiceRolloutConfig,
+} from '../src/config/voiceRollout';
 
 const SESSION_ID = 'phase9-session';
 
@@ -170,6 +174,19 @@ class BargeInAdapter implements VoiceSocketAdapter {
   }
 }
 
+class NativeBargeInAdapter extends BargeInAdapter {
+  private readonly nativeListeners = new Set<(event: unknown) => void>();
+
+  subscribeBargeIn(listener: (event: unknown) => void) {
+    this.nativeListeners.add(listener);
+    return () => this.nativeListeners.delete(listener);
+  }
+
+  emitBargeIn(event: unknown) {
+    this.nativeListeners.forEach(listener => listener(event));
+  }
+}
+
 const activeSockets: VoiceSocket[] = [];
 
 afterEach(async () => {
@@ -177,9 +194,17 @@ afterEach(async () => {
   jest.useRealTimers();
 });
 
-async function prepareTurn() {
-  const adapter = new BargeInAdapter();
-  const socket = new VoiceSocket({ adapter });
+async function prepareTurn(
+  adapter: BargeInAdapter = new BargeInAdapter(),
+  rollout: VoiceRolloutConfig = adapter instanceof NativeBargeInAdapter
+    ? DEFAULT_VOICE_ROLLOUT_CONFIG
+    : {
+        ...DEFAULT_VOICE_ROLLOUT_CONFIG,
+        nativeBargeInDetectorEnabled: false,
+        legacyJsBargeInDetectorEnabled: true,
+      },
+) {
+  const socket = new VoiceSocket({ adapter, rollout });
   activeSockets.push(socket);
   await socket.connect();
   await socket.startSession();
@@ -219,6 +244,103 @@ async function prepareTurn() {
   });
   return { socket, adapter };
 }
+
+test('native confirmation stops locally before cancellation and replacement turn', async () => {
+  const adapter = new NativeBargeInAdapter();
+  const { socket } = await prepareTurn(adapter);
+
+  adapter.emitBargeIn({
+    event: 'BARGE_IN_CONFIRMED',
+    state: 'NEAR_END_CONFIRMED',
+    reason: 'near_end_confirmed',
+    responseId: 'response-1',
+    monotonicNs: '1000000000',
+    captureStartNs: '980000000',
+    captureEndNs: '1000000000',
+    segmentDurationMs: 480,
+    probability: 0.98,
+    playbackState: 'PLAYING',
+    playbackActive: true,
+    playbackPositionMs: 1000,
+    referenceReady: true,
+    referenceUsable: true,
+    timestampConfidence: 'HIGH',
+    aecHealthy: true,
+    communicationModeActive: true,
+    aecAvailable: true,
+    aecEnabled: true,
+    aecEffectiveness: 'ENABLED',
+    sourceFrameSequenceStart: 10,
+    sourceFrameSequenceEnd: 33,
+    inferenceIndex: 4,
+    discontinuous: false,
+    localStopRequested: true,
+    localStopCompleted: true,
+    audioTrackStopped: true,
+    audioTrackFlushed: true,
+    audioTrackReleased: true,
+    localStopReleasePending: false,
+    stopReason: 'barge_in',
+    stopRequestedMonotonicNs: '1001000000',
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  expect(adapter.calls).not.toContain('stopPlayback');
+  expect(adapter.calls.indexOf('cancelResponse')).toBeGreaterThanOrEqual(0);
+  expect(adapter.calls.lastIndexOf('startTurn')).toBeGreaterThan(
+    adapter.calls.indexOf('cancelResponse'),
+  );
+  expect(adapter.turnIncludesPreRoll).toEqual([false, true]);
+  expect(socket.getSnapshot().turn).toBe('starting');
+});
+
+test('diagnostics-only mode keeps explicit playback stop but disables automatic interruption', async () => {
+  const adapter = new BargeInAdapter();
+  const { socket } = await prepareTurn(adapter, {
+    ...DEFAULT_VOICE_ROLLOUT_CONFIG,
+    nativeBargeInDetectorEnabled: false,
+    legacyJsBargeInDetectorEnabled: false,
+  });
+
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_STARTED',
+    probability: 0.99,
+    timestampMs: 5000,
+    playbackActive: true,
+  });
+  adapter.emitVad({
+    event: 'SILERO_VAD_SPEECH_ACTIVITY',
+    probability: 0.99,
+    timestampMs: 5600,
+    playbackActive: true,
+    speechDurationMs: 600,
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  expect(adapter.calls).not.toContain('stopPlayback');
+  expect(adapter.calls).not.toContain('cancelResponse');
+  expect(socket.getSnapshot().responseId).toBe('response-1');
+});
+
+test('native shadow mode does not let native metadata perform local stop', async () => {
+  const adapter = new NativeBargeInAdapter();
+  const { socket } = await prepareTurn(adapter, {
+    ...DEFAULT_VOICE_ROLLOUT_CONFIG,
+    legacyJsBargeInDetectorEnabled: true,
+  });
+
+  adapter.emitBargeIn({
+    event: 'BARGE_IN_CONFIRMED',
+    responseId: 'response-1',
+    localStopRequested: true,
+    reason: 'near_end_confirmed',
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  expect(adapter.calls).not.toContain('stopPlayback');
+  expect(adapter.calls).not.toContain('cancelResponse');
+  expect(socket.getSnapshot().responseId).toBe('response-1');
+});
 
 test('spoken confirmation starts a hands-free auto-committing answer turn', async () => {
   const { socket, adapter } = await prepareTurn();

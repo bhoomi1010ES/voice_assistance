@@ -51,6 +51,7 @@ export const strings = {
     connecting: 'Connecting to the voice service…',
     connected: 'Connected. Start a voice session when you are ready.',
     sessionStarting: 'Starting your voice session…',
+    startingSession: 'Starting…',
     sessionReady: 'Voice session ready. Start a turn when you are ready.',
     sessionEnding: 'Ending the voice session…',
     reconnecting: 'Connection lost. Reconnecting…',

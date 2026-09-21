@@ -3,7 +3,8 @@ package com.voiceaipoc.voice
 import android.os.SystemClock
 import android.util.Log
 import com.voiceaipoc.auth.AuthTokenStorage
-import com.voiceaipoc.audio.PlaybackEchoReference
+import com.voiceaipoc.audio.AudioRouteController
+import com.voiceaipoc.audio.FarEndReferenceBuffer
 import com.voiceaipoc.diagnostics.DiagnosticSessionContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -35,7 +36,8 @@ class VoiceWebSocketTransport(
     private val tokenStorage: AuthTokenStorage,
     private val listener: Listener,
     private val isTtsOutputEnabled: () -> Boolean = { true },
-    private val playbackEchoReference: PlaybackEchoReference = PlaybackEchoReference(),
+    private val farEndReferenceBuffer: FarEndReferenceBuffer = FarEndReferenceBuffer(),
+    private val audioRouteController: AudioRouteController? = null,
     private val client: OkHttpClient = OkHttpClient(),
     private val networkExecutor: ExecutorService = Executors.newSingleThreadExecutor {
         Thread(it, "VoiceAI-VoiceGateway")
@@ -47,6 +49,7 @@ class VoiceWebSocketTransport(
     private val ttsFrameExecutor: ExecutorService = Executors.newSingleThreadExecutor {
         Thread(it, "VoiceAI-TtsFrameIngress")
     },
+    private val onTransportFailure: () -> Unit = {},
     private val diagnosticSession: DiagnosticSessionContext = DiagnosticSessionContext(),
 ) {
     enum class State {
@@ -191,10 +194,14 @@ class VoiceWebSocketTransport(
         NEW_TURN_COMMITTING,
     }
     private val ttsAudioPlayer = TtsAudioPlayer(
+        routeController = audioRouteController,
         diagnosticSession = diagnosticSession,
         listener = object : TtsAudioPlayer.Listener {
             override fun onPlaybackStarted(responseId: java.util.UUID) {
-                playbackEchoReference.onPlaybackStarted(responseId.toString())
+                farEndReferenceBuffer.onPlaybackStarted(
+                    responseId = responseId.toString(),
+                    sampleRateHz = TtsAudioFrame.TTS_SAMPLE_RATE_HZ,
+                )
                 ttsLogInfo(
                     "TTS_AUDIO_RENDER_STARTED response_id=$responseId " +
                         "elapsedMs=${SystemClock.elapsedRealtime()}",
@@ -202,17 +209,24 @@ class VoiceWebSocketTransport(
                 notifyTtsPlayback("tts.playback.started", responseId)
             }
 
-            override fun onPlaybackCompleted(responseId: java.util.UUID) {
-                playbackEchoReference.onPlaybackEnded(responseId.toString())
+            override fun onPlaybackDraining(responseId: java.util.UUID) {
+                farEndReferenceBuffer.onPlaybackDraining(responseId.toString())
+            }
+
+            override fun onPlaybackCompletedAt(
+                responseId: java.util.UUID,
+                position: TtsPlaybackPosition,
+            ) {
+                farEndReferenceBuffer.onPlaybackCompleted(responseId.toString(), position)
                 ttsLogInfo(
-                    "TTS_AUDIO_RENDER_ENDED response_id=$responseId reason=completed " +
+                    "TTS_AUDIO_PRESENTED response_id=$responseId reason=completed " +
                         "elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
                 notifyTtsPlayback("tts.playback.completed", responseId)
             }
 
             override fun onPlaybackStopped(responseId: java.util.UUID) {
-                playbackEchoReference.onPlaybackEnded(responseId.toString())
+                farEndReferenceBuffer.onPlaybackStopped(responseId.toString())
                 ttsLogInfo(
                     "TTS_AUDIO_RENDER_ENDED response_id=$responseId reason=stopped " +
                         "elapsedMs=${SystemClock.elapsedRealtime()}",
@@ -221,7 +235,7 @@ class VoiceWebSocketTransport(
             }
 
             override fun onPlaybackError(responseId: java.util.UUID, errorCode: String) {
-                playbackEchoReference.onPlaybackEnded(responseId.toString())
+                farEndReferenceBuffer.onPlaybackStopped(responseId.toString())
                 ttsLogInfo(
                     "TTS_AUDIO_RENDER_ENDED response_id=$responseId reason=error:$errorCode " +
                         "elapsedMs=${SystemClock.elapsedRealtime()}",
@@ -263,19 +277,23 @@ class VoiceWebSocketTransport(
                 lastTtsFrameWrittenSequence = sequence
             }
 
-            override fun onPcmRendered(
+            override fun onPcmWritten(
                 responseId: java.util.UUID,
                 sequence: Long,
                 payload: ByteArray,
                 offsetBytes: Int,
                 writtenBytes: Int,
+                writtenFrameStart: Long,
+                playbackPosition: TtsPlaybackPosition,
             ) {
-                playbackEchoReference.onPcmRendered(
+                farEndReferenceBuffer.onPcmWritten(
                     responseId = responseId.toString(),
                     payload = payload,
                     offsetBytes = offsetBytes,
                     byteCount = writtenBytes,
                     sampleRateHz = TtsAudioFrame.TTS_SAMPLE_RATE_HZ,
+                    writtenFrameStart = writtenFrameStart,
+                    playbackPosition = playbackPosition,
                 )
             }
 
@@ -401,6 +419,18 @@ class VoiceWebSocketTransport(
     fun startSession(resumeSessionId: String? = null): Result {
         diagnosticSession.ensureActive()
         synchronized(stateLock) {
+            if (status.state == State.SESSION_STARTING ||
+                (
+                    status.sessionStarted &&
+                        status.state in setOf(
+                            State.SESSION_READY,
+                            State.TURN_STARTING,
+                            State.STREAMING_AUDIO,
+                        )
+                    )
+            ) {
+                return Result(true)
+            }
             if (status.state != State.CONNECTED) {
                 return Result(false, "E_VOICE_STATE", "Connect to the voice gateway first.")
             }
@@ -634,7 +664,8 @@ class VoiceWebSocketTransport(
     }
 
     fun cancelResponse(reason: String = "client_requested"): Result {
-        val responseId = synchronized(stateLock) { status.responseId }
+        val beforeCancel = synchronized(stateLock) { status }
+        val responseId = beforeCancel.responseId
             ?: return Result(false, "E_VOICE_STATE", "No active response.")
         synchronized(stateLock) {
             status = status.copy(
@@ -660,6 +691,14 @@ class VoiceWebSocketTransport(
                 .put("type", "client.response.cancel")
                 .put("response_id", responseId)
                 .put("reason", reason.take(128)),
+        )
+        logLatency(
+            sessionId = beforeCancel.sessionId,
+            turnId = beforeCancel.turnId,
+            responseId = responseId,
+            component = "android",
+            event = "response_cancel_queued",
+            metadata = mapOf("reason" to reason),
         )
         return Result(true)
     }
@@ -816,6 +855,92 @@ class VoiceWebSocketTransport(
         val errorMessage: String? = null,
     )
 
+    data class BargeInPlaybackStopAck(
+        val responseId: String,
+        val localStopRequested: Boolean,
+        val localStopCompleted: Boolean,
+        val audioTrackStopped: Boolean,
+        val audioTrackFlushed: Boolean,
+        val audioTrackReleased: Boolean,
+        val releasePending: Boolean,
+        val detectionMonotonicNs: Long,
+        val stopRequestedMonotonicNs: Long,
+        val localStopLatencyMs: Long,
+        val reason: String,
+    )
+
+    /**
+     * Performs the local side of a native barge-in before React Native is
+     * notified. The response id is checked at the player boundary so a late
+     * detector event cannot stop a replacement response.
+     */
+    fun stopTtsPlaybackForBargeIn(
+        responseId: String,
+        detectionMonotonicNs: Long,
+    ): BargeInPlaybackStopAck {
+        val parsedResponseId = runCatching { java.util.UUID.fromString(responseId) }.getOrNull()
+        if (parsedResponseId == null) {
+            return BargeInPlaybackStopAck(
+                responseId = responseId,
+                localStopRequested = false,
+                localStopCompleted = false,
+                audioTrackStopped = false,
+                audioTrackFlushed = false,
+                audioTrackReleased = false,
+                releasePending = false,
+                detectionMonotonicNs = detectionMonotonicNs,
+                stopRequestedMonotonicNs = SystemClock.elapsedRealtimeNanos(),
+                localStopLatencyMs = 0L,
+                reason = "invalid_response_id",
+            )
+        }
+        val result = ttsAudioPlayer.stopForBargeIn(parsedResponseId)
+        val ack = BargeInPlaybackStopAck(
+            responseId = responseId,
+            localStopRequested = result.wasActive,
+            localStopCompleted = result.audioTrackStopped && result.audioTrackFlushed,
+            audioTrackStopped = result.audioTrackStopped,
+            audioTrackFlushed = result.audioTrackFlushed,
+            audioTrackReleased = result.audioTrackReleased,
+            releasePending = result.releasePending,
+            detectionMonotonicNs = detectionMonotonicNs,
+            stopRequestedMonotonicNs = result.requestedAtNs,
+            localStopLatencyMs = ((result.requestedAtNs - detectionMonotonicNs) / 1_000_000L)
+                .coerceAtLeast(0L),
+            reason = if (result.wasActive) "barge_in" else "response_not_active",
+        )
+        val current = synchronized(stateLock) { status }
+        logLatency(
+            sessionId = current.sessionId,
+            turnId = current.turnId,
+            responseId = responseId,
+            component = "android",
+            event = "barge_in_playback_stop_requested",
+            monotonicNs = ack.stopRequestedMonotonicNs,
+            metadata = mapOf(
+                "detection_monotonic_ns" to detectionMonotonicNs,
+                "local_stop_requested" to ack.localStopRequested,
+                "audio_track_stopped" to ack.audioTrackStopped,
+                "audio_track_flushed" to ack.audioTrackFlushed,
+                "audio_track_released" to ack.audioTrackReleased,
+                "release_pending" to ack.releasePending,
+                "reason" to ack.reason,
+            ),
+        )
+        if (ack.localStopCompleted) {
+            logLatency(
+                sessionId = current.sessionId,
+                turnId = current.turnId,
+                responseId = responseId,
+                component = "android",
+                event = "barge_in_playback_stopped",
+                monotonicNs = ack.stopRequestedMonotonicNs,
+                metadata = mapOf("stop_basis" to "audio_track_stop_flush"),
+            )
+        }
+        return ack
+    }
+
     private val socketListener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             if (!isCurrentSocket(webSocket)) {
@@ -858,7 +983,7 @@ class VoiceWebSocketTransport(
             )
             stopHeartbeat()
             ttsAudioPlayer.cancel()
-            playbackEchoReference.reset()
+            farEndReferenceBuffer.reset()
             sendQueue.clear()
             sendQueue.clearPreRoll()
             bargeInTurn = false
@@ -875,6 +1000,7 @@ class VoiceWebSocketTransport(
             if (!isCurrentSocket(webSocket)) return
             val current = synchronized(stateLock) { status }
             val initiator = if (localCloseRequested) "local" else "remote"
+            val unexpectedClose = !localCloseRequested
             Log.i(
                 TAG,
                 "WS_CLOSED code=$code reason=${reason.take(120)} initiator=$initiator " +
@@ -896,7 +1022,11 @@ class VoiceWebSocketTransport(
             cancelledBargeInResponseId = null
             bargeInState = BargeInState.IDLE
             ttsAudioPlayer.cancel()
-            playbackEchoReference.reset()
+            if (unexpectedClose) {
+                runCatching { onTransportFailure() }
+                    .onFailure { Log.w(TAG, "Unexpected transport-close cleanup could not stop capture", it) }
+            }
+            farEndReferenceBuffer.reset()
             notifyStatus()
         }
 
@@ -922,7 +1052,9 @@ class VoiceWebSocketTransport(
             Log.e(TAG, "WS_FAILURE stacktrace", t)
             stopHeartbeat()
             ttsAudioPlayer.cancel()
-            playbackEchoReference.reset()
+            runCatching { onTransportFailure() }
+                .onFailure { Log.w(TAG, "Transport-failure cleanup could not stop capture", it) }
+            farEndReferenceBuffer.reset()
             sendQueue.clear()
             sendQueue.clearPreRoll()
             bargeInTurn = false
@@ -1038,20 +1170,40 @@ class VoiceWebSocketTransport(
                         "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
                 if (bargeInTurn) {
-                    if (!bargeInLivePcmLogged) {
-                        bargeInLog(
-                            "BARGE_IN_LIVE_PCM_STARTED turnId=${frame.ownerTurnId} " +
-                                "generation=${frame.generation} wallMs=${System.currentTimeMillis()} " +
-                                "elapsedMs=${SystemClock.elapsedRealtime()}",
-                        )
-                        bargeInLivePcmLogged = true
-                    }
                     bargeInLog(
                         "BARGE_IN_PCM_FORWARDING turnId=${frame.ownerTurnId} " +
                             "seq=${frame.sequenceNo} bytes=${frame.payload.size} " +
                             "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
                     )
                 }
+            }
+            val firstReplacementPcm = synchronized(stateLock) {
+                if (bargeInTurn && !bargeInLivePcmLogged) {
+                    bargeInLivePcmLogged = true
+                    true
+                } else {
+                    false
+                }
+            }
+            if (firstReplacementPcm) {
+                bargeInLog(
+                    "BARGE_IN_LIVE_PCM_STARTED turnId=${frame.ownerTurnId} " +
+                        "generation=${frame.generation} wallMs=${System.currentTimeMillis()} " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
+                val current = synchronized(stateLock) { status }
+                logLatency(
+                    sessionId = current.sessionId,
+                    turnId = frame.ownerTurnId,
+                    responseId = current.responseId,
+                    component = "android",
+                    event = "barge_in_first_replacement_pcm_sent",
+                    metadata = mapOf(
+                        "sequence" to frame.sequenceNo,
+                        "bytes" to frame.payload.size,
+                        "generation" to frame.generation,
+                    ),
+                )
             }
         }
         maybeSendPendingCommit()
@@ -1146,7 +1298,9 @@ class VoiceWebSocketTransport(
             )
         }
         val terminalSessionEvent = eventType == "server.session.ended" ||
-            (eventType == "server.error" && payload?.errorCode == "session_not_available")
+            (eventType == "server.error" && isTerminalServerError(payload?.errorCode))
+        val recoverableServerError = eventType == "server.error" &&
+            isRecoverableServerError(payload?.errorCode)
         Log.i(
             TAG,
             "VOICE server event type=$eventType sessionId=${sessionId ?: "NONE"} " +
@@ -1159,7 +1313,7 @@ class VoiceWebSocketTransport(
                 json.optLong("heartbeat_interval_seconds", DEFAULT_HEARTBEAT_INTERVAL_SECONDS),
             )
         }
-        if (eventType == "server.error" || eventType == "server.session.ended") {
+        if (terminalSessionEvent) {
             stopHeartbeat()
         }
         if (eventType == "response.cancelled" || eventType == "tts.cancelled" ||
@@ -1192,10 +1346,30 @@ class VoiceWebSocketTransport(
                 awaitingTurnReadyGeneration != null || status.turnId != null
             }
         synchronized(stateLock) {
-            status = if (delayedOldBargeInCancellation) {
+            status = if (delayedOldBargeInCancellation || recoverableServerError) {
                 status.copy(
                     lastServerEvent = eventType,
                     lastServerEventTimestampMs = System.currentTimeMillis(),
+                    lastError = if (recoverableServerError) {
+                        payload?.errorCode?.let { "E_VOICE_SERVER: $it" } ?: status.lastError
+                    } else {
+                        status.lastError
+                    },
+                    turnActive = if (recoverableServerError &&
+                        payload?.errorCode == "session_not_ready"
+                    ) {
+                        false
+                    } else {
+                        status.turnActive
+                    },
+                    state = if (recoverableServerError &&
+                        payload?.errorCode == "session_not_ready" &&
+                        status.state == State.TURN_STARTING
+                    ) {
+                        if (status.sessionStarted) State.SESSION_READY else State.SESSION_STARTING
+                    } else {
+                        status.state
+                    },
                 )
             } else {
                 status.copy(
@@ -1209,7 +1383,7 @@ class VoiceWebSocketTransport(
                         else -> status.state
                     },
                     connected = eventType != "server.session.ended" &&
-                        eventType != "server.error" && status.connected,
+                        !terminalSessionEvent && status.connected,
                     sessionStarted = !terminalSessionEvent &&
                         (status.sessionStarted || eventType == "server.session.ready"),
                     turnActive = when (eventType) {
@@ -1453,6 +1627,7 @@ class VoiceWebSocketTransport(
         responseId: String?,
         component: String,
         event: String,
+        monotonicNs: Long? = null,
         durationMs: Double? = null,
         metadata: Map<String, Any?> = emptyMap(),
     ) {
@@ -1461,8 +1636,8 @@ class VoiceWebSocketTransport(
             .put("timestamp", wallTimeUtc)
             .put("wall_time_utc", wallTimeUtc)
             .put("timestamp_ms", System.currentTimeMillis())
-            .put("monotonic_ns", SystemClock.elapsedRealtimeNanos())
-            .put("monotonic_ms", SystemClock.elapsedRealtime())
+            .put("monotonic_ns", monotonicNs ?: SystemClock.elapsedRealtimeNanos())
+            .put("monotonic_ms", (monotonicNs?.div(1_000_000L)) ?: SystemClock.elapsedRealtime())
             .put("clock_domain", "android_elapsed_realtime")
             .put("process", "android:com.voiceaipoc")
             .put("session_id", sessionId ?: JSONObject.NULL)
@@ -1715,6 +1890,14 @@ class VoiceWebSocketTransport(
     private fun JSONObject.optStringOrNull(name: String): String? =
         if (!has(name) || isNull(name)) null else optString(name).takeIf { it.isNotBlank() }
 
+    private fun isTerminalServerError(code: String?): Boolean {
+        return code != null && code in TERMINAL_SERVER_ERROR_CODES
+    }
+
+    private fun isRecoverableServerError(code: String?): Boolean {
+        return code != null && code in RECOVERABLE_SERVER_ERROR_CODES
+    }
+
     private companion object {
         const val TAG = "VoiceAI-VoiceGateway"
         const val DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 15L
@@ -1725,5 +1908,11 @@ class VoiceWebSocketTransport(
         const val MAX_ERROR_CODE_BYTES = 128
         const val MAX_METRIC_COUNT = 32
         const val MAX_METRIC_KEY_BYTES = 64
+        val TERMINAL_SERVER_ERROR_CODES = setOf("session_not_available")
+        val RECOVERABLE_SERVER_ERROR_CODES = setOf(
+            "session_not_ready",
+            "turn_in_progress",
+            "turn_finalizing",
+        )
     }
 }

@@ -3,7 +3,6 @@ package com.voiceaipoc.audio
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.media.AudioManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -37,8 +36,16 @@ import kotlin.math.max
 class AudioEngine(
     private val context: Context,
     val config: AudioConfig = AudioConfig(),
-    private val playbackEchoReference: PlaybackEchoReference = PlaybackEchoReference(),
-    private val pcmDataCallback: PcmDataCallback = PcmDataCallback { _, _ -> },
+    private val audioRouteController: AudioRouteController = AudioRouteController(
+        context,
+        AudioRouteController.Config(
+            devicePreference = config.communicationDevicePreference,
+        ),
+    ),
+    private val farEndReferenceBuffer: FarEndReferenceBuffer = FarEndReferenceBuffer(
+        tailSuppressionMs = config.playbackTailSuppressionMs,
+    ),
+    private val pcmDataCallback: PcmDataCallback = PcmDataCallback { _, _, _, _, _ -> },
     private val vadEventListener: VadEngine.Listener? = null,
     private val sileroVadEventListener: SileroVadEngine.Listener? = null,
     private val wakeWordEventListener: WakeWordEngine.Listener? = null,
@@ -50,7 +57,13 @@ class AudioEngine(
          * Receives one complete, reusable PCM frame on the native consumer
          * thread. Implementations must not retain [buffer].
          */
-        fun onPcmData(buffer: ShortArray, samplesRead: Int)
+        fun onPcmData(
+            buffer: ShortArray,
+            samplesRead: Int,
+            frameSequence: Long,
+            captureStartNs: Long,
+            captureEndNs: Long,
+        )
     }
 
     interface Listener {
@@ -73,6 +86,13 @@ class AudioEngine(
         val captureDurationMs: Long,
         val microphoneErrorCount: Int,
         val lastError: String?,
+        val requestedCaptureSource: String,
+        val actualCaptureSource: String,
+        val playbackUsage: String,
+        val playbackContentType: String,
+        val playback: FarEndReferenceBuffer.Status,
+        val softwareAec: SoftwareAecController.Status,
+        val route: AudioRouteController.Status,
         val diagnosticSessionId: String = DiagnosticSessionContext.NONE,
     )
 
@@ -138,6 +158,7 @@ class AudioEngine(
         val recorder: AudioRecord,
         val buffer: ShortArray,
         val audioSessionId: Int,
+        val routeLease: AudioRouteController.Lease,
     ) {
         val stopRequested = AtomicBoolean(false)
         val released = AtomicBoolean(false)
@@ -176,11 +197,30 @@ class AudioEngine(
 
     private val stateLock = Any()
     @Volatile
-    private var latestPlaybackEchoAssessment = PlaybackEchoReference.Assessment.idle()
+    private var latestPlaybackEchoAssessment = FarEndReferenceBuffer.Assessment.stopped()
+    private val softwareAecNativeAvailable =
+        config.softwareAecMode != AudioConfig.SoftwareAecMode.PLATFORM &&
+            WebRtcAec3EchoCanceller.isNativeBackendAvailable()
+    private val softwareAecSelected = when (config.softwareAecMode) {
+        AudioConfig.SoftwareAecMode.PLATFORM -> false
+        AudioConfig.SoftwareAecMode.WEBRTC_AEC3 -> true
+        AudioConfig.SoftwareAecMode.AUTO -> softwareAecNativeAvailable
+    }
+    private val softwareAecController = SoftwareAecController(
+        mode = config.softwareAecMode,
+        enabled = softwareAecSelected,
+        sampleRateHz = config.sampleRateHz,
+        renderToCaptureDelayMs = config.softwareAecRenderToCaptureDelayMs,
+        enableAec = config.enableAcousticEchoCancellation,
+        enableNoiseSuppression = config.enableSoftwareNoiseSuppression,
+    )
+    private val softwareAecOutput = ShortArray(config.frameSizeSamples)
     private val audioEffectsManager = AudioEffectsManager(
         AudioEffectsManager.Config(
-            enableAcousticEchoCancellation = config.enableAcousticEchoCancellation,
-            enableNoiseSuppression = config.enableNoiseSuppression,
+            enableAcousticEchoCancellation = config.enableAcousticEchoCancellation &&
+                !softwareAecSelected,
+            enableNoiseSuppression = config.enableNoiseSuppression &&
+                !(softwareAecSelected && config.enableSoftwareNoiseSuppression),
         ),
     )
     private val vadEngine = VadEngine(
@@ -235,20 +275,46 @@ class AudioEngine(
     )
     private val pcmPipeline = PcmAudioPipeline(
         config,
-        PcmDataCallback { buffer, samplesRead ->
+        PcmDataCallback { buffer, samplesRead, frameSequence, captureStartNs, captureEndNs ->
             // VAD reads synchronously on VoiceAI-PcmConsumer. Wake-word work
             // and Silero work are offered to their own bounded worker queues
             // and never block this callback with inference. No stage forwards
             // PCM to JS.
-            latestPlaybackEchoAssessment = playbackEchoReference.assess(
+            latestPlaybackEchoAssessment = farEndReferenceBuffer.assess(
                 buffer,
                 samplesRead,
-                SystemClock.elapsedRealtimeNanos(),
+                captureStartNs = captureStartNs,
+                captureEndNs = captureEndNs,
+                microphoneSampleRateHz = config.sampleRateHz,
             )
+            val processedBySoftwareAec = softwareAecController.processFrame(
+                pcm = buffer,
+                samplesRead = samplesRead,
+                captureStartNs = captureStartNs,
+                captureEndNs = captureEndNs,
+                referenceBuffer = farEndReferenceBuffer,
+                output = softwareAecOutput,
+            )
+            if (processedBySoftwareAec) {
+                softwareAecOutput.copyInto(buffer, 0, 0, samplesRead)
+            }
             vadEngine.processFrame(buffer, samplesRead)
-            sileroVadEngine.offerPcmFrame(buffer, samplesRead)
+            sileroVadEngine.offerPcmFrame(
+                buffer,
+                samplesRead,
+                frameSequence = frameSequence,
+                captureStartNs = captureStartNs,
+                captureEndNs = captureEndNs,
+                assessment = latestPlaybackEchoAssessment,
+            )
             wakeWordEngine.offerPcmFrame(buffer, samplesRead)
-            pcmDataCallback.onPcmData(buffer, samplesRead)
+            pcmDataCallback.onPcmData(
+                buffer,
+                samplesRead,
+                frameSequence,
+                captureStartNs,
+                captureEndNs,
+            )
         },
     )
 
@@ -264,6 +330,9 @@ class AudioEngine(
     private var minBufferSizeBytes = 0
     private var bufferSizeBytes = 0
     private var audioSessionId = AudioRecord.ERROR_BAD_VALUE
+    @Volatile
+    private var requestedCaptureSource = config.captureSource
+    private var actualCaptureSource = "NOT_INITIALIZED"
     private var pcmFramesCaptured = 0L
     private var captureStartedAtMs = 0L
     private var captureDurationMs = 0L
@@ -343,6 +412,19 @@ class AudioEngine(
 
     fun isRecording(): Boolean = recording
 
+    /** Changes the capture source for the next session; intended for MIC A/B diagnostics. */
+    fun setCaptureSource(source: AudioConfig.CaptureSource): OperationResult = synchronized(stateLock) {
+        if (recording || session != null) {
+            return@synchronized OperationResult(
+                succeeded = false,
+                errorCode = ERROR_ALREADY_RECORDING,
+                errorMessage = "Capture source cannot change while microphone capture is running.",
+            )
+        }
+        requestedCaptureSource = source
+        OperationResult(succeeded = true)
+    }
+
     /** Releases the active AudioRecord, effects, pipeline, and worker threads. */
     fun release() {
         val currentSession: CaptureSession?
@@ -395,6 +477,13 @@ class AudioEngine(
             captureDurationMs = activeDuration,
             microphoneErrorCount = microphoneErrorCount,
             lastError = lastError,
+            requestedCaptureSource = requestedCaptureSource.diagnosticName,
+            actualCaptureSource = actualCaptureSource,
+            playbackUsage = "USAGE_VOICE_COMMUNICATION",
+            playbackContentType = "CONTENT_TYPE_SPEECH",
+            playback = farEndReferenceBuffer.getStatus(),
+            softwareAec = softwareAecController.status(),
+            route = audioRouteController.getStatus(),
             diagnosticSessionId = diagnosticSession.currentId() ?: DiagnosticSessionContext.NONE,
         )
     }
@@ -402,7 +491,9 @@ class AudioEngine(
     fun getAudioProcessingStatus(): AudioEffectsManager.Status =
         audioEffectsManager.getStatus()
 
-    fun getPlaybackEchoAssessment(): PlaybackEchoReference.Assessment =
+    fun getSoftwareAecStatus(): SoftwareAecController.Status = softwareAecController.status()
+
+    fun getPlaybackEchoAssessment(): FarEndReferenceBuffer.Assessment =
         latestPlaybackEchoAssessment
 
     fun getWakeWordStatus(): WakeWordEngine.Status = wakeWordEngine.getStatus()
@@ -592,29 +683,45 @@ class AudioEngine(
         val safeBufferBytes = safeBufferSizeBytes(minSize, pcmSampleFrameBytes)
         bufferSizeBytes = safeBufferBytes
 
+        val requestedSource = requestedCaptureSource
+        val routeResult = audioRouteController.acquire(AudioRouteController.Owner.CAPTURE)
+        if (!routeResult.succeeded || routeResult.lease == null) {
+            return failStartLocked(
+                ERROR_AUDIO_RECORD_INIT,
+                routeResult.errorMessage ?: "Communication route could not be acquired.",
+                null,
+            )
+        }
+        val routeLease = routeResult.lease
+
         Log.i(
             TAG,
             diagnosticSession.tag("AudioRecord config: sampleRate=${config.sampleRateHz}, " +
-                "audioSource=${MediaRecorder.AudioSource.MIC}, " +
+                "audioSource=${requestedSource.diagnosticName}, " +
                 "channels=${config.channelCount}, channelConfig=$channelConfig, " +
                 "encoding=$encoding ($PCM_FORMAT_LABEL), minBufferBytes=$minSize, " +
                 "bufferBytes=$safeBufferBytes"),
         )
 
         val recorder = try {
-            AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                config.sampleRateHz,
-                channelConfig,
-                encoding,
-                safeBufferBytes,
-            )
+            AudioRecord.Builder()
+                .setAudioSource(requestedSource.androidValue)
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(config.sampleRateHz)
+                        .setChannelMask(channelConfig)
+                        .setEncoding(encoding)
+                        .build(),
+                )
+                .setBufferSizeInBytes(safeBufferBytes)
+                .build()
         } catch (securityException: SecurityException) {
             return failStartLocked(
                 ERROR_PERMISSION_DENIED,
                 "Microphone permission was revoked before AudioRecord initialization.",
                 null,
                 securityException,
+                routeLease,
             )
         } catch (exception: IllegalArgumentException) {
             return failStartLocked(
@@ -622,6 +729,7 @@ class AudioEngine(
                 "AudioRecord rejected the requested 16 kHz mono PCM16 configuration.",
                 null,
                 exception,
+                routeLease,
             )
         } catch (exception: RuntimeException) {
             return failStartLocked(
@@ -629,6 +737,7 @@ class AudioEngine(
                 "AudioRecord initialization failed: ${exception.message}",
                 null,
                 exception,
+                routeLease,
             )
         }
 
@@ -637,6 +746,7 @@ class AudioEngine(
                 ERROR_AUDIO_RECORD_INIT,
                 "AudioRecord returned STATE_UNINITIALIZED for 16 kHz mono PCM16.",
                 recorder,
+                routeLease = routeLease,
             )
         }
 
@@ -653,6 +763,7 @@ class AudioEngine(
                 "AudioRecord opened an incompatible format: sampleRate=$actualSampleRate, " +
                     "channels=$actualChannels, encoding=$actualAudioFormat.",
                 recorder,
+                routeLease = routeLease,
             )
         }
 
@@ -660,14 +771,16 @@ class AudioEngine(
         actualChannelCount = actualChannels
         actualEncoding = PCM_FORMAT_LABEL
         audioSessionId = recorder.audioSessionId
+        actualCaptureSource = captureSourceName(recorder.audioSource)
         val effectStatus = audioEffectsManager.attachToAudioSession(audioSessionId)
-        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         Log.i(
             TAG,
             diagnosticSession.tag(
-                "CAPTURE_SESSION_STARTED android_mode=${audioManager?.mode ?: -1} " +
-                    "output_route=${describeOutputRoute(audioManager)} capture_source=MIC " +
+                "CAPTURE_SESSION_STARTED requested_source=${requestedSource.diagnosticName} " +
+                    "actual_source=$actualCaptureSource " +
                     "audio_session_id=$audioSessionId " +
+                    "mode=${audioRouteController.getStatus().actualMode} " +
+                    "playback_route=${audioRouteController.getStatus().playbackRoute} " +
                     "aec_supported=${effectStatus.aec.supported} " +
                     "aec_created=${effectStatus.aec.created} " +
                     "aec_enabled=${effectStatus.aec.enabled} " +
@@ -691,9 +804,11 @@ class AudioEngine(
             recorder = recorder,
             buffer = ShortArray(safeBufferBytes / BYTES_PER_PCM_SAMPLE),
             audioSessionId = audioSessionId,
+            routeLease = routeLease,
         )
 
         try {
+            softwareAecController.start()
             vadEngine.startSession()
             pcmPipeline.start()
             sileroVadEngine.startSession()
@@ -704,6 +819,7 @@ class AudioEngine(
                 "Native PCM consumer could not start: ${exception.message}",
                 recorder,
                 exception,
+                routeLease,
             )
         }
 
@@ -715,6 +831,7 @@ class AudioEngine(
                 "AudioRecord.startRecording() failed: ${exception.message}",
                 recorder,
                 exception,
+                routeLease,
             )
         } catch (exception: RuntimeException) {
             return failStartLocked(
@@ -722,6 +839,7 @@ class AudioEngine(
                 "AudioRecord.startRecording() failed: ${exception.message}",
                 recorder,
                 exception,
+                routeLease,
             )
         }
 
@@ -730,6 +848,7 @@ class AudioEngine(
                 ERROR_AUDIO_RECORD_STATE,
                 "AudioRecord did not enter RECORDSTATE_RECORDING.",
                 recorder,
+                routeLease = routeLease,
             )
         }
 
@@ -749,6 +868,7 @@ class AudioEngine(
                 "Native capture worker could not start: ${exception.message}",
                 recorder,
                 exception,
+                routeLease,
             )
         }
 
@@ -887,6 +1007,7 @@ class AudioEngine(
         pcmPipeline.stopAndClear(::stopNativeDownstream)
         audioEffectsManager.releaseForAudioSession(captureSession.audioSessionId)
         releaseRecorder(captureSession)
+        captureSession.routeLease.release()
 
         if (shouldNotifyError) {
             listener?.onError(getStatus())
@@ -901,6 +1022,7 @@ class AudioEngine(
         message: String,
         recorder: AudioRecord?,
         exception: Throwable? = null,
+        routeLease: AudioRouteController.Lease? = null,
     ): OperationResult {
         state = if (errorCode == ERROR_PERMISSION_DENIED) STATE_PERMISSION_DENIED else STATE_ERROR
         microphoneErrorCount += 1
@@ -909,6 +1031,7 @@ class AudioEngine(
         session = null
         captureThread = null
         recorder?.let(::stopRecorder)
+        softwareAecController.stop()
         pcmPipeline.stopAndClear(::stopNativeDownstream)
         audioEffectsManager.release()
         Log.e(TAG, message, exception)
@@ -920,10 +1043,18 @@ class AudioEngine(
                 Log.e(TAG, "AudioRecord.release() failed after initialization error", releaseException)
             }
         }
+        routeLease?.release()
         return OperationResult(false, errorCode, message)
     }
 
+    private fun captureSourceName(source: Int): String = when (source) {
+        MediaRecorder.AudioSource.VOICE_COMMUNICATION -> "VOICE_COMMUNICATION"
+        MediaRecorder.AudioSource.MIC -> "MIC"
+        else -> "AUDIO_SOURCE_$source"
+    }
+
     private fun stopNativeDownstream() {
+        softwareAecController.stop()
         sileroVadEngine.stopSession()
         wakeWordEngine.stopSession()
         vadEngine.stopSession()
@@ -988,17 +1119,6 @@ class AudioEngine(
 
     private fun hasRecordAudioPermission(): Boolean =
         context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-
-    private fun describeOutputRoute(audioManager: AudioManager?): String {
-        if (audioManager == null) return "UNKNOWN"
-        return runCatching {
-            audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-                .map { it.type.toString() }
-                .distinct()
-                .joinToString(",")
-                .ifEmpty { "NONE" }
-        }.getOrDefault("UNKNOWN")
-    }
 
     private fun safeBufferSizeBytes(minSizeBytes: Int, pcmSampleFrameBytes: Int): Int {
         val minimumSafeSize = max(

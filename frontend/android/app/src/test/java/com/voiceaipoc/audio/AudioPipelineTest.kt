@@ -2,6 +2,7 @@ package com.voiceaipoc.audio
 
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -10,6 +11,38 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AudioPipelineTest {
+    @Test
+    fun captureDefaultsToCommunicationSourceButKeepsMicDiagnosticOverride() {
+        assertEquals(AudioConfig.CaptureSource.VOICE_COMMUNICATION, AudioConfig().captureSource)
+        assertEquals(
+            AudioConfig.CaptureSource.MIC,
+            AudioConfig(captureSource = AudioConfig.CaptureSource.MIC).captureSource,
+        )
+    }
+
+    @Test
+    fun aecAndNoiseSuppressionPoliciesRemainIndependentlySelectable() {
+        val manager = AudioEffectsManager()
+        val cases = listOf(
+            true to false,
+            false to true,
+            true to true,
+            false to false,
+        )
+
+        cases.forEach { (aecEnabled, noiseSuppressionEnabled) ->
+            val status = manager.setRequestedEffects(
+                enableAcousticEchoCancellation = aecEnabled,
+                enableNoiseSuppression = noiseSuppressionEnabled,
+            )
+
+            assertEquals(aecEnabled, status.aec.requested)
+            assertEquals(noiseSuppressionEnabled, status.noiseSuppression.requested)
+        }
+
+        manager.release()
+    }
+
     @Test
     fun configProducesTwentyMillisecondPcm16Frames() {
         val config = AudioConfig()
@@ -88,7 +121,7 @@ class AudioPipelineTest {
         var callbackLatch = CountDownLatch(1)
         val pipeline = PcmAudioPipeline(
             config,
-            AudioEngine.PcmDataCallback { _, samplesRead ->
+            AudioEngine.PcmDataCallback { _, samplesRead, _, _, _ ->
                 assertEquals(config.frameSizeSamples, samplesRead)
                 callbackCount.incrementAndGet()
                 callbackLatch.countDown()
@@ -113,5 +146,41 @@ class AudioPipelineTest {
         assertEquals(2, callbackCount.get())
         assertFalse(pipeline.getStatus().running)
         assertEquals(0, pipeline.getStatus().bufferedFrames)
+    }
+
+    @Test
+    fun pipelineAssignsCaptureIntervalAndResetsFrameSequencePerSession() {
+        val config = AudioConfig()
+        var clockNs = 5_000_000_000L
+        val observations = Collections.synchronizedList(mutableListOf<LongArray>())
+        var callbackLatch = CountDownLatch(1)
+        val pipeline = PcmAudioPipeline(
+            config,
+            AudioEngine.PcmDataCallback { _, _, sequence, captureStartNs, captureEndNs ->
+                observations += longArrayOf(sequence, captureStartNs, captureEndNs)
+                callbackLatch.countDown()
+            },
+            nanoClock = { clockNs },
+        )
+        val frame = ShortArray(config.frameSizeSamples)
+
+        pipeline.start()
+        assertTrue(pipeline.processSamples(frame, frame.size))
+        assertTrue(callbackLatch.await(1, TimeUnit.SECONDS))
+        pipeline.stopAndClear()
+
+        clockNs = 8_000_000_000L
+        callbackLatch = CountDownLatch(1)
+        pipeline.start()
+        assertTrue(pipeline.processSamples(frame, frame.size))
+        assertTrue(callbackLatch.await(1, TimeUnit.SECONDS))
+        pipeline.stopAndClear()
+
+        assertEquals(2, observations.size)
+        assertEquals(0L, observations[0][0])
+        assertEquals(0L, observations[1][0])
+        assertEquals(20_000_000L, observations[0][2] - observations[0][1])
+        assertEquals(5_000_000_000L, observations[0][2])
+        assertEquals(8_000_000_000L, observations[1][2])
     }
 }

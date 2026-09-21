@@ -227,6 +227,7 @@ export function AssistantScreen() {
         : socket.retry();
     }
     if (socketState.session === 'idle') return socket.startSession();
+    if (socketState.session === 'starting') return socket.startTurn();
     if (socketState.turn === 'idle') return socket.startTurn();
     if (
       ['starting', 'recording', 'speech_detected'].includes(socketState.turn)
@@ -613,6 +614,8 @@ function voiceControlLabel(
       : strings.assistant.retry;
   }
   if (snapshot.session === 'idle') return strings.assistant.startSession;
+  if (snapshot.session === 'starting') return strings.assistant.startingSession;
+  if (snapshot.session === 'ending') return strings.assistant.sessionEnding;
   if (snapshot.turn === 'idle') return strings.assistant.startTurn;
   if (['starting', 'recording', 'speech_detected'].includes(snapshot.turn)) {
     return snapshot.turn === 'speech_detected'

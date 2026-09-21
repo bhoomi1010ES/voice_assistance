@@ -287,6 +287,7 @@ class VoiceGateway:
         self._session_status = "disconnected"
         self._finalized = False
         self._connection_close_logged = False
+        self._registry_released = False
 
     async def run(self) -> None:
         LOGGER.info(
@@ -469,8 +470,11 @@ class VoiceGateway:
                     f"sequence_{error.kind}",
                     close_code=1002,
                 )
-            except StateTransitionError:
-                await self._protocol_failure("invalid_voice_state", close_code=1002)
+            except StateTransitionError as error:
+                if str(error) == "voice session is not ready":
+                    await self._send_error("session_not_ready")
+                else:
+                    await self._protocol_failure("invalid_voice_state", close_code=1002)
             except STTError as error:
                 await self._fail_active_turn(error.code)
             except PermissionError:
@@ -508,6 +512,9 @@ class VoiceGateway:
 
     async def _handle_session_start(self, message: SessionStartMessage) -> None:
         if self.state.state != VoiceState.AUTHENTICATED:
+            if self.voice_session is not None and self.state.session_id is not None:
+                await self._emit_session_ready()
+                return
             raise StateTransitionError("session already started")
         self._session_start_message = message
         if message.protocol_version != self.settings.voice_protocol_version:
@@ -604,10 +611,16 @@ class VoiceGateway:
         self._session_started = time.monotonic()
         self.state.session_ready(voice_session.id, completed_turns=voice_session.total_turns)
         await self.db.commit()
+        await self._emit_session_ready()
+
+    async def _emit_session_ready(self) -> None:
+        session_id = self._active_session_id()
+        if session_id is None:
+            return
         await self._send(
             server_event(
                 "server.session.ready",
-                session_id=voice_session.id,
+                session_id=session_id,
                 audio={
                     "sample_rate_hz": self.settings.voice_sample_rate_hz,
                     "channels": 1,
@@ -735,6 +748,9 @@ class VoiceGateway:
         await self._handle_session_start(restart_message)
 
     async def _handle_turn_start(self, message: TurnStartMessage) -> None:
+        if self.voice_session is None or self.state.session_id is None:
+            await self._send_error("session_not_ready")
+            return
         self._require_session()
         self._trace_latency(
             component="gateway",
@@ -920,6 +936,8 @@ class VoiceGateway:
         await self._create_turn(pending)
 
     async def _handle_binary(self, frame: BinaryPcmFrame) -> None:
+        if self.voice_session is None or self.state.session_id is None:
+            return
         self._require_session()
         if self._stt_finalize_task is not None:
             await self._send_error("turn_finalizing")
@@ -3527,6 +3545,7 @@ class VoiceGateway:
             )
         )
         self._closing.set()
+        await self._release_registry()
 
     async def _watchdog_loop(self) -> None:
         interval = min(max(self.settings.voice_heartbeat_interval_seconds, 1), 5)
@@ -3696,97 +3715,139 @@ class VoiceGateway:
             if acquired:
                 self._send_lock.release()
 
+    async def _release_registry(self) -> None:
+        """Drop the Redis device lease before slow STT/DB teardown.
+
+        Stop-then-start opens a new websocket immediately. If this lease is
+        held until after finalize_session, the next session.start is rejected
+        with active_voice_connection_exists (close 1008).
+        """
+
+        if getattr(self, "_registry_released", False):
+            return
+        session_id = self._active_session_id()
+        if session_id is None:
+            self._registry_released = True
+            return
+        try:
+            await self.registry.release(self.owner, session_id)
+        except VoiceRegistryError:
+            pass
+        except Exception:
+            LOGGER.exception(
+                "Voice session registry release failed",
+                extra={
+                    "event": "voice.session.registry.release_failed",
+                    "session_id": str(session_id),
+                },
+            )
+        else:
+            LOGGER.info(
+                "Voice session registry released",
+                extra={
+                    "event": "voice.session.registry.released",
+                    "session_id": str(session_id),
+                    "user_id": str(self.principal.user_id),
+                    "device_id": str(self.principal.device_id),
+                    "timestamp_ms": int(time.time() * 1000),
+                    "monotonic_ms": round(time.monotonic() * 1000, 1),
+                },
+            )
+        self._registry_released = True
+
     async def shutdown(self) -> None:
         if self._finalized:
+            await self._release_registry()
             return
         self._finalized = True
         self._closing.set()
         self._log_connection_closed()
+        await self._release_registry()
         current = asyncio.current_task()
-        gateway_tasks = [
-            task
-            for task in (self._processor_task, self._watchdog_task, self._receive_task)
-            if task is not None and task is not current
-        ]
-        for task in gateway_tasks:
-            if task is not None and task is not current and not task.done():
-                task.cancel()
-        if gateway_tasks:
-            # Do not let the route's database-session context close while a
-            # cancelled processor still owns work that can touch that session.
-            await asyncio.gather(*gateway_tasks, return_exceptions=True)
-        await self._cancel_stt_finalize_task()
-        retry_task = self._retry_response_task
-        self._retry_response_task = None
-        if retry_task is not None and retry_task is not current:
-            if not retry_task.done():
-                retry_task.cancel()
-            await asyncio.gather(retry_task, return_exceptions=True)
-        for response_id, tts_task in list(self._tts_tasks.items()):
-            if tts_task is not current and not tts_task.done():
-                tts_task.cancel()
-            await asyncio.gather(tts_task, return_exceptions=True)
-            self._tts_tasks.pop(response_id, None)
-        if self.stt_turn is not None:
-            await self._close_stt_turn(cancel=True)
-        await self._finalize_active_turn()
-        if self.voice_session is not None:
-            confirmation_store = getattr(self, "confirmation_store", None)
-            if confirmation_store is not None:
-                with contextlib.suppress(Exception):
-                    await confirmation_store.cancel_scope(
-                        self._confirmation_scope(self._active_session_id())
+        try:
+            gateway_tasks = [
+                task
+                for task in (self._processor_task, self._watchdog_task, self._receive_task)
+                if task is not None and task is not current
+            ]
+            for task in gateway_tasks:
+                if task is not None and task is not current and not task.done():
+                    task.cancel()
+            if gateway_tasks:
+                # Do not let the route's database-session context close while a
+                # cancelled processor still owns work that can touch that session.
+                await asyncio.gather(*gateway_tasks, return_exceptions=True)
+            await self._cancel_stt_finalize_task()
+            retry_task = self._retry_response_task
+            self._retry_response_task = None
+            if retry_task is not None and retry_task is not current:
+                if not retry_task.done():
+                    retry_task.cancel()
+                await asyncio.gather(retry_task, return_exceptions=True)
+            for response_id, tts_task in list(self._tts_tasks.items()):
+                if tts_task is not current and not tts_task.done():
+                    tts_task.cancel()
+                await asyncio.gather(tts_task, return_exceptions=True)
+                self._tts_tasks.pop(response_id, None)
+            if self.stt_turn is not None:
+                await self._close_stt_turn(cancel=True)
+            await self._finalize_active_turn()
+            if self.voice_session is not None:
+                confirmation_store = getattr(self, "confirmation_store", None)
+                if confirmation_store is not None:
+                    with contextlib.suppress(Exception):
+                        await confirmation_store.cancel_scope(
+                            self._confirmation_scope(self._active_session_id())
+                        )
+                try:
+                    await self.persistence.finalize_session(
+                        self.db,
+                        self.principal,
+                        session_id=self._active_session_id(),
+                        status=self._session_status,
+                        close_code=self._close_code,
+                        close_reason=self._close_reason,
+                        total_frames=self._session_total_frames,
+                        total_bytes=self._session_total_bytes,
+                        error_count=self.stats.error_count,
                     )
-            await self.persistence.finalize_session(
-                self.db,
-                self.principal,
-                session_id=self._active_session_id(),
-                status=self._session_status,
-                close_code=self._close_code,
-                close_reason=self._close_reason,
-                total_frames=self._session_total_frames,
-                total_bytes=self._session_total_bytes,
-                error_count=self.stats.error_count,
-            )
-            record_audit(
-                self.db,
-                "VOICE_SESSION_ENDED",
-                user_id=self.principal.user_id,
-                device_id=self.principal.device_id,
-                metadata={
-                    "session_id": str(self._active_session_id()),
-                    "status": self._session_status,
-                    "frames": self.stats.frames_accepted,
-                    "queue_high_water_mark": self.stats.queue_high_water_mark,
-                    "queue_overflow_count": self.stats.queue_overflow_count,
-                },
-                request=self.websocket,
-            )
-            await self.db.commit()
-            try:
-                await self.registry.release(self.owner, self._active_session_id())
-            except VoiceRegistryError:
-                pass
-            else:
-                LOGGER.info(
-                    "Voice session registry released",
-                    extra={
-                        "event": "voice.session.registry.released",
-                        "session_id": str(self._active_session_id()),
-                        "user_id": str(self.principal.user_id),
-                        "device_id": str(self.principal.device_id),
-                        "timestamp_ms": int(time.time() * 1000),
-                        "monotonic_ms": round(time.monotonic() * 1000, 1),
-                    },
+                    record_audit(
+                        self.db,
+                        "VOICE_SESSION_ENDED",
+                        user_id=self.principal.user_id,
+                        device_id=self.principal.device_id,
+                        metadata={
+                            "session_id": str(self._active_session_id()),
+                            "status": self._session_status,
+                            "frames": self.stats.frames_accepted,
+                            "queue_high_water_mark": self.stats.queue_high_water_mark,
+                            "queue_overflow_count": self.stats.queue_overflow_count,
+                        },
+                        request=self.websocket,
+                    )
+                    await self.db.commit()
+                except Exception:
+                    LOGGER.exception(
+                        "Voice session finalize failed during shutdown",
+                        extra={
+                            "event": "voice.session.finalize_failed",
+                            "session_id": str(self._active_session_id())
+                            if self._active_session_id()
+                            else None,
+                        },
+                    )
+                    with contextlib.suppress(Exception):
+                        await self.db.rollback()
+                await self._send(
+                    server_event(
+                        "server.session.ended",
+                        session_id=self._active_session_id(),
+                        reason=self._close_reason or "connection_closed",
+                    )
                 )
-            await self._send(
-                server_event(
-                    "server.session.ended",
-                    session_id=self._active_session_id(),
-                    reason=self._close_reason or "connection_closed",
-                )
-            )
-        self.state.close()
+        finally:
+            await self._release_registry()
+            self.state.close()
 
     async def _finalize_active_turn(self) -> None:
         if self.active_turn is None or self.voice_session is None:

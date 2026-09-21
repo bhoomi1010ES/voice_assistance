@@ -4,6 +4,7 @@ import {
   DeviceEventEmitter,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TouchableOpacity,
   View,
@@ -11,14 +12,17 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   AudioProcessingCalibrationMode,
+  AudioCaptureSource,
   AudioPipelineStatus,
   AudioProcessingStatus,
+  BargeInSemanticEvent,
   VoiceGatewayStatus,
   connectVoiceGateway,
   disconnectVoiceGateway,
   endVoiceSession,
   storeAuthTokens,
   getVoiceGatewayStatus,
+  exportDiagnosticEvidence,
   getAudioPipelineStatus,
   getAudioProcessingStatus,
   getMicrophoneStatus,
@@ -34,7 +38,9 @@ import {
   resetWakeWordAcousticDiagnostics,
   replayWakeWordDiagnosticPcm,
   setAudioProcessingCalibrationMode,
+  setAudioCaptureSource,
   setWakeWordCalibrationMode,
+  subscribeVoiceBargeInEvent,
   SileroVadErrorEvent,
   SileroVadEvent,
   startMicrophone,
@@ -46,6 +52,7 @@ import {
   WakeWordDetectionEvent,
   WakeWordDiagnosticCaptureStatus,
   ManualWakeWordTrialStatus,
+  MAX_DIAGNOSTIC_PCM_DURATION_MS,
   WakeWordReplayBatchResult,
   WakeWordStatus,
   WakeWordStatusEvent,
@@ -82,6 +89,90 @@ const INITIAL_STATUS: MicrophoneStatus = {
   captureDurationMs: 0,
   microphoneErrorCount: 0,
   lastError: null,
+  requestedCaptureSource: 'VOICE_COMMUNICATION',
+  actualCaptureSource: 'NOT_INITIALIZED',
+  playbackUsage: 'USAGE_VOICE_COMMUNICATION',
+  playbackContentType: 'CONTENT_TYPE_SPEECH',
+  playback: {
+    state: 'STOPPED',
+    responseId: null,
+    writtenPlaybackFrames: 0,
+    presentedPlaybackFrames: 0,
+    referenceBufferedFrames: 0,
+    referenceReady: false,
+    timestampConfidence: 'NONE',
+    estimatedDelayMs: null,
+    echoSimilarity: null,
+    echoCoherence: null,
+    farEndRms: null,
+    micRms: null,
+    nearEndFarEndEnergyRatio: null,
+    lastAssessmentTimestampNs: '0',
+  },
+  detector: {
+    state: 'IDLE',
+    lastEvent: 'NONE',
+    lastReason: 'NONE',
+    candidateCount: 0,
+    rejectedEchoCount: 0,
+    confirmedCount: 0,
+    degradedCount: 0,
+    lastResponseId: null,
+    lastSourceFrameSequenceStart: 0,
+    lastSourceFrameSequenceEnd: 0,
+    lastInferenceIndex: 0,
+    lastLocalStopLatencyMs: null,
+    lastLocalStopResponseId: null,
+  },
+  softwareAec: {
+    requestedMode: 'PLATFORM',
+    state: 'DISABLED',
+    implementation: 'PLATFORM_AEC',
+    sampleRateHz: 16_000,
+    frameDurationMs: 10,
+    frameSizeSamples: 160,
+    renderToCaptureDelayMs: 80,
+    aecRequested: true,
+    noiseSuppressionRequested: false,
+    platformAecDisabled: false,
+    platformNoiseSuppressionDisabled: false,
+    referenceReadyFrames: 0,
+    referenceMissingFrames: 0,
+    captureFrames: 0,
+    renderFrames: 0,
+    processedFrames: 0,
+    bypassedFrames: 0,
+    droppedFrames: 0,
+    processingErrorCount: 0,
+    lastReferenceConfidence: 'NONE',
+    lastFarEndRms: 0,
+    lastInputRms: 0,
+    lastOutputRms: 0,
+    lastError: null,
+  },
+  route: {
+    activeLeaseCount: 0,
+    captureLeaseCount: 0,
+    playbackLeaseCount: 0,
+    requestedMode: 3,
+    actualMode: 0,
+    priorMode: null,
+    modeAcquired: false,
+    modeRestored: true,
+    requestedCommunicationDevice: 'AUTO',
+    actualCommunicationDevice: 'NONE',
+    inputDeviceType: 'UNKNOWN',
+    outputDeviceType: 'UNKNOWN',
+    communicationDeviceSelected: false,
+    playbackRoute: 'UNKNOWN',
+    audioFocusRequested: false,
+    audioFocusGranted: false,
+    audioFocusState: 'NONE',
+    audioFocusRestored: true,
+    restorationCount: 0,
+    api31CommunicationDeviceSupported: false,
+    lastError: null,
+  },
 };
 
 const INITIAL_AUDIO_PROCESSING_STATUS: AudioProcessingStatus = {
@@ -92,6 +183,8 @@ const INITIAL_AUDIO_PROCESSING_STATUS: AudioProcessingStatus = {
     requested: true,
     created: false,
     enabled: false,
+    platformEnabledBeforeAttach: false,
+    effectiveness: 'NOT_ATTACHED',
     lastError: null,
   },
   noiseSuppression: {
@@ -100,11 +193,43 @@ const INITIAL_AUDIO_PROCESSING_STATUS: AudioProcessingStatus = {
     requested: true,
     created: false,
     enabled: false,
+    platformEnabledBeforeAttach: false,
+    effectiveness: 'NOT_ATTACHED',
     lastError: null,
   },
   manufacturer: 'UNKNOWN',
   model: 'UNKNOWN',
   androidSdk: 0,
+  aecSelection: 'PLATFORM',
+  aecHealth: 'NOT_ATTACHED',
+  noiseSuppressionSelection: 'PLATFORM',
+  noiseSuppressionHealth: 'NOT_ATTACHED',
+  softwareAec: {
+    requestedMode: 'PLATFORM',
+    state: 'DISABLED',
+    implementation: 'PLATFORM_AEC',
+    sampleRateHz: 16_000,
+    frameDurationMs: 10,
+    frameSizeSamples: 160,
+    renderToCaptureDelayMs: 80,
+    aecRequested: true,
+    noiseSuppressionRequested: false,
+    platformAecDisabled: false,
+    platformNoiseSuppressionDisabled: false,
+    referenceReadyFrames: 0,
+    referenceMissingFrames: 0,
+    captureFrames: 0,
+    renderFrames: 0,
+    processedFrames: 0,
+    bypassedFrames: 0,
+    droppedFrames: 0,
+    processingErrorCount: 0,
+    lastReferenceConfidence: 'NONE',
+    lastFarEndRms: 0,
+    lastInputRms: 0,
+    lastOutputRms: 0,
+    lastError: null,
+  },
 };
 
 const INITIAL_AUDIO_PIPELINE_STATUS: AudioPipelineStatus = {
@@ -459,8 +584,12 @@ export function DiagnosticScreen() {
     useState<SileroVadEvent | null>(null);
   const [lastSileroStoppedEvent, setLastSileroStoppedEvent] =
     useState<SileroVadEvent | null>(null);
+  const [lastSileroActivityEvent, setLastSileroActivityEvent] =
+    useState<SileroVadEvent | null>(null);
   const [lastSileroErrorEvent, setLastSileroErrorEvent] =
     useState<SileroVadErrorEvent | null>(null);
+  const [lastBargeInEvent, setLastBargeInEvent] =
+    useState<BargeInSemanticEvent | null>(null);
   const [lastWakeDetection, setLastWakeDetection] =
     useState<WakeWordDetectionEvent | null>(null);
   const wakeEventKeys = useRef(new Set<string>());
@@ -477,6 +606,7 @@ export function DiagnosticScreen() {
     'IDLE' | 'STARTING' | 'RECORDING' | 'COMMITTING'
   >('IDLE');
   const [lastTurnInfo, setLastTurnInfo] = useState<string | null>(null);
+  const [pcmCaptureConsent, setPcmCaptureConsent] = useState(false);
 
   const refreshDiagnostics = useCallback(async () => {
     try {
@@ -551,12 +681,26 @@ export function DiagnosticScreen() {
         },
       ),
       DeviceEventEmitter.addListener(
+        'SILERO_VAD_SPEECH_ACTIVITY',
+        (event: SileroVadEvent) => {
+          setLastSileroActivityEvent(event);
+          refreshDiagnostics();
+        },
+      ),
+      DeviceEventEmitter.addListener(
         'SILERO_VAD_ERROR',
         (event: SileroVadErrorEvent) => {
           setLastSileroErrorEvent(event);
           refreshDiagnostics();
         },
       ),
+      (() => {
+        const unsubscribe = subscribeVoiceBargeInEvent(event => {
+          setLastBargeInEvent(event);
+          refreshDiagnostics();
+        });
+        return { remove: unsubscribe };
+      })(),
       DeviceEventEmitter.addListener(
         'WAKE_WORD_DETECTED',
         (event: WakeWordDetectionEvent) => {
@@ -630,6 +774,7 @@ export function DiagnosticScreen() {
     setLastVadStoppedEvent(null);
     setLastSileroStartedEvent(null);
     setLastSileroStoppedEvent(null);
+    setLastBargeInEvent(null);
     setLastSileroErrorEvent(null);
     setLastWakeDetection(null);
     setLastWakeEngineEvent('NONE');
@@ -930,6 +1075,7 @@ export function DiagnosticScreen() {
         await startWakeWordDiagnosticPcmCapture(
           `${prefix}_${String(count + 1).padStart(2, '0')}`,
           5120,
+          pcmCaptureConsent,
         ),
       );
     } catch (error) {
@@ -986,6 +1132,37 @@ export function DiagnosticScreen() {
     setUiError(null);
     try {
       setAudioProcessing(await setAudioProcessingCalibrationMode(mode));
+    } catch (error) {
+      setUiError(errorMessage(error));
+      await refreshDiagnostics();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleExportDiagnosticEvidence = async () => {
+    setBusy(true);
+    setUiError(null);
+    try {
+      const result = await exportDiagnosticEvidence();
+      setLastTurnInfo(
+        result.copied
+          ? `Metadata evidence copied (${result.byteLength} bytes), session ${result.diagnosticSessionId}.`
+          : 'Metadata evidence was assembled but could not be copied.',
+      );
+    } catch (error) {
+      setUiError(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCaptureSource = async (source: AudioCaptureSource) => {
+    setBusy(true);
+    setUiError(null);
+    try {
+      setStatus(await setAudioCaptureSource(source));
+      await refreshDiagnostics();
     } catch (error) {
       setUiError(errorMessage(error));
       await refreshDiagnostics();
@@ -1111,6 +1288,55 @@ export function DiagnosticScreen() {
             Native audio, Silero VAD, and openWakeWord diagnostics
           </Text>
 
+          <Text style={styles.sectionTitle}>LIVE ACOUSTIC SESSION</Text>
+          <StatusRow
+            label="Diagnostic session"
+            value={status.diagnosticSessionId ?? 'NONE'}
+          />
+          <StatusRow
+            label="Capture / route"
+            value={`${status.requestedCaptureSource} → ${status.actualCaptureSource} · mode ${status.route.actualMode} · ${status.route.inputDeviceType} → ${status.route.outputDeviceType}`}
+          />
+          <StatusRow
+            label="AEC / NS selection"
+            value={`${audioProcessing.aecSelection} (${audioProcessing.aecHealth}) / ${audioProcessing.noiseSuppressionSelection} (${audioProcessing.noiseSuppressionHealth})`}
+          />
+          <StatusRow
+            label="Playback frames written / presented"
+            value={`${Math.floor(status.playback.writtenPlaybackFrames)} / ${Math.floor(status.playback.presentedPlaybackFrames)}`}
+          />
+          <StatusRow
+            label="Reference readiness / timestamp"
+            value={`${yesNo(status.playback.referenceReady)} / ${status.playback.timestampConfidence}`}
+          />
+          <StatusRow
+            label="Echo delay / similarity / coherence"
+            value={`${formatMilliseconds(status.playback.estimatedDelayMs)} / ${formatConfidence(status.playback.echoSimilarity)} / ${formatConfidence(status.playback.echoCoherence)}`}
+          />
+          <StatusRow
+            label="Near/far energy ratio"
+            value={formatConfidence(status.playback.nearEndFarEndEnergyRatio)}
+          />
+          <StatusRow
+            label="Detector"
+            value={`${status.detector.state} · ${status.detector.lastEvent} · ${status.detector.lastReason}`}
+          />
+          <StatusRow
+            label="Candidate / rejected / confirmed / degraded"
+            value={`${status.detector.candidateCount} / ${status.detector.rejectedEchoCount} / ${status.detector.confirmedCount} / ${status.detector.degradedCount}`}
+          />
+          <StatusRow
+            label="Last local-stop latency"
+            value={formatMilliseconds(status.detector.lastLocalStopLatencyMs)}
+          />
+          <View style={styles.controls}>
+            <Button
+              title="Copy Metadata-Only Evidence JSON"
+              onPress={handleExportDiagnosticEvidence}
+              disabled={busy}
+            />
+          </View>
+
           <View style={styles.controls}>
             <Button
               title="Refresh Audio Diagnostics"
@@ -1126,6 +1352,16 @@ export function DiagnosticScreen() {
               title="Stop Microphone"
               onPress={handleStop}
               disabled={busy || !status.isRecording}
+            />
+            <Button
+              title="Use VOICE_COMMUNICATION Capture"
+              onPress={() => handleCaptureSource('VOICE_COMMUNICATION')}
+              disabled={busy || status.isRecording}
+            />
+            <Button
+              title="Use MIC Capture (A/B Diagnostic)"
+              onPress={() => handleCaptureSource('MIC')}
+              disabled={busy || status.isRecording}
             />
           </View>
 
@@ -1405,19 +1641,34 @@ export function DiagnosticScreen() {
             TEMPORARY PCM REPLAY DIAGNOSTICS
           </Text>
           <Text style={styles.subtitle}>
-            Explicit 5.12-second app-private captures only. PCM never crosses
-            React Native and must be deleted after validation.
+            Optional recorded-fixture generation only. Captures are app-private,
+            capped at {MAX_DIAGNOSTIC_PCM_DURATION_MS / 1000}s, never cross
+            React Native, and must be deleted after validation.
           </Text>
+          <View style={styles.consentRow}>
+            <Switch
+              value={pcmCaptureConsent}
+              onValueChange={setPcmCaptureConsent}
+              disabled={busy}
+            />
+            <Text style={styles.consentText}>
+              I explicitly consent to temporary diagnostic PCM capture.
+            </Text>
+          </View>
           <View style={styles.controls}>
             <Button
               title="Capture Positive PCM"
               onPress={() => handleStartDiagnosticCapture(true)}
-              disabled={busy || !status.isRecording || wakeCapture.active}
+              disabled={
+                busy || !status.isRecording || wakeCapture.active || !pcmCaptureConsent
+              }
             />
             <Button
               title="Capture Negative PCM"
               onPress={() => handleStartDiagnosticCapture(false)}
-              disabled={busy || !status.isRecording || wakeCapture.active}
+              disabled={
+                busy || !status.isRecording || wakeCapture.active || !pcmCaptureConsent
+              }
             />
             <Button
               title="Stop Diagnostic Capture"
@@ -1520,6 +1771,45 @@ export function DiagnosticScreen() {
             label="Enabled"
             value={yesNo(audioProcessing.aec.enabled)}
           />
+          <StatusRow
+            label="Effectiveness state"
+            value={audioProcessing.aec.effectiveness}
+          />
+
+          <Text style={styles.sectionTitle}>SOFTWARE AEC3 FALLBACK</Text>
+          <StatusRow
+            label="Requested mode"
+            value={audioProcessing.softwareAec.requestedMode}
+          />
+          <StatusRow
+            label="State / implementation"
+            value={`${audioProcessing.softwareAec.state} / ${audioProcessing.softwareAec.implementation}`}
+          />
+          <StatusRow
+            label="Render-to-capture delay"
+            value={`${audioProcessing.softwareAec.renderToCaptureDelayMs} ms`}
+          />
+          <StatusRow
+            label="Platform AEC disabled"
+            value={yesNo(audioProcessing.softwareAec.platformAecDisabled)}
+          />
+          <StatusRow
+            label="Reference ready / missing"
+            value={`${Math.floor(audioProcessing.softwareAec.referenceReadyFrames)} / ${Math.floor(audioProcessing.softwareAec.referenceMissingFrames)}`}
+          />
+          <StatusRow
+            label="Processed / bypassed"
+            value={`${Math.floor(audioProcessing.softwareAec.processedFrames)} / ${Math.floor(audioProcessing.softwareAec.bypassedFrames)}`}
+          />
+          <StatusRow
+            label="Last RMS input / output"
+            value={`${audioProcessing.softwareAec.lastInputRms.toFixed(1)} / ${audioProcessing.softwareAec.lastOutputRms.toFixed(1)}`}
+          />
+          {audioProcessing.softwareAec.lastError ? (
+            <Text style={styles.errorText}>
+              Software AEC error: {audioProcessing.softwareAec.lastError}
+            </Text>
+          ) : null}
 
           <Text style={styles.sectionTitle}>NOISE SUPPRESSION</Text>
           <StatusRow
@@ -1542,6 +1832,10 @@ export function DiagnosticScreen() {
             label="Enabled"
             value={yesNo(audioProcessing.noiseSuppression.enabled)}
           />
+          <StatusRow
+            label="Effectiveness state"
+            value={audioProcessing.noiseSuppression.effectiveness}
+          />
 
           <Text style={styles.sectionTitle}>MICROPHONE CAPTURE</Text>
           <StatusRow
@@ -1549,6 +1843,47 @@ export function DiagnosticScreen() {
             value={status.permissionStatus}
           />
           <StatusRow label="Audio engine status" value={status.state} />
+          <StatusRow
+            label="Requested capture source"
+            value={status.requestedCaptureSource}
+          />
+          <StatusRow
+            label="Actual capture source"
+            value={status.actualCaptureSource}
+          />
+          <StatusRow label="Playback usage" value={status.playbackUsage} />
+          <StatusRow
+            label="Playback content type"
+            value={status.playbackContentType}
+          />
+          <StatusRow
+            label="Android mode"
+            value={`${status.route.actualMode} (requested ${status.route.requestedMode})`}
+          />
+          <StatusRow
+            label="Route leases"
+            value={`total=${status.route.activeLeaseCount}, capture=${status.route.captureLeaseCount}, playback=${status.route.playbackLeaseCount}`}
+          />
+          <StatusRow
+            label="Communication device"
+            value={`${status.route.actualCommunicationDevice} (requested ${status.route.requestedCommunicationDevice})`}
+          />
+          <StatusRow
+            label="Playback route"
+            value={status.route.playbackRoute}
+          />
+          <StatusRow
+            label="Audio focus"
+            value={`${status.route.audioFocusState}, granted=${yesNo(
+              status.route.audioFocusGranted,
+            )}`}
+          />
+          <StatusRow
+            label="Restoration"
+            value={`${yesNo(status.route.modeRestored)} / ${yesNo(
+              status.route.audioFocusRestored,
+            )}, count=${status.route.restorationCount}`}
+          />
           <StatusRow
             label="AudioRecord initialized"
             value={String(status.audioRecordInitialized)}
@@ -1838,6 +2173,10 @@ export function DiagnosticScreen() {
             label="Last speech-stop event"
             value={formatSileroEvent(lastSileroStoppedEvent)}
           />
+          <StatusRow
+            label="Last speech-activity event"
+            value={formatSileroEvent(lastSileroActivityEvent)}
+          />
           {audioPipeline.sileroVad.modelError ? (
             <Text style={styles.errorText}>
               Silero model: {audioPipeline.sileroVad.modelError}
@@ -1854,6 +2193,16 @@ export function DiagnosticScreen() {
               Last Silero event: {lastSileroErrorEvent.lastErrorCode}
             </Text>
           ) : null}
+
+          <Text style={styles.sectionTitle}>PLAYBACK-AWARE BARGE-IN</Text>
+          <StatusRow
+            label="Last semantic decision"
+            value={formatBargeInEvent(lastBargeInEvent)}
+          />
+          <StatusRow
+            label="Local stop acknowledgement"
+            value={formatBargeInStopAcknowledgement(lastBargeInEvent)}
+          />
 
           <Text style={styles.sectionTitle}>OPENWAKEWORD</Text>
           <StatusRow label="Enabled" value={yesNo(wakeWord.enabled)} />
@@ -2225,7 +2574,46 @@ function formatSileroEvent(event: SileroVadEvent | null): string {
     return 'NONE';
   }
 
-  return `${event.event} (${event.probability.toFixed(4)})`;
+  const reference = event.playbackReferenceAvailable ? 'ready' : 'not-ready';
+  const delay = event.estimatedDelayMs == null ? 'N/A' : `${event.estimatedDelayMs} ms`;
+  const sourceFrames = event.sourceFrameSequenceStart == null ||
+    event.sourceFrameSequenceEnd == null
+    ? 'N/A'
+    : `${event.sourceFrameSequenceStart}-${event.sourceFrameSequenceEnd}`;
+  return `${event.event} (${event.probability.toFixed(4)}) ` +
+    `state=${event.playbackState ?? 'N/A'} ref=${reference} ` +
+    `delay=${delay} confidence=${event.timestampConfidence ?? 'N/A'} ` +
+    `frames=${sourceFrames} discontinuous=${event.discontinuous ? 'yes' : 'no'}`;
+}
+
+function formatBargeInEvent(event: BargeInSemanticEvent | null): string {
+  if (!event) {
+    return 'NONE';
+  }
+  const response = event.responseId ?? 'NONE';
+  return `${event.event} state=${event.state} reason=${event.reason} ` +
+    `response=${response} playback=${event.playbackState} ` +
+    `frames=${event.sourceFrameSequenceStart}-${event.sourceFrameSequenceEnd} ` +
+    `inference=${event.inferenceIndex} ` +
+    `capture=${event.captureStartNs}-${event.captureEndNs} ` +
+    `delay=${formatMilliseconds(event.estimatedDelayMs ?? null)}`;
+}
+
+function formatBargeInStopAcknowledgement(
+  event: BargeInSemanticEvent | null,
+): string {
+  if (!event) {
+    return 'NONE';
+  }
+  return `requested=${yesNo(event.localStopRequested === true)} ` +
+    `completed=${yesNo(event.localStopCompleted === true)} ` +
+    `stopped=${yesNo(event.audioTrackStopped === true)} ` +
+    `flushed=${yesNo(event.audioTrackFlushed === true)} ` +
+    `released=${yesNo(event.audioTrackReleased === true)} ` +
+    `pending=${yesNo(event.localStopReleasePending === true)} ` +
+    `latency=${formatMilliseconds(event.localStopLatencyMs ?? null)} ` +
+    `reason=${event.stopReason ?? 'N/A'} ` +
+    `detectNs=${event.monotonicNs} stopNs=${event.stopRequestedMonotonicNs ?? 'N/A'}`;
 }
 
 function StatusRow({ label, value }: { label: string; value: string }) {
@@ -2270,6 +2658,17 @@ const styles = StyleSheet.create({
   controls: {
     gap: 12,
     marginBottom: 18,
+  },
+  consentRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 12,
+  },
+  consentText: {
+    color: '#cbd5e1',
+    flex: 1,
+    fontSize: 13,
   },
   sectionTitle: {
     color: '#f8fafc',

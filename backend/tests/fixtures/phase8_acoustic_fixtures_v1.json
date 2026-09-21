@@ -1,0 +1,188 @@
+{
+  "manifest_version": "phase8-acoustic-fixtures-v1",
+  "content_policy": {
+    "metadata_only": true,
+    "real_user_speech_allowed": false,
+    "preferred_sources": ["synthetic", "licensed", "explicitly_consented_recording"],
+    "forbidden_fields": ["transcript", "pcm", "tokens", "provider_secrets", "authorization"]
+  },
+  "classification_contract": {
+    "reject_echo": "TTS-only or playback-correlated content must not confirm a barge-in.",
+    "confirm_near_end": "Near-end speech without active playback should confirm.",
+    "confirm_double_talk": "User speech during playback should confirm when the near-end evidence is sufficient.",
+    "reject_non_speech": "Background conversation, music, or short impulses without the scripted user speech must not confirm.",
+    "degraded_reference": "Missing or discontinuous reference must be observable and must not be treated as healthy echo evidence."
+  },
+  "fixtures": [
+    {
+      "id": "tts_only_clean_loudspeaker_v1",
+      "family": "tts_only",
+      "source": {"kind": "synthetic_tts", "voice_id": "synthetic_voice_a", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 50, "room_reverb_ms": 0, "estimated_delay_ms": 0},
+      "near_end": {"user_speech": false, "background": "quiet"},
+      "expected": {"classification": "reject_echo", "detector_event": "REJECTED_ECHO", "safe_to_interrupt": false}
+    },
+    {
+      "id": "tts_only_reverb_delay_50ms_v1",
+      "family": "tts_only_room_reverb_delay",
+      "source": {"kind": "synthetic_tts", "voice_id": "synthetic_voice_a", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 50, "room_reverb_ms": 120, "estimated_delay_ms": 50},
+      "near_end": {"user_speech": false, "background": "quiet"},
+      "expected": {"classification": "reject_echo", "detector_event": "REJECTED_ECHO", "safe_to_interrupt": false}
+    },
+    {
+      "id": "tts_only_reverb_delay_150ms_v1",
+      "family": "tts_only_room_reverb_delay",
+      "source": {"kind": "synthetic_tts", "voice_id": "synthetic_voice_b", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 75, "room_reverb_ms": 240, "estimated_delay_ms": 150},
+      "near_end": {"user_speech": false, "background": "quiet"},
+      "expected": {"classification": "reject_echo", "detector_event": "REJECTED_ECHO", "safe_to_interrupt": false}
+    },
+    {
+      "id": "tts_only_reverb_delay_300ms_v1",
+      "family": "tts_only_room_reverb_delay",
+      "source": {"kind": "synthetic_tts", "voice_id": "synthetic_voice_b", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 100, "room_reverb_ms": 420, "estimated_delay_ms": 300},
+      "near_end": {"user_speech": false, "background": "quiet"},
+      "expected": {"classification": "reject_echo", "detector_event": "REJECTED_ECHO", "safe_to_interrupt": false}
+    },
+    {
+      "id": "near_end_user_only_quiet_v1",
+      "family": "near_end_user_only",
+      "source": {"kind": "synthetic_speech", "voice_id": "synthetic_user_a", "licensed": true},
+      "playback": {"route": "none", "volume_percent": 0, "room_reverb_ms": 0, "estimated_delay_ms": null},
+      "near_end": {"user_speech": true, "background": "quiet", "speech_ratio_db": 12},
+      "expected": {"classification": "confirm_near_end", "detector_event": "CONFIRMED_NEAR_END", "safe_to_interrupt": true}
+    },
+    {
+      "id": "near_end_user_only_moderate_noise_v1",
+      "family": "near_end_user_only",
+      "source": {"kind": "synthetic_speech", "voice_id": "synthetic_user_b", "licensed": true},
+      "playback": {"route": "none", "volume_percent": 0, "room_reverb_ms": 80, "estimated_delay_ms": null},
+      "near_end": {"user_speech": true, "background": "moderate_room_noise", "speech_ratio_db": 6},
+      "expected": {"classification": "confirm_near_end", "detector_event": "CONFIRMED_NEAR_END", "safe_to_interrupt": true}
+    },
+    {
+      "id": "double_talk_plus_6db_v1",
+      "family": "double_talk_signal_ratio",
+      "source": {"kind": "synthetic_mix", "voice_id": "synthetic_user_a", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 50, "room_reverb_ms": 120, "estimated_delay_ms": 80},
+      "near_end": {"user_speech": true, "background": "tts_reference", "speech_ratio_db": 6},
+      "expected": {"classification": "confirm_double_talk", "detector_event": "CONFIRMED_DOUBLE_TALK", "safe_to_interrupt": true}
+    },
+    {
+      "id": "double_talk_zero_db_v1",
+      "family": "double_talk_signal_ratio",
+      "source": {"kind": "synthetic_mix", "voice_id": "synthetic_user_b", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 75, "room_reverb_ms": 220, "estimated_delay_ms": 150},
+      "near_end": {"user_speech": true, "background": "tts_reference", "speech_ratio_db": 0},
+      "expected": {"classification": "confirm_double_talk", "detector_event": "CONFIRMED_DOUBLE_TALK", "safe_to_interrupt": true}
+    },
+    {
+      "id": "double_talk_minus_6db_v1",
+      "family": "double_talk_signal_ratio",
+      "source": {"kind": "synthetic_mix", "voice_id": "synthetic_user_a", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 100, "room_reverb_ms": 420, "estimated_delay_ms": 300},
+      "near_end": {"user_speech": true, "background": "tts_reference", "speech_ratio_db": -6},
+      "expected": {"classification": "confirm_double_talk", "detector_event": "CONFIRMED_DOUBLE_TALK", "safe_to_interrupt": true}
+    },
+    {
+      "id": "background_tv_only_v1",
+      "family": "background_tv_music_conversation",
+      "source": {"kind": "licensed_background", "asset_id": "licensed_tv_dialogue_01", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 50, "room_reverb_ms": 160, "estimated_delay_ms": 100},
+      "near_end": {"user_speech": false, "background": "tv_dialogue"},
+      "expected": {"classification": "reject_non_speech", "detector_event": "REJECTED_BACKGROUND", "safe_to_interrupt": false}
+    },
+    {
+      "id": "background_music_only_v1",
+      "family": "background_tv_music_conversation",
+      "source": {"kind": "licensed_background", "asset_id": "licensed_music_01", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 75, "room_reverb_ms": 220, "estimated_delay_ms": 150},
+      "near_end": {"user_speech": false, "background": "music"},
+      "expected": {"classification": "reject_non_speech", "detector_event": "REJECTED_BACKGROUND", "safe_to_interrupt": false}
+    },
+    {
+      "id": "background_conversation_only_v1",
+      "family": "background_tv_music_conversation",
+      "source": {"kind": "licensed_background", "asset_id": "licensed_conversation_01", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 50, "room_reverb_ms": 180, "estimated_delay_ms": 120},
+      "near_end": {"user_speech": false, "background": "conversation"},
+      "expected": {"classification": "reject_non_speech", "detector_event": "REJECTED_BACKGROUND", "safe_to_interrupt": false}
+    },
+    {
+      "id": "keyboard_impulse_v1",
+      "family": "non_speech_impulse",
+      "source": {"kind": "synthetic_impulse", "asset_id": "keyboard_single_key", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 50, "room_reverb_ms": 80, "estimated_delay_ms": 60},
+      "near_end": {"user_speech": false, "background": "keyboard"},
+      "expected": {"classification": "reject_non_speech", "detector_event": "REJECTED_NON_SPEECH", "safe_to_interrupt": false}
+    },
+    {
+      "id": "tap_impulse_v1",
+      "family": "non_speech_impulse",
+      "source": {"kind": "synthetic_impulse", "asset_id": "table_tap", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 50, "room_reverb_ms": 120, "estimated_delay_ms": 80},
+      "near_end": {"user_speech": false, "background": "tap"},
+      "expected": {"classification": "reject_non_speech", "detector_event": "REJECTED_NON_SPEECH", "safe_to_interrupt": false}
+    },
+    {
+      "id": "cough_impulse_v1",
+      "family": "non_speech_impulse",
+      "source": {"kind": "licensed_non_speech", "asset_id": "cough_short", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 50, "room_reverb_ms": 120, "estimated_delay_ms": 80},
+      "near_end": {"user_speech": false, "background": "cough"},
+      "expected": {"classification": "reject_non_speech", "detector_event": "REJECTED_NON_SPEECH", "safe_to_interrupt": false}
+    },
+    {
+      "id": "short_click_impulse_v1",
+      "family": "non_speech_impulse",
+      "source": {"kind": "synthetic_impulse", "asset_id": "short_click", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 50, "room_reverb_ms": 80, "estimated_delay_ms": 60},
+      "near_end": {"user_speech": false, "background": "short_impulse"},
+      "expected": {"classification": "reject_non_speech", "detector_event": "REJECTED_NON_SPEECH", "safe_to_interrupt": false}
+    },
+    {
+      "id": "changing_speaker_volume_v1",
+      "family": "changing_speaker_volume",
+      "source": {"kind": "synthetic_tts", "voice_id": "synthetic_voice_a", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent_sequence": [25, 50, 75, 100], "room_reverb_ms": 180, "estimated_delay_ms": 120},
+      "near_end": {"user_speech": false, "background": "quiet"},
+      "expected": {"classification": "reject_echo", "detector_event": "REJECTED_ECHO", "safe_to_interrupt": false}
+    },
+    {
+      "id": "reference_discontinuity_v1",
+      "family": "reference_discontinuity_queue_drop",
+      "source": {"kind": "synthetic_tts", "voice_id": "synthetic_voice_b", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 75, "room_reverb_ms": 220, "estimated_delay_ms": null, "reference_discontinuity": true, "queue_drop_frames": 160},
+      "near_end": {"user_speech": false, "background": "quiet"},
+      "expected": {"classification": "degraded_reference", "detector_event": "DEGRADED_REFERENCE", "safe_to_interrupt": false}
+    },
+    {
+      "id": "reference_queue_drop_v1",
+      "family": "reference_discontinuity_queue_drop",
+      "source": {"kind": "synthetic_tts", "voice_id": "synthetic_voice_a", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 50, "room_reverb_ms": 120, "estimated_delay_ms": null, "reference_discontinuity": true, "queue_drop_frames": 80},
+      "near_end": {"user_speech": false, "background": "quiet"},
+      "expected": {"classification": "degraded_reference", "detector_event": "DEGRADED_REFERENCE", "safe_to_interrupt": false}
+    },
+    {
+      "id": "playback_stop_echo_tail_v1",
+      "family": "playback_stop_echo_tail",
+      "source": {"kind": "synthetic_tts", "voice_id": "synthetic_voice_a", "licensed": true},
+      "playback": {"route": "loudspeaker", "volume_percent": 75, "room_reverb_ms": 300, "estimated_delay_ms": 180, "stopped_before_tail_end": true},
+      "near_end": {"user_speech": false, "background": "echo_tail"},
+      "expected": {"classification": "reject_echo", "detector_event": "REJECTED_ECHO_TAIL", "safe_to_interrupt": false}
+    }
+  ],
+  "physical_matrix": {
+    "device": ["Samsung SM-M336BU", "RMX5070", "additional_production_class_device"],
+    "output_route": ["loudspeaker", "earpiece", "wired_headset", "bluetooth_headset"],
+    "loudspeaker_volume_percent": [25, 50, 75, 100],
+    "user_distance_m": [0.5, 1.0, 2.0],
+    "environment": ["quiet_room", "moderate_room_noise", "tv_music_background"],
+    "speech_timing": ["first_250ms", "middle_of_response", "end_tail"],
+    "effect_profile": ["aec_only", "ns_only", "aec_plus_ns", "disabled_baseline"],
+    "voice": ["tts_voice_a", "tts_voice_b", "user_voice_a", "user_voice_b"]
+  }
+}

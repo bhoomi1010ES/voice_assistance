@@ -16,10 +16,16 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.voiceaipoc.audio.AudioConfig
 import com.voiceaipoc.audio.AudioEngine
 import com.voiceaipoc.audio.AudioEffectsManager
-import com.voiceaipoc.audio.PlaybackEchoReference
+import com.voiceaipoc.audio.AudioRouteController
+import com.voiceaipoc.audio.FarEndReferenceBuffer
 import com.voiceaipoc.auth.SecureTokenStorage
 import com.voiceaipoc.audio.AudioEngine.ManualWakeWordTrialStatus
 import com.voiceaipoc.diagnostics.DiagnosticSessionContext
+import com.voiceaipoc.diagnostics.DiagnosticEvidenceLedger
+import com.voiceaipoc.rollout.VoiceRolloutConfig
+import com.voiceaipoc.vad.BargeInRouteHealth
+import com.voiceaipoc.vad.BargeInConfig
+import com.voiceaipoc.vad.PlaybackAwareBargeInDetector
 import com.voiceaipoc.vad.VadEngine
 import com.voiceaipoc.vad.silero.SileroVadEngine
 import com.voiceaipoc.voice.VoiceWebSocketTransport
@@ -54,13 +60,46 @@ class VoiceModule(
     )
     @Volatile
     private var voiceOutputEnabled = voicePreferences.getBoolean("enabled", true)
+    private val rolloutConfig = VoiceRolloutConfig.fromBuildConfig()
+    private val audioConfig = AudioConfig(
+        enableAcousticEchoCancellation = rolloutConfig.platformAecEnabled,
+        enableNoiseSuppression = rolloutConfig.platformNsEnabled,
+        captureSource = if (rolloutConfig.duplexCommunicationRouteEnabled) {
+            AudioConfig.CaptureSource.VOICE_COMMUNICATION
+        } else {
+            AudioConfig.CaptureSource.MIC
+        },
+        softwareAecMode = rolloutConfig.softwareAecMode,
+        bargeInConfig = BargeInConfig(
+            earlyBargeInEnabled = rolloutConfig.earlyBargeInEnabled,
+        ),
+    )
     private val diagnosticSession = DiagnosticSessionContext()
-    private val playbackEchoReference = PlaybackEchoReference()
+    private val diagnosticEvidenceLedger = DiagnosticEvidenceLedger(diagnosticSession)
+    private val farEndReferenceBuffer = FarEndReferenceBuffer(
+        tailSuppressionMs = audioConfig.playbackTailSuppressionMs,
+        presentationTimingEnabled = rolloutConfig.presentationTimedReferenceEnabled,
+    )
+    private val audioRouteController = AudioRouteController(
+        reactContext.applicationContext,
+        AudioRouteController.Config(
+            devicePreference = audioConfig.communicationDevicePreference,
+            communicationRouteEnabled = rolloutConfig.duplexCommunicationRouteEnabled,
+        ),
+    )
+    @Volatile
+    private var audioEngineReference: AudioEngine? = null
+    private val bargeInDetector = PlaybackAwareBargeInDetector(audioConfig.bargeInConfig)
 
     private val voiceGateway = VoiceWebSocketTransport(
         tokenStorage = authTokenStorage,
         isTtsOutputEnabled = { voiceOutputEnabled },
-        playbackEchoReference = playbackEchoReference,
+        farEndReferenceBuffer = farEndReferenceBuffer,
+        audioRouteController = audioRouteController,
+        onTransportFailure = {
+            bargeInDetector.reset("transport_teardown")
+            audioEngineReference?.stopRecording()
+        },
         diagnosticSession = diagnosticSession,
         listener = object : VoiceWebSocketTransport.Listener {
             override fun onStatus(status: VoiceWebSocketTransport.Status) {
@@ -74,6 +113,13 @@ class VoiceModule(
                 responseId: String?,
                 timestampMs: Long,
             ) {
+                when (eventType) {
+                    "tts.playback.started" -> bargeInDetector.reset("playback_started")
+                    "tts.playback.completed",
+                    "tts.playback.stopped",
+                    "tts.cancelled",
+                    "tts.failed" -> bargeInDetector.reset("playback_terminal")
+                }
                 emitVoiceGatewayEvent(
                     eventType,
                     sessionId,
@@ -102,6 +148,7 @@ class VoiceModule(
                 eventId: String?,
                 timestampMs: Long?,
             ) {
+                resetBargeInForServerEvent(eventType)
                 Log.i(
                     TAG,
                     "VOICE server event type=$eventType sessionId=${sessionId ?: "NONE"} " +
@@ -128,6 +175,7 @@ class VoiceModule(
                 timestampMs: Long?,
                 payload: VoiceWebSocketTransport.ServerEventPayload?,
             ) {
+                resetBargeInForServerEvent(eventType)
                 Log.i(
                     TAG,
                     "VOICE server event type=$eventType sessionId=${sessionId ?: "NONE"} " +
@@ -149,10 +197,11 @@ class VoiceModule(
 
     private val audioEngine = AudioEngine(
         context = reactContext.applicationContext,
-        config = AudioConfig(),
-        playbackEchoReference = playbackEchoReference,
+        config = audioConfig,
+        audioRouteController = audioRouteController,
+        farEndReferenceBuffer = farEndReferenceBuffer,
         diagnosticSession = diagnosticSession,
-        pcmDataCallback = AudioEngine.PcmDataCallback { buffer, samplesRead ->
+        pcmDataCallback = AudioEngine.PcmDataCallback { buffer, samplesRead, _, _, _ ->
             // The transport copies the reusable frame immediately. PCM stays
             // native and is never sent through the React Native bridge.
             voiceGateway.offerPcmFrame(buffer, samplesRead)
@@ -182,7 +231,9 @@ class VoiceModule(
         sileroVadEventListener = object : SileroVadEngine.Listener {
             override fun onEngineStarted(status: SileroVadEngine.Status) = Unit
 
-            override fun onEngineStopped(status: SileroVadEngine.Status) = Unit
+            override fun onEngineStopped(status: SileroVadEngine.Status) {
+                bargeInDetector.reset("microphone_restart")
+            }
 
             override fun onSpeechStarted(event: SileroVadEngine.Event) {
                 Log.i(
@@ -194,7 +245,6 @@ class VoiceModule(
                 emitSileroVadEvent(
                     EVENT_SILERO_VAD_SPEECH_STARTED,
                     event,
-                    playbackEchoReference.latestAssessment(),
                 )
             }
 
@@ -209,7 +259,6 @@ class VoiceModule(
                 emitSileroVadEvent(
                     EVENT_SILERO_VAD_SPEECH_STOPPED,
                     event,
-                    playbackEchoReference.latestAssessment(),
                 )
             }
 
@@ -217,7 +266,6 @@ class VoiceModule(
                 emitSileroVadEvent(
                     EVENT_SILERO_VAD_SPEECH_ACTIVITY,
                     event,
-                    playbackEchoReference.latestAssessment(),
                 )
             }
 
@@ -244,18 +292,21 @@ class VoiceModule(
         },
         listener = object : AudioEngine.Listener {
             override fun onStarted(status: AudioEngine.Status) {
+                bargeInDetector.reset("microphone_started")
                 emitEvent(EVENT_AUDIO_ENGINE_STARTED, status)
             }
 
             override fun onStopped(status: AudioEngine.Status) {
+                bargeInDetector.reset("microphone_stopped")
                 emitEvent(EVENT_AUDIO_ENGINE_STOPPED, status)
             }
 
             override fun onError(status: AudioEngine.Status) {
+                bargeInDetector.reset("microphone_error")
                 emitEvent(EVENT_AUDIO_ENGINE_ERROR, status)
             }
         },
-    )
+    ).also { audioEngineReference = it }
 
     override fun getName(): String = NAME
 
@@ -276,6 +327,11 @@ class VoiceModule(
         }
 
         promise.resolve(diagnostics)
+    }
+
+    @ReactMethod
+    fun getVoiceRolloutConfig(promise: Promise) {
+        promise.resolve(toWritableRolloutConfigMap())
     }
 
     @ReactMethod
@@ -327,6 +383,7 @@ class VoiceModule(
 
     @ReactMethod
     fun disconnectVoiceGateway(promise: Promise) {
+        bargeInDetector.reset("transport_teardown")
         voiceGateway.disconnect()
         if (!audioEngine.isRecording()) diagnosticSession.end()
         promise.resolve(toWritableVoiceGatewayMap(voiceGateway.getStatus()))
@@ -369,6 +426,7 @@ class VoiceModule(
 
     @ReactMethod
     fun stopVoicePlayback(promise: Promise) {
+        bargeInDetector.reset("playback_stopped")
         voiceGateway.stopTtsPlayback()
         promise.resolve(toWritableVoiceGatewayMap(voiceGateway.getStatus()))
     }
@@ -386,7 +444,10 @@ class VoiceModule(
     fun setVoiceOutputEnabled(enabled: Boolean, promise: Promise) {
         voiceOutputEnabled = enabled
         voicePreferences.edit().putBoolean("enabled", enabled).apply()
-        if (!enabled) voiceGateway.stopTtsPlayback()
+        if (!enabled) {
+            bargeInDetector.reset("playback_stopped")
+            voiceGateway.stopTtsPlayback()
+        }
         promise.resolve(
             Arguments.createMap().apply {
                 putBoolean("enabled", voiceOutputEnabled)
@@ -422,6 +483,7 @@ class VoiceModule(
 
     @ReactMethod
     fun endVoiceSession(reason: String?, promise: Promise) {
+        bargeInDetector.reset("transport_teardown")
         val result = voiceGateway.endSession(reason ?: "client_requested")
         resolveVoiceResult(result, promise)
         if (result.succeeded && !audioEngine.isRecording()) diagnosticSession.end()
@@ -447,6 +509,7 @@ class VoiceModule(
     @ReactMethod
     fun startMicrophone(promise: Promise) {
         diagnosticSession.ensureActive()
+        bargeInDetector.reset("microphone_restart")
         val result = audioEngine.startRecording()
         if (result.succeeded) {
             promise.resolve(toWritableMap(audioEngine.getStatus()))
@@ -457,6 +520,7 @@ class VoiceModule(
 
     @ReactMethod
     fun stopMicrophone(promise: Promise) {
+        bargeInDetector.reset("microphone_stopped")
         val result = audioEngine.stopRecording()
         if (result.succeeded) {
             promise.resolve(toWritableMap(audioEngine.getStatus()))
@@ -471,9 +535,71 @@ class VoiceModule(
         promise.resolve(toWritableMap(audioEngine.getStatus()))
     }
 
+    /** Returns bounded acoustic evidence; transcript, PCM, tokens, and secrets are excluded. */
+    @ReactMethod
+    fun getDiagnosticEvidence(promise: Promise) {
+        try {
+            val microphone = audioEngine.getStatus()
+            val processing = audioEngine.getAudioProcessingStatus()
+            val pipeline = audioEngine.getAudioPipelineStatus()
+            val gateway = voiceGateway.getStatus()
+            val decisions = Arguments.createArray()
+            diagnosticEvidenceLedger.snapshot().forEach { record ->
+                decisions.pushMap(toWritableDecisionRecordMap(record))
+            }
+            promise.resolve(
+                Arguments.createMap().apply {
+                    putBoolean("metadataOnly", true)
+                    putString("diagnosticSessionId", microphone.diagnosticSessionId)
+                    putDouble("exportedAtTimestampMs", System.currentTimeMillis().toDouble())
+                    putArray(
+                        "redactedFields",
+                        Arguments.fromList(
+                            listOf("transcript", "pcm", "tokens", "provider_secrets"),
+                        ),
+                    )
+                    putMap("microphone", toWritableMap(microphone))
+                    putMap(
+                        "audioProcessing",
+                        toWritableAudioProcessingMap(processing, audioEngine.getSoftwareAecStatus()),
+                    )
+                    putMap("audioPipeline", toWritableAudioPipelineMap(pipeline))
+                    putMap("voiceGateway", toWritableVoiceGatewayMap(gateway))
+                    putMap("rollout", toWritableRolloutConfigMap())
+                    putArray("decisions", decisions)
+                },
+            )
+        } catch (exception: RuntimeException) {
+            promise.reject("E_DIAGNOSTIC_EVIDENCE", "Unable to assemble diagnostic evidence.", exception)
+        }
+    }
+
     @ReactMethod
     fun getAudioProcessingStatus(promise: Promise) {
-        promise.resolve(toWritableAudioProcessingMap(audioEngine.getAudioProcessingStatus()))
+        promise.resolve(
+            toWritableAudioProcessingMap(
+                audioEngine.getAudioProcessingStatus(),
+                audioEngine.getSoftwareAecStatus(),
+            ),
+        )
+    }
+
+    @ReactMethod
+    fun setAudioCaptureSource(source: String, promise: Promise) {
+        val captureSource = when (source) {
+            "VOICE_COMMUNICATION" -> AudioConfig.CaptureSource.VOICE_COMMUNICATION
+            "MIC" -> AudioConfig.CaptureSource.MIC
+            else -> {
+                promise.reject("E_AUDIO_CAPTURE_SOURCE", "Unknown audio capture source: $source")
+                return
+            }
+        }
+        val result = audioEngine.setCaptureSource(captureSource)
+        if (result.succeeded) {
+            promise.resolve(toWritableMap(audioEngine.getStatus()))
+        } else {
+            promise.reject(result.errorCode, result.errorMessage)
+        }
     }
 
     @ReactMethod
@@ -527,8 +653,16 @@ class VoiceModule(
     fun startWakeWordDiagnosticPcmCapture(
         label: String,
         durationMs: Int,
+        consentGranted: Boolean,
         promise: Promise,
     ) {
+        if (!consentGranted) {
+            promise.reject(
+                "E_WAKE_DIAGNOSTIC_CONSENT_REQUIRED",
+                "Explicit diagnostic PCM capture consent is required.",
+            )
+            return
+        }
         val result = audioEngine.startWakeWordDiagnosticPcmCapture(label, durationMs)
         if (result.succeeded) {
             promise.resolve(
@@ -615,13 +749,19 @@ class VoiceModule(
             enableNoiseSuppression = requestedEffects.second,
         )
         if (result.succeeded) {
-            promise.resolve(toWritableAudioProcessingMap(audioEngine.getAudioProcessingStatus()))
+            promise.resolve(
+                toWritableAudioProcessingMap(
+                    audioEngine.getAudioProcessingStatus(),
+                    audioEngine.getSoftwareAecStatus(),
+                ),
+            )
         } else {
             promise.reject(result.errorCode, result.errorMessage)
         }
     }
 
     override fun invalidate() {
+        bargeInDetector.reset("module_invalidation")
         audioEngine.release()
         voiceGateway.shutdown()
         diagnosticSession.end()
@@ -873,45 +1013,74 @@ class VoiceModule(
     private fun emitSileroVadEvent(
         eventName: String,
         event: SileroVadEngine.Event,
-        playback: PlaybackEchoReference.Assessment,
     ) {
+        // The detector runs before the bridge guard so React lifecycle state
+        // cannot change the native decision path.
+        if (rolloutConfig.nativeBargeInDetectorEnabled) {
+            bargeInDetector.onSileroEvent(event, currentBargeInRouteHealth())?.let { decision ->
+                // Native confirmation owns the local stop. This call is synchronous
+                // and response-scoped so the bridge cannot race a replacement turn.
+                val playbackStopAck = if (
+                    rolloutConfig.nativeBargeInAuthoritative &&
+                        decision.event == PlaybackAwareBargeInDetector.EVENT_CONFIRMED &&
+                        decision.responseId != null
+                ) {
+                    voiceGateway.stopTtsPlaybackForBargeIn(
+                        responseId = decision.responseId,
+                        detectionMonotonicNs = decision.input.monotonicTimestampNs,
+                    )
+                } else {
+                    null
+                }
+                playbackStopAck?.let {
+                    bargeInDetector.recordLocalStopLatency(it.responseId, it.localStopLatencyMs)
+                }
+                diagnosticEvidenceLedger.record(decision, playbackStopAck)
+                emitBargeInDecision(decision, playbackStopAck)
+            }
+        }
         if (!reactApplicationContext.hasActiveReactInstance()) {
             return
         }
 
         val gatewayStatus = voiceGateway.getStatus()
-        if (playback.playbackActive && eventName == EVENT_SILERO_VAD_SPEECH_STARTED) {
+        if (event.playbackActive && eventName == EVENT_SILERO_VAD_SPEECH_STARTED) {
             Log.i(
                 TAG,
                 "SILERO_PLAYBACK_CANDIDATE_STARTED session_id=${gatewayStatus.sessionId ?: "NONE"} " +
                     "turn_id=${gatewayStatus.turnId ?: "NONE"} " +
-                    "response_id=${playback.responseId ?: gatewayStatus.responseId ?: "NONE"} " +
+                    "response_id=${event.playbackResponseId ?: gatewayStatus.responseId ?: "NONE"} " +
                     "probability=${event.probability} duration_ms=${event.speechDurationMs} " +
-                    "playback_position_ms=${playback.playbackPositionMs} " +
-                    "echo_similarity=${playback.similarity ?: -1.0} " +
-                    "lag_ms=${playback.lagMs ?: -1} elapsedMs=${SystemClock.elapsedRealtime()}",
+                    "playback_position_ms=${event.playbackPositionMs} " +
+                    "echo_similarity=${event.echoSimilarity ?: -1.0} " +
+                    "lag_ms=${event.echoLagMs ?: -1} " +
+                    "source_frames=${event.sourceFrameSequenceStart}-${event.sourceFrameSequenceEnd} " +
+                    "elapsedMs=${SystemClock.elapsedRealtime()}",
             )
-        } else if (playback.playbackActive && eventName == EVENT_SILERO_VAD_SPEECH_STOPPED) {
+        } else if (event.playbackActive && eventName == EVENT_SILERO_VAD_SPEECH_STOPPED) {
             Log.i(
                 TAG,
                 "SILERO_PLAYBACK_CANDIDATE_ENDED session_id=${gatewayStatus.sessionId ?: "NONE"} " +
                     "turn_id=${gatewayStatus.turnId ?: "NONE"} " +
-                    "response_id=${playback.responseId ?: gatewayStatus.responseId ?: "NONE"} " +
+                    "response_id=${event.playbackResponseId ?: gatewayStatus.responseId ?: "NONE"} " +
                     "probability=${event.probability} duration_ms=${event.speechDurationMs} " +
-                    "playback_position_ms=${playback.playbackPositionMs} " +
-                    "echo_similarity=${playback.similarity ?: -1.0} " +
-                    "lag_ms=${playback.lagMs ?: -1} elapsedMs=${SystemClock.elapsedRealtime()}",
+                    "playback_position_ms=${event.playbackPositionMs} " +
+                    "echo_similarity=${event.echoSimilarity ?: -1.0} " +
+                    "lag_ms=${event.echoLagMs ?: -1} " +
+                    "source_frames=${event.sourceFrameSequenceStart}-${event.sourceFrameSequenceEnd} " +
+                    "elapsedMs=${SystemClock.elapsedRealtime()}",
             )
         }
-        if (playback.echoLikely) {
+        if (event.echoLikely) {
             Log.i(
                 TAG,
                 "PLAYBACK_REFERENCE_MATCH session_id=${gatewayStatus.sessionId ?: "NONE"} " +
                     "turn_id=${gatewayStatus.turnId ?: "NONE"} " +
-                    "response_id=${playback.responseId ?: gatewayStatus.responseId ?: "NONE"} " +
-                    "echo_similarity=${playback.similarity ?: -1.0} " +
-                    "lag_ms=${playback.lagMs ?: -1} " +
-                    "playback_position_ms=${playback.playbackPositionMs} " +
+                    "response_id=${event.playbackResponseId ?: gatewayStatus.responseId ?: "NONE"} " +
+                    "echo_similarity=${event.echoSimilarity ?: -1.0} " +
+                    "lag_ms=${event.echoLagMs ?: -1} " +
+                    "playback_position_ms=${event.playbackPositionMs} " +
+                    "source_frames=${event.sourceFrameSequenceStart}-${event.sourceFrameSequenceEnd} " +
                     "elapsedMs=${SystemClock.elapsedRealtime()}",
             )
         }
@@ -919,29 +1088,187 @@ class VoiceModule(
         val payload = Arguments.createMap().apply {
             putString("event", event.event)
             putDouble("timestampMs", event.timestampMs.toDouble())
-            putString("monotonicNs", SystemClock.elapsedRealtimeNanos().toString())
+            putString("monotonicNs", event.monotonicTimestampNs.toString())
             putDouble("probability", event.probability.toDouble())
             putDouble("inferenceIndex", event.inferenceIndex.toDouble())
             putDouble("speechDurationMs", event.speechDurationMs.toDouble())
             putString("reason", event.reason)
-            putString("playbackState", playback.state.name)
-            putBoolean("playbackActive", playback.playbackActive)
-            putBoolean("playbackReferenceAvailable", playback.referenceAvailable)
-            putBoolean("echoLikely", playback.echoLikely)
-            if (playback.responseId == null) putNull("playbackResponseId") else {
-                putString("playbackResponseId", playback.responseId)
+            putDouble("sourceFrameSequenceStart", event.sourceFrameSequenceStart.toDouble())
+            putDouble("sourceFrameSequenceEnd", event.sourceFrameSequenceEnd.toDouble())
+            putString("captureStartNs", event.captureStartNs.toString())
+            putString("captureEndNs", event.captureEndNs.toString())
+            putBoolean("discontinuous", event.discontinuous)
+            putString("playbackState", event.playbackState)
+            putBoolean("playbackActive", event.playbackActive)
+            putBoolean("playbackReferenceAvailable", event.referenceReady)
+            putBoolean("echoLikely", event.echoLikely)
+            if (event.playbackResponseId == null) putNull("playbackResponseId") else {
+                putString("playbackResponseId", event.playbackResponseId)
             }
-            if (playback.similarity == null) putNull("echoSimilarity") else {
-                putDouble("echoSimilarity", playback.similarity)
+            if (event.echoSimilarity == null) putNull("echoSimilarity") else {
+                putDouble("echoSimilarity", event.echoSimilarity)
             }
-            if (playback.lagMs == null) putNull("echoLagMs") else {
-                putInt("echoLagMs", playback.lagMs)
+            if (event.echoLagMs == null) putNull("echoLagMs") else {
+                putInt("echoLagMs", event.echoLagMs)
             }
-            putDouble("playbackPositionMs", playback.playbackPositionMs.toDouble())
+            putDouble("playbackPositionMs", event.playbackPositionMs.toDouble())
+            putString("timestampConfidence", event.referenceConfidence)
+            if (event.estimatedEchoDelayMs == null) putNull("estimatedDelayMs") else {
+                putInt("estimatedDelayMs", event.estimatedEchoDelayMs)
+            }
+            if (event.echoCoherence == null) putNull("echoCoherence") else {
+                putDouble("echoCoherence", event.echoCoherence)
+            }
+            if (event.farEndRms == null) putNull("farEndRms") else {
+                putDouble("farEndRms", event.farEndRms)
+            }
+            if (event.micRms == null) putNull("micRms") else {
+                putDouble("micRms", event.micRms)
+            }
+            if (event.nearEndResidualRatio == null) putNull("nearEndResidualRatio") else {
+                putDouble("nearEndResidualRatio", event.nearEndResidualRatio)
+            }
+            if (event.nearEndFarEndEnergyRatio == null) putNull("nearEndFarEndEnergyRatio") else {
+                putDouble("nearEndFarEndEnergyRatio", event.nearEndFarEndEnergyRatio)
+            }
         }
         reactApplicationContext
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
             .emit(eventName, payload)
+    }
+
+    private fun currentBargeInRouteHealth(): BargeInRouteHealth {
+        return runCatching {
+            val audioStatus = audioEngine.getStatus()
+            val processingStatus = audioEngine.getAudioProcessingStatus()
+            val route = audioStatus.route
+            val softwareAec = audioStatus.softwareAec
+            val communicationModeActive = rolloutConfig.duplexCommunicationRouteEnabled &&
+                route.modeAcquired &&
+                route.actualMode == AudioRouteController.MODE_IN_COMMUNICATION
+            val platformAecHealthy = rolloutConfig.platformAecEnabled &&
+                processingStatus.aec.available &&
+                processingStatus.aec.enabled
+            val softwareAecHealthy = softwareAec.state ==
+                com.voiceaipoc.audio.SoftwareAecController.State.ACTIVE
+            val aecHealthy = platformAecHealthy || softwareAecHealthy
+            val loudspeakerRoute = route.outputDeviceType.contains("SPEAKER") ||
+                route.playbackRoute.contains("SPEAKER", ignoreCase = true)
+            val automaticLoudspeakerBargeInAllowed =
+                rolloutConfig.automaticLoudspeakerBargeInEnabled &&
+                    (!loudspeakerRoute || (communicationModeActive && aecHealthy))
+            BargeInRouteHealth(
+                communicationModeActive = communicationModeActive,
+                aecAvailable = platformAecHealthy || softwareAecHealthy,
+                aecEnabled = aecHealthy,
+                aecEffectiveness = if (softwareAecHealthy) {
+                    "SOFTWARE_ACTIVE"
+                } else {
+                    processingStatus.aec.effectiveness
+                },
+                automaticLoudspeakerBargeInAllowed = automaticLoudspeakerBargeInAllowed,
+            )
+        }.getOrElse {
+            BargeInRouteHealth(
+                communicationModeActive = false,
+                aecAvailable = false,
+                aecEnabled = false,
+                aecEffectiveness = "UNAVAILABLE",
+                automaticLoudspeakerBargeInAllowed = false,
+            )
+        }
+    }
+
+    private fun resetBargeInForServerEvent(eventType: String) {
+        if (eventType == "response.cancelled" ||
+            eventType == "tts.cancelled" ||
+            eventType == "tts.failed" ||
+            eventType == "server.session.ended"
+        ) {
+            bargeInDetector.reset("transport_or_playback_terminal")
+        }
+    }
+
+    private fun emitBargeInDecision(
+        decision: PlaybackAwareBargeInDetector.Decision,
+        playbackStopAck: VoiceWebSocketTransport.BargeInPlaybackStopAck? = null,
+    ) {
+        val input = decision.input
+        Log.i(
+            TAG,
+            diagnosticSession.tag(
+                "BARGE_IN_DECISION event=${decision.event} state=${decision.state.name} " +
+                    "reason=${decision.reason} response_id=${decision.responseId ?: "NONE"} " +
+                    "source_frames=${input.sourceFrameSequenceStart}-${input.sourceFrameSequenceEnd} " +
+                    "inference=${input.inferenceIndex} capture=${input.captureStartNs}-${input.captureEndNs} " +
+                    "reference_ready=${input.referenceReady} " +
+                    "timestamp_confidence=${decision.timestampConfidence} " +
+                    "local_stop_latency_ms=${playbackStopAck?.localStopLatencyMs ?: "NONE"}",
+            ),
+        )
+        if (!reactApplicationContext.hasActiveReactInstance()) {
+            return
+        }
+        val payload = Arguments.createMap().apply {
+            putString("event", decision.event)
+            putString("state", decision.state.name)
+            putString("reason", decision.reason)
+            if (decision.responseId == null) putNull("responseId") else {
+                putString("responseId", decision.responseId)
+            }
+            putString("monotonicNs", input.monotonicTimestampNs.toString())
+            putString("captureStartNs", input.captureStartNs.toString())
+            putString("captureEndNs", input.captureEndNs.toString())
+            putDouble("segmentDurationMs", decision.segmentDurationMs.toDouble())
+            putDouble("probability", input.probability.toDouble())
+            putString("playbackState", input.playbackState)
+            putBoolean("playbackActive", input.playbackActive)
+            putDouble("playbackPositionMs", input.playbackPositionMs.toDouble())
+            putBoolean("referenceReady", input.referenceReady)
+            putBoolean("referenceUsable", decision.referenceUsable)
+            putString("timestampConfidence", decision.timestampConfidence)
+            putBoolean("aecHealthy", decision.aecHealthy)
+            putBoolean("communicationModeActive", input.routeHealth.communicationModeActive)
+            putBoolean("aecAvailable", input.routeHealth.aecAvailable)
+            putBoolean("aecEnabled", input.routeHealth.aecEnabled)
+            putString("aecEffectiveness", input.routeHealth.aecEffectiveness)
+            putBoolean(
+                "automaticLoudspeakerBargeInAllowed",
+                input.routeHealth.automaticLoudspeakerBargeInAllowed,
+            )
+            putDouble("sourceFrameSequenceStart", input.sourceFrameSequenceStart.toDouble())
+            putDouble("sourceFrameSequenceEnd", input.sourceFrameSequenceEnd.toDouble())
+            putDouble("inferenceIndex", input.inferenceIndex.toDouble())
+            putBoolean("discontinuous", input.discontinuous)
+            putNullableDouble("echoSimilarity", input.echoSimilarity)
+            putNullableDouble("echoCoherence", input.echoCoherence)
+            putNullableDouble("estimatedDelayMs", input.estimatedDelayMs?.toDouble())
+            putNullableDouble("farEndRms", input.farEndRms)
+            putNullableDouble("micRms", input.micRms)
+            putNullableDouble("nearEndResidualRatio", input.nearEndResidualRatio)
+            putNullableDouble("nearEndFarEndEnergyRatio", input.nearEndFarEndEnergyRatio)
+            putBoolean("localStopRequested", playbackStopAck?.localStopRequested == true)
+            putBoolean("localStopCompleted", playbackStopAck?.localStopCompleted == true)
+            putBoolean("audioTrackStopped", playbackStopAck?.audioTrackStopped == true)
+            putBoolean("audioTrackFlushed", playbackStopAck?.audioTrackFlushed == true)
+            putBoolean("audioTrackReleased", playbackStopAck?.audioTrackReleased == true)
+            putBoolean("localStopReleasePending", playbackStopAck?.releasePending == true)
+            if (playbackStopAck == null) {
+                putNull("stopReason")
+                putNull("stopRequestedMonotonicNs")
+                putNull("localStopLatencyMs")
+            } else {
+                putString("stopReason", playbackStopAck.reason)
+                putString(
+                    "stopRequestedMonotonicNs",
+                    playbackStopAck.stopRequestedMonotonicNs.toString(),
+                )
+                putDouble("localStopLatencyMs", playbackStopAck.localStopLatencyMs.toDouble())
+            }
+        }
+        reactApplicationContext
+            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+            .emit(decision.event, payload)
     }
 
     private fun emitSileroVadError(status: SileroVadEngine.Status) {
@@ -997,6 +1324,15 @@ class VoiceModule(
         putDouble("pcmFramesCaptured", status.pcmFramesCaptured.toDouble())
         putDouble("captureDurationMs", status.captureDurationMs.toDouble())
         putInt("microphoneErrorCount", status.microphoneErrorCount)
+        putString("requestedCaptureSource", status.requestedCaptureSource)
+        putString("actualCaptureSource", status.actualCaptureSource)
+        putString("playbackUsage", status.playbackUsage)
+        putString("playbackContentType", status.playbackContentType)
+        putMap("playback", toWritablePlaybackStatusMap(status.playback))
+        putMap("detector", toWritableBargeInDetectorStatusMap(bargeInDetector.getStatus()))
+        putMap("softwareAec", toWritableSoftwareAecMap(status.softwareAec))
+        putMap("route", toWritableAudioRouteMap(status.route))
+        putMap("rollout", toWritableRolloutConfigMap())
         if (status.lastError == null) {
             putNull("lastError")
         } else {
@@ -1033,6 +1369,7 @@ class VoiceModule(
 
     private fun toWritableAudioProcessingMap(
         status: AudioEffectsManager.Status,
+        softwareAec: com.voiceaipoc.audio.SoftwareAecController.Status,
     ): WritableMap = Arguments.createMap().apply {
         putInt("audioSessionId", status.audioSessionId)
         putMap("aec", toWritableEffectMap(status.aec))
@@ -1040,6 +1377,64 @@ class VoiceModule(
         putString("manufacturer", status.manufacturer)
         putString("model", status.model)
         putInt("androidSdk", status.androidSdk)
+        val softwareAecActive = softwareAec.state == com.voiceaipoc.audio.SoftwareAecController.State.ACTIVE ||
+            softwareAec.state == com.voiceaipoc.audio.SoftwareAecController.State.DEGRADED
+        putString(
+            "aecSelection",
+            when {
+                softwareAecActive && softwareAec.aecRequested -> "SOFTWARE"
+                status.aec.requested -> "PLATFORM"
+                else -> "DISABLED"
+            },
+        )
+        putString(
+            "aecHealth",
+            if (softwareAecActive && softwareAec.aecRequested) softwareAec.state.name
+            else status.aec.effectiveness,
+        )
+        putString(
+            "noiseSuppressionSelection",
+            when {
+                softwareAecActive && softwareAec.noiseSuppressionRequested -> "SOFTWARE"
+                status.noiseSuppression.requested -> "PLATFORM"
+                else -> "DISABLED"
+            },
+        )
+        putString(
+            "noiseSuppressionHealth",
+            if (softwareAecActive && softwareAec.noiseSuppressionRequested) softwareAec.state.name
+            else status.noiseSuppression.effectiveness,
+        )
+        putMap("softwareAec", toWritableSoftwareAecMap(softwareAec))
+    }
+
+    private fun toWritableSoftwareAecMap(
+        status: com.voiceaipoc.audio.SoftwareAecController.Status,
+    ): WritableMap = Arguments.createMap().apply {
+        putString("requestedMode", status.requestedMode)
+        putString("state", status.state.name)
+        putString("implementation", status.implementation)
+        putInt("sampleRateHz", status.sampleRateHz)
+        putInt("frameDurationMs", status.frameDurationMs)
+        putInt("frameSizeSamples", status.frameSizeSamples)
+        putInt("renderToCaptureDelayMs", status.renderToCaptureDelayMs)
+        putBoolean("aecRequested", status.aecRequested)
+        putBoolean("noiseSuppressionRequested", status.noiseSuppressionRequested)
+        putBoolean("platformAecDisabled", status.platformAecDisabled)
+        putBoolean("platformNoiseSuppressionDisabled", status.platformNoiseSuppressionDisabled)
+        putDouble("referenceReadyFrames", status.referenceReadyFrames.toDouble())
+        putDouble("referenceMissingFrames", status.referenceMissingFrames.toDouble())
+        putDouble("captureFrames", status.captureFrames.toDouble())
+        putDouble("renderFrames", status.renderFrames.toDouble())
+        putDouble("processedFrames", status.processedFrames.toDouble())
+        putDouble("bypassedFrames", status.bypassedFrames.toDouble())
+        putDouble("droppedFrames", status.droppedFrames.toDouble())
+        putDouble("processingErrorCount", status.processingErrorCount.toDouble())
+        putString("lastReferenceConfidence", status.lastReferenceConfidence)
+        putDouble("lastFarEndRms", status.lastFarEndRms)
+        putDouble("lastInputRms", status.lastInputRms)
+        putDouble("lastOutputRms", status.lastOutputRms)
+        if (status.lastError == null) putNull("lastError") else putString("lastError", status.lastError)
     }
 
     private fun toWritableEffectMap(
@@ -1050,10 +1445,48 @@ class VoiceModule(
         putBoolean("requested", status.requested)
         putBoolean("created", status.created)
         putBoolean("enabled", status.enabled)
+        putBoolean("platformEnabledBeforeAttach", status.platformEnabledBeforeAttach)
+        putString("effectiveness", status.effectiveness)
         if (status.lastError == null) {
             putNull("lastError")
         } else {
             putString("lastError", status.lastError)
+        }
+    }
+
+    private fun toWritableAudioRouteMap(
+        status: AudioRouteController.Status,
+    ): WritableMap = Arguments.createMap().apply {
+        putBoolean("communicationRouteEnabled", status.communicationRouteEnabled)
+        putInt("activeLeaseCount", status.activeLeaseCount)
+        putInt("captureLeaseCount", status.captureLeaseCount)
+        putInt("playbackLeaseCount", status.playbackLeaseCount)
+        putInt("requestedMode", status.requestedMode)
+        putInt("actualMode", status.actualMode)
+        if (status.priorMode == null) putNull("priorMode") else putInt("priorMode", status.priorMode)
+        putBoolean("modeAcquired", status.modeAcquired)
+        putBoolean("modeRestored", status.modeRestored)
+        putString("requestedCommunicationDevice", status.requestedCommunicationDevice)
+        putString("actualCommunicationDevice", status.actualCommunicationDevice)
+        putString("inputDeviceType", status.inputDeviceType)
+        putString("outputDeviceType", status.outputDeviceType)
+        putBoolean("communicationDeviceSelected", status.communicationDeviceSelected)
+        putString("playbackRoute", status.playbackRoute)
+        putBoolean("audioFocusRequested", status.audioFocusRequested)
+        putBoolean("audioFocusGranted", status.audioFocusGranted)
+        putString("audioFocusState", status.audioFocusState)
+        putBoolean("audioFocusRestored", status.audioFocusRestored)
+        putInt("restorationCount", status.restorationCount)
+        putBoolean("api31CommunicationDeviceSupported", status.api31CommunicationDeviceSupported)
+        if (status.lastError == null) putNull("lastError") else putString("lastError", status.lastError)
+    }
+
+    private fun toWritableRolloutConfigMap(): WritableMap = Arguments.createMap().apply {
+        rolloutConfig.toMap().forEach { (key, value) ->
+            when (value) {
+                is Boolean -> putBoolean(key, value)
+                is String -> putString(key, value)
+            }
         }
     }
 
@@ -1547,6 +1980,78 @@ class VoiceModule(
         if (value == null) putNull(name) else putDouble(name, value)
     }
 
+    private fun toWritablePlaybackStatusMap(
+        status: FarEndReferenceBuffer.Status,
+    ): WritableMap = Arguments.createMap().apply {
+        putString("state", status.state.name)
+        if (status.responseId == null) putNull("responseId") else putString("responseId", status.responseId)
+        putDouble("writtenPlaybackFrames", status.writtenPlaybackFrames.toDouble())
+        putDouble("presentedPlaybackFrames", status.presentedPlaybackFrames.toDouble())
+        putInt("referenceBufferedFrames", status.referenceBufferedFrames)
+        putBoolean("referenceReady", status.referenceReady)
+        putString("timestampConfidence", status.timestampConfidence)
+        putNullableDouble("estimatedDelayMs", status.estimatedDelayMs?.toDouble())
+        putNullableDouble("echoSimilarity", status.echoSimilarity)
+        putNullableDouble("echoCoherence", status.echoCoherence)
+        putNullableDouble("farEndRms", status.farEndRms)
+        putNullableDouble("micRms", status.micRms)
+        putNullableDouble("nearEndFarEndEnergyRatio", status.nearEndFarEndEnergyRatio)
+        putString("lastAssessmentTimestampNs", status.lastAssessmentTimestampNs.toString())
+    }
+
+    private fun toWritableBargeInDetectorStatusMap(
+        status: PlaybackAwareBargeInDetector.Status,
+    ): WritableMap = Arguments.createMap().apply {
+        putString("state", status.state.name)
+        putString("lastEvent", status.lastEvent)
+        putString("lastReason", status.lastReason)
+        putDouble("candidateCount", status.candidateCount.toDouble())
+        putDouble("rejectedEchoCount", status.rejectedEchoCount.toDouble())
+        putDouble("confirmedCount", status.confirmedCount.toDouble())
+        putDouble("degradedCount", status.degradedCount.toDouble())
+        if (status.lastResponseId == null) putNull("lastResponseId") else putString("lastResponseId", status.lastResponseId)
+        putDouble("lastSourceFrameSequenceStart", status.lastSourceFrameSequenceStart.toDouble())
+        putDouble("lastSourceFrameSequenceEnd", status.lastSourceFrameSequenceEnd.toDouble())
+        putDouble("lastInferenceIndex", status.lastInferenceIndex.toDouble())
+        putNullableDouble("lastLocalStopLatencyMs", status.lastLocalStopLatencyMs?.toDouble())
+        if (status.lastLocalStopResponseId == null) putNull("lastLocalStopResponseId") else putString("lastLocalStopResponseId", status.lastLocalStopResponseId)
+    }
+
+    private fun toWritableDecisionRecordMap(
+        record: DiagnosticEvidenceLedger.DecisionRecord,
+    ): WritableMap = Arguments.createMap().apply {
+        putString("diagnosticSessionId", record.diagnosticSessionId)
+        putString("event", record.event)
+        putString("state", record.state)
+        putString("reason", record.reason)
+        if (record.responseId == null) putNull("responseId") else putString("responseId", record.responseId)
+        putString("monotonicNs", record.monotonicNs.toString())
+        putString("captureStartNs", record.captureStartNs.toString())
+        putString("captureEndNs", record.captureEndNs.toString())
+        putDouble("sourceFrameSequenceStart", record.sourceFrameSequenceStart.toDouble())
+        putDouble("sourceFrameSequenceEnd", record.sourceFrameSequenceEnd.toDouble())
+        putDouble("inferenceIndex", record.inferenceIndex.toDouble())
+        putDouble("probability", record.probability)
+        putString("playbackState", record.playbackState)
+        putDouble("playbackPositionMs", record.playbackPositionMs.toDouble())
+        putBoolean("referenceReady", record.referenceReady)
+        putBoolean("referenceUsable", record.referenceUsable)
+        putString("timestampConfidence", record.timestampConfidence)
+        putBoolean("aecHealthy", record.aecHealthy)
+        putBoolean("communicationModeActive", record.communicationModeActive)
+        putBoolean("aecAvailable", record.aecAvailable)
+        putBoolean("aecEnabled", record.aecEnabled)
+        putString("aecEffectiveness", record.aecEffectiveness)
+        putNullableDouble("echoSimilarity", record.echoSimilarity)
+        putNullableDouble("echoCoherence", record.echoCoherence)
+        putNullableDouble("estimatedDelayMs", record.estimatedDelayMs?.toDouble())
+        putNullableDouble("farEndRms", record.farEndRms)
+        putNullableDouble("micRms", record.micRms)
+        putNullableDouble("nearEndFarEndEnergyRatio", record.nearEndFarEndEnergyRatio)
+        putBoolean("discontinuous", record.discontinuous)
+        putNullableDouble("localStopLatencyMs", record.localStopLatencyMs?.toDouble())
+    }
+
     private fun toWritableSileroVadMap(status: SileroVadEngine.Status): WritableMap =
         Arguments.createMap().apply {
             putBoolean("enabled", status.enabled)
@@ -1610,6 +2115,20 @@ class VoiceModule(
             putDouble("averageInferenceDurationMs", status.averageInferenceDurationMs)
             putDouble("maximumInferenceDurationMs", status.maximumInferenceDurationMs)
             putDouble("lastInferenceTimestampMs", status.lastInferenceTimestampMs.toDouble())
+            putString("lastInferenceMonotonicNs", status.lastInferenceMonotonicNs.toString())
+            putDouble(
+                "lastObservationSourceFrameSequenceStart",
+                status.lastObservationSourceFrameSequenceStart.toDouble(),
+            )
+            putDouble(
+                "lastObservationSourceFrameSequenceEnd",
+                status.lastObservationSourceFrameSequenceEnd.toDouble(),
+            )
+            putString("lastObservationCaptureStartNs", status.lastObservationCaptureStartNs.toString())
+            putString("lastObservationCaptureEndNs", status.lastObservationCaptureEndNs.toString())
+            putBoolean("lastObservationDiscontinuous", status.lastObservationDiscontinuous)
+            putDouble("discontinuityCount", status.discontinuityCount.toDouble())
+            putBoolean("discontinuityPending", status.discontinuityPending)
             if (status.currentProbability == null) {
                 putNull("currentProbability")
             } else {
@@ -1644,6 +2163,10 @@ class VoiceModule(
         const val EVENT_SILERO_VAD_SPEECH_STOPPED = SileroVadEngine.EVENT_SPEECH_STOPPED
         const val EVENT_SILERO_VAD_SPEECH_ACTIVITY = SileroVadEngine.EVENT_SPEECH_ACTIVITY
         const val EVENT_SILERO_VAD_ERROR = SileroVadEngine.EVENT_ERROR
+        const val EVENT_BARGE_IN_CANDIDATE = PlaybackAwareBargeInDetector.EVENT_CANDIDATE
+        const val EVENT_BARGE_IN_REJECTED_ECHO = PlaybackAwareBargeInDetector.EVENT_REJECTED_ECHO
+        const val EVENT_BARGE_IN_CONFIRMED = PlaybackAwareBargeInDetector.EVENT_CONFIRMED
+        const val EVENT_BARGE_IN_DEGRADED = PlaybackAwareBargeInDetector.EVENT_DEGRADED
         const val EVENT_WAKE_WORD_DETECTED = WakeWordEngine.EVENT_WAKE_WORD_DETECTED
         const val EVENT_WAKE_ENGINE_STARTED = WakeWordEngine.EVENT_ENGINE_STARTED
         const val EVENT_WAKE_ENGINE_STOPPED = WakeWordEngine.EVENT_ENGINE_STOPPED

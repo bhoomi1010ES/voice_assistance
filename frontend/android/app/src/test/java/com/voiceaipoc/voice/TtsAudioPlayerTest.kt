@@ -126,6 +126,103 @@ class TtsAudioPlayerTest {
     }
 
     @Test
+    fun completionWaitsForPlaybackHeadDrainAndCancellationRemainsImmediate() {
+        val factory = FakeTrackFactory(autoAdvancePlaybackHead = false)
+        val events = Events()
+        val player = TtsAudioPlayer(
+            trackFactory = factory,
+            listener = events,
+            startupPrebufferBytes = 4,
+            maxQueueBytes = 64,
+        )
+        val responseId = UUID.randomUUID()
+        try {
+            assertTrue(player.start(responseId, 24_000))
+            assertTrue(player.write(responseId, ByteArray(8)))
+            assertTrue(player.finish(responseId))
+            Thread.sleep(50)
+            assertEquals(2L, events.completed.count)
+
+            factory.tracks.single().advancePlaybackHead(4)
+            waitUntil { events.completed.count == 1L }
+            assertTrue(factory.tracks.single().released)
+
+            val cancelled = UUID.randomUUID()
+            assertTrue(player.start(cancelled, 24_000))
+            assertTrue(player.write(cancelled, ByteArray(8)))
+            assertTrue(player.cancel(cancelled))
+            waitUntil { factory.tracks.size == 2 && factory.tracks[1].released }
+        } finally {
+            player.shutdown()
+        }
+    }
+
+    @Test
+    fun nativeBargeInStopFlushesImmediatelyAndIsResponseScoped() {
+        val writeStarted = CountDownLatch(1)
+        val releaseWrite = CountDownLatch(1)
+        val factory = FakeTrackFactory(
+            writeStarted = writeStarted,
+            releaseWrite = releaseWrite,
+        )
+        val player = TtsAudioPlayer(
+            trackFactory = factory,
+            startupPrebufferBytes = 4,
+            maxQueueBytes = 64,
+        )
+        val responseId = UUID.randomUUID()
+        try {
+            assertTrue(player.start(responseId, 24_000))
+            assertTrue(player.write(responseId, ByteArray(4)))
+            assertTrue(writeStarted.await(1, TimeUnit.SECONDS))
+
+            val first = player.stopForBargeIn(responseId)
+            assertTrue(first.wasActive)
+            assertTrue(first.audioTrackStopped)
+            assertTrue(first.audioTrackFlushed)
+            assertTrue(first.releasePending)
+            assertFalse(player.stopForBargeIn(responseId).wasActive)
+
+            releaseWrite.countDown()
+            waitUntil { factory.tracks.single().released }
+            assertEquals(1, factory.tracks.single().stopCalls)
+            assertEquals(1, factory.tracks.single().flushCalls)
+        } finally {
+            releaseWrite.countDown()
+            player.shutdown()
+        }
+    }
+
+    @Test
+    fun playbackHeadWraparoundIsUnwrappedForDrainAccounting() {
+        val factory = FakeTrackFactory(
+            autoAdvancePlaybackHead = false,
+            initialPlaybackHead = Int.MAX_VALUE - 1,
+        )
+        val events = Events()
+        val player = TtsAudioPlayer(
+            trackFactory = factory,
+            listener = events,
+            startupPrebufferBytes = 4,
+            maxQueueBytes = 64,
+        )
+        val responseId = UUID.randomUUID()
+        try {
+            assertTrue(player.start(responseId, 24_000))
+            assertTrue(player.write(responseId, ByteArray(8)))
+            assertTrue(player.finish(responseId))
+            Thread.sleep(25)
+            assertEquals(2L, events.completed.count)
+
+            factory.tracks.single().advancePlaybackHead(4)
+            waitUntil { events.completed.count == 1L }
+            assertEquals(4L, events.summaries.single().presentedFrames)
+        } finally {
+            player.shutdown()
+        }
+    }
+
+    @Test
     fun summaryReportsMultiChunkWritesAndPartialWrites() {
         val factory = FakeTrackFactory(writeLimit = 3)
         val events = Events()
@@ -219,6 +316,8 @@ class TtsAudioPlayerTest {
         private val writeLimit: Int = Int.MAX_VALUE,
         private val writeStarted: CountDownLatch? = null,
         private val releaseWrite: CountDownLatch? = null,
+        private val autoAdvancePlaybackHead: Boolean = true,
+        private val initialPlaybackHead: Int = 0,
     ) :
         TtsAudioTrackFactory {
         val tracks = Collections.synchronizedList(mutableListOf<FakeTrack>())
@@ -226,18 +325,29 @@ class TtsAudioPlayerTest {
         override fun minBufferSize(sampleRateHz: Int): Int = 4
 
         override fun create(sampleRateHz: Int, bufferSizeBytes: Int): TtsAudioTrack =
-            FakeTrack(writeLimit, writeStarted, releaseWrite).also(tracks::add)
+            FakeTrack(
+                writeLimit,
+                writeStarted,
+                releaseWrite,
+                autoAdvancePlaybackHead,
+                initialPlaybackHead,
+            ).also(tracks::add)
     }
 
     private class FakeTrack(
         private val writeLimit: Int,
         private val writeStarted: CountDownLatch?,
         private val releaseWrite: CountDownLatch?,
+        private val autoAdvancePlaybackHead: Boolean,
+        initialPlaybackHead: Int,
     ) : TtsAudioTrack {
         override val isInitialized = true
         var playCalls = 0
         var writtenBytes = 0
         var released = false
+        var stopCalls = 0
+        var flushCalls = 0
+        private var playbackHead = initialPlaybackHead
 
         override fun play() {
             playCalls += 1
@@ -248,15 +358,26 @@ class TtsAudioPlayerTest {
             releaseWrite?.await(1, TimeUnit.SECONDS)
             val written = minOf(sizeInBytes, writeLimit)
             writtenBytes += written
+            if (autoAdvancePlaybackHead) playbackHead += written / 2
             return written
         }
 
-        override fun stop() = Unit
-        override fun flush() = Unit
+        override fun stop() {
+            stopCalls += 1
+        }
+        override fun flush() {
+            flushCalls += 1
+        }
         override fun release() {
             released = true
         }
 
         override fun underrunCount(): Int = 0
+        override fun playbackHeadPosition(): Int = playbackHead
+        override fun timestamp(): TtsAudioTimestamp? = null
+
+        fun advancePlaybackHead(frames: Int) {
+            playbackHead += frames
+        }
     }
 }

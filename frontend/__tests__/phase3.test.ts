@@ -64,6 +64,9 @@ class FakeVoiceAdapter implements VoiceSocketAdapter {
   startTurnCalls = 0;
   commitCalls = 0;
   disconnectCalls = 0;
+  endSessionCalls = 0;
+  stopMicrophoneCalls = 0;
+  stopPlaybackCalls = 0;
   private readonly statusListeners = new Set<
     (status: VoiceGatewayStatus) => void
   >();
@@ -121,7 +124,17 @@ class FakeVoiceAdapter implements VoiceSocketAdapter {
   }
 
   async endSession() {
+    this.endSessionCalls += 1;
     this.status = gatewayStatus();
+    return this.status;
+  }
+
+  async stopMicrophone() {
+    this.stopMicrophoneCalls += 1;
+  }
+
+  async stopPlayback() {
+    this.stopPlaybackCalls += 1;
     return this.status;
   }
 
@@ -288,6 +301,77 @@ test('waits for a session-ready event when start turn is pressed during startup'
 
   expect(adapter.startTurnCalls).toBe(1);
   expect(socket.getSnapshot().turn).toBe('starting');
+});
+
+test('starts a session before the turn when start turn is pressed while idle', async () => {
+  const { socket, adapter } = createSocket(new FakeVoiceAdapter(), {
+    autoStartSession: false,
+    continuousListening: false,
+  });
+  await socket.connect();
+  expect(adapter.startSessionCalls).toBe(0);
+
+  const startTurnPromise = socket.startTurn();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(adapter.startTurnCalls).toBe(0);
+  expect(adapter.startSessionCalls).toBe(1);
+  expect(socket.getSnapshot().session).toBe('starting');
+
+  adapter.emitEvent({
+    event: 'server.session.ready',
+    sessionId: SESSION_ID,
+    turnId: null,
+    responseId: null,
+    eventId: 'session-ready-from-turn',
+    timestampMs: 1,
+  });
+  await startTurnPromise;
+
+  expect(adapter.startTurnCalls).toBe(1);
+  expect(socket.getSnapshot()).toMatchObject({
+    connection: 'connected',
+    session: 'ready',
+    turn: 'starting',
+  });
+});
+
+test('keeps the connection when start turn waits out a session that never becomes ready', async () => {
+  const { socket, adapter } = createSocket(new FakeVoiceAdapter(), {
+    continuousListening: false,
+  });
+  await socket.connect();
+  await socket.startSession();
+
+  await expect(socket.startTurn()).rejects.toThrow(
+    /timed out|Start a voice session|Unable to start the voice turn/,
+  );
+
+  expect(adapter.startTurnCalls).toBe(0);
+  expect(socket.getSnapshot().connection).toBe('connected');
+  expect(socket.getSnapshot().error).toEqual(expect.any(String));
+});
+
+test('does not fail the socket for a recoverable session_not_ready error', async () => {
+  const { socket, adapter } = createSocket();
+  await prepareSession(socket, adapter);
+
+  adapter.emitEvent({
+    event: 'server.error',
+    sessionId: SESSION_ID,
+    turnId: null,
+    responseId: null,
+    eventId: 'session-not-ready-1',
+    timestampMs: 2,
+    code: 'session_not_ready',
+  });
+
+  expect(socket.getSnapshot()).toMatchObject({
+    connection: 'connected',
+    session: 'ready',
+    turn: 'idle',
+  });
+  expect(socket.getSnapshot().error).toMatch(/still starting/i);
 });
 
 test('rejects duplicate, stale-response, and out-of-order events', async () => {
@@ -581,6 +665,105 @@ test('bounds reconnect and stops it during logout', async () => {
 
   expect(adapter.connectCalls).toBe(1);
   expect(socket.getSnapshot().connection).toBe('disconnected');
+});
+
+test('stop after a live turn disconnects, stops capture, and does not auto-start another turn', async () => {
+  jest.useFakeTimers();
+  const { socket, adapter } = createSocket();
+  await prepareSession(socket, adapter);
+  await jest.advanceTimersByTimeAsync(1);
+
+  expect(adapter.startTurnCalls).toBe(1);
+  adapter.emitEvent({
+    event: 'server.turn.ready',
+    sessionId: SESSION_ID,
+    turnId: 'turn-stop-1',
+    responseId: 'response-stop-1',
+    eventId: 'turn-ready-stop-1',
+    timestampMs: 2,
+  });
+
+  await socket.stop('user_stopped');
+  await jest.advanceTimersByTimeAsync(20);
+
+  expect(adapter.endSessionCalls).toBe(1);
+  expect(adapter.disconnectCalls).toBe(1);
+  expect(adapter.stopMicrophoneCalls).toBeGreaterThanOrEqual(1);
+  expect(adapter.startTurnCalls).toBe(1);
+  expect(socket.getSnapshot()).toMatchObject({
+    connection: 'disconnected',
+    session: 'idle',
+    turn: 'idle',
+  });
+});
+
+test('stop while speaking also stops TTS playback', async () => {
+  jest.useFakeTimers();
+  const { socket, adapter } = createSocket(new FakeVoiceAdapter(), {
+    continuousListening: false,
+  });
+  await prepareSession(socket, adapter);
+  await socket.startTurn();
+  adapter.emitEvent({
+    event: 'server.turn.ready',
+    sessionId: SESSION_ID,
+    turnId: 'turn-stop-tts',
+    responseId: 'response-stop-tts',
+    eventId: 'turn-ready-stop-tts',
+    timestampMs: 2,
+  });
+  adapter.emitEvent({
+    event: 'tts.playback.started',
+    sessionId: SESSION_ID,
+    turnId: 'turn-stop-tts',
+    responseId: 'response-stop-tts',
+    eventId: 'playback-started-stop',
+    timestampMs: 3,
+  });
+  expect(socket.getSnapshot().ttsPlaybackState).toBe('speaking');
+
+  await socket.stop('user_stopped');
+
+  expect(adapter.stopPlaybackCalls).toBe(1);
+  expect(socket.getSnapshot()).toMatchObject({
+    connection: 'disconnected',
+    session: 'idle',
+    turn: 'idle',
+    ttsPlaybackState: 'idle',
+  });
+});
+
+test('stop then connect ignores a delayed teardown close', async () => {
+  const { socket, adapter } = createSocket(new FakeVoiceAdapter(), {
+    continuousListening: false,
+  });
+  await prepareSession(socket, adapter);
+  await socket.stop('user_stopped');
+
+  const originalConnect = adapter.connect.bind(adapter);
+  let releaseConnect: (() => void) | null = null;
+  adapter.connect = () =>
+    new Promise(resolve => {
+      releaseConnect = () => {
+        void originalConnect().then(resolve);
+      };
+    });
+
+  const connectPromise = socket.connect();
+  for (let i = 0; i < 10 && releaseConnect === null; i += 1) {
+    await Promise.resolve();
+  }
+  adapter.emitStatus(gatewayStatus({ state: 'DISCONNECTED' }));
+
+  expect(socket.getSnapshot().connection).not.toBe('reconnecting');
+  expect(socket.getSnapshot().error ?? '').not.toMatch(/connection lost/i);
+
+  expect(releaseConnect).not.toBeNull();
+  releaseConnect?.();
+  await connectPromise;
+
+  expect(socket.getSnapshot().connection).toBe('connected');
+  expect(socket.getSnapshot().error).toBeNull();
 });
 
 function adapterForState() {

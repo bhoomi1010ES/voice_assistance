@@ -43,6 +43,7 @@ class ContinuousChatAdapter implements VoiceSocketAdapter {
   abortAllCalls = 0;
   resetConversationCalls = 0;
   stopMicrophoneCalls = 0;
+  stopPlaybackCalls = 0;
   private recording = false;
   private readonly eventListeners = new Set<
     (event: VoiceGatewayEvent) => void
@@ -125,6 +126,11 @@ class ContinuousChatAdapter implements VoiceSocketAdapter {
   async stopMicrophone() {
     this.stopMicrophoneCalls += 1;
     this.recording = false;
+  }
+
+  async stopPlayback() {
+    this.stopPlaybackCalls += 1;
+    return this.status;
   }
 
   subscribeStatus(listener: (next: VoiceGatewayStatus) => void) {
@@ -446,4 +452,44 @@ test('resets the server conversation and auto-listens on the replacement session
   expect(socket.getSnapshot().sessionId).toBe('session-2');
   expect(socket.getSnapshot().conversationMessages).toEqual([]);
   expect(adapter.startTurnCalls).toBe(2);
+});
+
+test('stop after an auto-listen turn does not schedule another turn', async () => {
+  jest.useFakeTimers();
+  const adapter = new ContinuousChatAdapter();
+  adapter.status = status({ state: 'CONNECTED', connected: true });
+  const socket = new VoiceSocket({ adapter });
+  activeSockets.push(socket);
+
+  await socket.connect();
+  adapter.emit({
+    event: 'server.session.ready',
+    sessionId: SESSION_ID,
+    turnId: null,
+    responseId: null,
+    eventId: 'stop-session-ready',
+    timestampMs: 1,
+  });
+  await jest.advanceTimersByTimeAsync(1);
+
+  expect(adapter.startTurnCalls).toBe(1);
+  adapter.emit({
+    event: 'server.turn.ready',
+    sessionId: SESSION_ID,
+    turnId: 'turn-stop-1',
+    responseId: 'response-stop-1',
+    eventId: 'stop-turn-ready-1',
+    timestampMs: 2,
+  });
+
+  await socket.stop('user_stopped');
+  await jest.advanceTimersByTimeAsync(20);
+
+  expect(adapter.startTurnCalls).toBe(1);
+  expect(adapter.stopMicrophoneCalls).toBeGreaterThanOrEqual(1);
+  expect(socket.getSnapshot()).toMatchObject({
+    connection: 'disconnected',
+    session: 'idle',
+    turn: 'idle',
+  });
 });

@@ -69,6 +69,7 @@ const emptyReminders: unknown[] = [];
 function createVoiceSocket(
   conversationMessages: unknown[] = [],
   resolveConfirmation?: jest.Mock,
+  snapshotOverrides: Record<string, unknown> = {},
 ): VoiceSocket {
   const snapshot = {
     connection: 'disconnected' as const,
@@ -98,6 +99,7 @@ function createVoiceSocket(
     droppedEventCount: 0,
     invalidEventCount: 0,
     error: null,
+    ...snapshotOverrides,
   };
   return {
     getSnapshot: () => snapshot,
@@ -108,6 +110,7 @@ function createVoiceSocket(
     start: jest.fn(),
     connect: jest.fn().mockResolvedValue(undefined),
     stop: jest.fn().mockResolvedValue(undefined),
+    commitTurn: jest.fn().mockResolvedValue(undefined),
     dispose: jest.fn().mockResolvedValue(undefined),
     resolveConfirmation,
   } as unknown as VoiceSocket;
@@ -371,5 +374,79 @@ test('assistant confirmation is voice-only and renders no approval controls', as
   expect(
     renderer!.root.findAllByProps({ testID: 'tool-confirm-deny' }),
   ).toHaveLength(0);
+  await act(async () => renderer!.unmount());
+});
+
+test('does not render a stop turn control', async () => {
+  const fetchImpl = jest.fn().mockResolvedValue(response(200, tokenResponse));
+  const controller = new AuthController({
+    fetchImpl,
+    storage: new EmptyTokenStorage(),
+  });
+  const socket = createVoiceSocket([], undefined, {
+    connection: 'connected',
+    session: 'ready',
+    turn: 'recording',
+    heartbeat: 'healthy',
+    sessionId: 'session-1',
+  });
+  let renderer: ReactTestRenderer.ReactTestRenderer;
+
+  await act(async () => {
+    renderer = ReactTestRenderer.create(
+      <TestProviders>
+        <AuthProvider controller={controller}>
+          <VoiceSocketProvider socket={socket}>
+            <AssistantScreen />
+          </VoiceSocketProvider>
+        </AuthProvider>
+      </TestProviders>,
+    );
+    await controller.login('user@example.com', 'test-password');
+  });
+
+  expect(
+    renderer!.root.findAllByProps({ testID: 'voice-stop-turn' }),
+  ).toHaveLength(0);
+  await act(async () => renderer!.unmount());
+});
+
+test('shows finish turn while recording and pressing it commits the turn', async () => {
+  const fetchImpl = jest.fn().mockResolvedValue(response(200, tokenResponse));
+  const controller = new AuthController({
+    fetchImpl,
+    storage: new EmptyTokenStorage(),
+  });
+  const socket = createVoiceSocket([], undefined, {
+    connection: 'connected',
+    session: 'ready',
+    turn: 'recording',
+    heartbeat: 'healthy',
+    sessionId: 'session-1',
+  });
+  let renderer: ReactTestRenderer.ReactTestRenderer;
+
+  await act(async () => {
+    renderer = ReactTestRenderer.create(
+      <TestProviders>
+        <AuthProvider controller={controller}>
+          <VoiceSocketProvider socket={socket}>
+            <AssistantScreen />
+          </VoiceSocketProvider>
+        </AuthProvider>
+      </TestProviders>,
+    );
+    await controller.login('user@example.com', 'test-password');
+  });
+
+  const finishButton = renderer!.root.findByProps({
+    testID: 'voice-finish-turn',
+  });
+  expect(finishButton).toBeTruthy();
+  await act(async () => {
+    finishButton.props.onPress();
+  });
+  expect(socket.commitTurn).toHaveBeenCalled();
+  expect(socket.stop).not.toHaveBeenCalledWith('user_stopped');
   await act(async () => renderer!.unmount());
 });

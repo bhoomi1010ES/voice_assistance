@@ -188,3 +188,53 @@ async def test_late_old_cleanup_does_not_clear_replacement_response() -> None:
     assert gateway._response_turn_id is not None
     assert gateway.cancel_guard.can_emit(new_response_id)
     assert gateway.registry.clear_response.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_barge_in_commits_local_cancellation_when_redis_marker_fails() -> None:
+    old_turn_id = uuid.uuid4()
+    old_response_id = uuid.uuid4()
+    gateway, _ = _gateway(
+        old_turn_id=old_turn_id,
+        old_response_id=old_response_id,
+        new_turn_id=uuid.uuid4(),
+    )
+    gateway.registry.cancel_response = AsyncMock(
+        side_effect=RuntimeError("redis unavailable")
+    )
+
+    await gateway._handle_response_cancel(
+        ResponseCancelMessage(
+            type="client.response.cancel",
+            response_id=old_response_id,
+            reason="barge_in",
+        )
+    )
+
+    assert gateway.stats.cancellation_count == 1
+    assert gateway.active_turn is None
+    assert gateway._response_turn_id is None
+    assert [event.args[0]["type"] for event in gateway._send.await_args_list] == [
+        "response.cancelled",
+    ]
+    gateway.llm_service.cancel.assert_awaited_once_with(old_response_id)
+
+
+@pytest.mark.asyncio
+async def test_turn_start_before_session_sends_recoverable_error() -> None:
+    gateway, _ = _gateway(
+        old_turn_id=uuid.uuid4(),
+        old_response_id=uuid.uuid4(),
+        new_turn_id=uuid.uuid4(),
+    )
+    gateway.voice_session = None
+    gateway._session_id = None
+    gateway.state = VoiceConnectionState()
+    gateway.state.authenticate()
+    gateway._send_error = AsyncMock()
+
+    await gateway._handle_turn_start(TurnStartMessage(type="client.turn.start"))
+
+    gateway._send_error.assert_awaited_once_with("session_not_ready")
+    assert gateway.active_turn is None
+    assert gateway._pending_turn_start is None

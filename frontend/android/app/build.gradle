@@ -71,6 +71,19 @@ def enableProguardInReleaseBuilds = false
  * this variant is about 6MiB larger per architecture than default.
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
+def voiceAec3BackendDir = project.findProperty("voiceAec3BackendDir") ?: ""
+def voiceBooleanProperty = { String name, boolean fallback ->
+    def value = project.findProperty(name)
+    value == null ? fallback : value.toString().toBoolean()
+}
+def voiceStringProperty = { String name, String fallback ->
+    def value = project.findProperty(name)
+    value == null ? fallback : value.toString()
+}
+def voiceSoftwareAecMode = voiceStringProperty("voiceSoftwareAecMode", "PLATFORM").trim().toUpperCase()
+if (!(voiceSoftwareAecMode in ["PLATFORM", "AUTO", "WEBRTC_AEC3"])) {
+    throw new GradleException("voiceSoftwareAecMode must be PLATFORM, AUTO, or WEBRTC_AEC3")
+}
 
 android {
     ndkVersion rootProject.ext.ndkVersion
@@ -84,6 +97,22 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+        // Phase 9 rollout switches. Override with -Pvoice<FlagName>=... for a
+        // release/canary build; defaults preserve the current native path.
+        buildConfigField "boolean", "VOICE_DUPLEX_COMMUNICATION_ROUTE_ENABLED", voiceBooleanProperty("voiceDuplexCommunicationRouteEnabled", true).toString()
+        buildConfigField "boolean", "VOICE_PRESENTATION_TIMED_REFERENCE_ENABLED", voiceBooleanProperty("voicePresentationTimedReferenceEnabled", true).toString()
+        buildConfigField "boolean", "VOICE_NATIVE_BARGE_IN_DETECTOR_ENABLED", voiceBooleanProperty("voiceNativeBargeInDetectorEnabled", true).toString()
+        buildConfigField "boolean", "VOICE_LEGACY_JS_BARGE_IN_DETECTOR_ENABLED", voiceBooleanProperty("voiceLegacyJsBargeInDetectorEnabled", false).toString()
+        buildConfigField "boolean", "VOICE_PLATFORM_AEC_ENABLED", voiceBooleanProperty("voicePlatformAecEnabled", true).toString()
+        buildConfigField "boolean", "VOICE_PLATFORM_NS_ENABLED", voiceBooleanProperty("voicePlatformNsEnabled", true).toString()
+        buildConfigField "String", "VOICE_SOFTWARE_AEC_MODE", "\"${voiceSoftwareAecMode}\""
+        buildConfigField "boolean", "VOICE_EARLY_BARGE_IN_ENABLED", voiceBooleanProperty("voiceEarlyBargeInEnabled", false).toString()
+        externalNativeBuild {
+            cmake {
+                arguments "-DVOICE_AEC3_BACKEND_DIR=${voiceAec3BackendDir}"
+                cppFlags "-std=c++17 -Wall -Wextra"
+            }
+        }
     }
     signingConfigs {
         debug {
@@ -107,6 +136,12 @@ android {
     }
     testOptions {
         unitTests.returnDefaultValues = true
+    }
+    externalNativeBuild {
+        cmake {
+            path file("src/main/cpp/CMakeLists.txt")
+            version "3.22.1"
+        }
     }
 }
 

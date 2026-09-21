@@ -19,6 +19,9 @@ class SileroVadStateMachine(
         val inferenceIndex: Long,
         val speechDurationMs: Long,
         val reason: String,
+        val monotonicTimestampNs: Long = 0L,
+        val captureStartNs: Long = 0L,
+        val captureEndNs: Long = 0L,
     )
 
     data class Status(
@@ -40,9 +43,16 @@ class SileroVadStateMachine(
     private var decisionsProcessed = 0L
     private var pendingSpeechStartIndex = 0L
     private var speechStartIndex = 0L
+    private var pendingSpeechStartCaptureNs = NO_CAPTURE_TIMESTAMP
+    private var speechStartCaptureNs = NO_CAPTURE_TIMESTAMP
 
     @Synchronized
-    fun onProbability(probability: Float, inferenceIndex: Long): Transition? {
+    fun onProbability(
+        probability: Float,
+        inferenceIndex: Long,
+        captureStartNs: Long = syntheticCaptureStartNs(inferenceIndex),
+        captureEndNs: Long = syntheticCaptureEndNs(inferenceIndex),
+    ): Transition? {
         require(probability.isFinite() && probability in 0f..1f) {
             "Silero speech probability must be finite and in [0, 1]"
         }
@@ -53,23 +63,37 @@ class SileroVadStateMachine(
         val speech = probability >= config.speechProbabilityThreshold
 
         return when (state) {
-            State.SILENCE -> handleSilence(speech, probability, inferenceIndex)
+            State.SILENCE -> handleSilence(
+                speech,
+                probability,
+                inferenceIndex,
+                captureStartNs,
+                captureEndNs,
+            )
             State.SPEECH_START_PENDING -> handleSpeechStartPending(
                 speech,
                 probability,
                 inferenceIndex,
+                captureStartNs,
+                captureEndNs,
             )
             State.SPEECH -> handleSpeech(speech)
             State.SPEECH_STOP_PENDING -> handleSpeechStopPending(
                 speech,
                 probability,
                 inferenceIndex,
+                captureStartNs,
+                captureEndNs,
             )
         }
     }
 
     @Synchronized
-    fun stop(inferenceIndex: Long): Transition? {
+    fun stop(
+        inferenceIndex: Long,
+        captureStartNs: Long = syntheticCaptureStartNs(inferenceIndex),
+        captureEndNs: Long = syntheticCaptureEndNs(inferenceIndex),
+    ): Transition? {
         val shouldEmitStop = state == State.SPEECH || state == State.SPEECH_STOP_PENDING
         val transition = if (shouldEmitStop) {
             speechStopCount += 1L
@@ -78,8 +102,11 @@ class SileroVadStateMachine(
                 timestampMs = wallClockMs(),
                 probability = lastProbability ?: 0f,
                 inferenceIndex = inferenceIndex,
-                speechDurationMs = speechDurationMs(inferenceIndex),
+                speechDurationMs = speechDurationMs(inferenceIndex, captureEndNs),
                 reason = "SESSION_STOPPED",
+                monotonicTimestampNs = captureEndNs,
+                captureStartNs = captureStartNs,
+                captureEndNs = captureEndNs,
             )
         } else {
             null
@@ -110,9 +137,12 @@ class SileroVadStateMachine(
 
     /** Returns the duration of the current confirmed speech segment. */
     @Synchronized
-    fun currentSpeechDurationMs(inferenceIndex: Long): Long {
+    fun currentSpeechDurationMs(
+        inferenceIndex: Long,
+        captureEndNs: Long = syntheticCaptureEndNs(inferenceIndex),
+    ): Long {
         return if (state == State.SPEECH || state == State.SPEECH_STOP_PENDING) {
-            speechDurationMs(inferenceIndex)
+            speechDurationMs(inferenceIndex, captureEndNs)
         } else {
             0L
         }
@@ -122,34 +152,42 @@ class SileroVadStateMachine(
         speech: Boolean,
         probability: Float,
         inferenceIndex: Long,
+        captureStartNs: Long,
+        captureEndNs: Long,
     ): Transition? {
         if (!speech) {
             consecutiveSpeechChunks = 0
             return null
         }
         pendingSpeechStartIndex = inferenceIndex
+        pendingSpeechStartCaptureNs = captureStartNs
         consecutiveSpeechChunks = 1
-        return confirmSpeechIfReady(probability, inferenceIndex)
+        return confirmSpeechIfReady(probability, inferenceIndex, captureStartNs, captureEndNs)
     }
 
     private fun handleSpeechStartPending(
         speech: Boolean,
         probability: Float,
         inferenceIndex: Long,
+        captureStartNs: Long,
+        captureEndNs: Long,
     ): Transition? {
         if (!speech) {
             state = State.SILENCE
             consecutiveSpeechChunks = 0
             pendingSpeechStartIndex = 0L
+            pendingSpeechStartCaptureNs = NO_CAPTURE_TIMESTAMP
             return null
         }
         consecutiveSpeechChunks += 1
-        return confirmSpeechIfReady(probability, inferenceIndex)
+        return confirmSpeechIfReady(probability, inferenceIndex, captureStartNs, captureEndNs)
     }
 
     private fun confirmSpeechIfReady(
         probability: Float,
         inferenceIndex: Long,
+        captureStartNs: Long,
+        captureEndNs: Long,
     ): Transition? {
         if (consecutiveSpeechChunks < config.speechStartConfirmationChunks) {
             state = State.SPEECH_START_PENDING
@@ -157,6 +195,7 @@ class SileroVadStateMachine(
         }
         state = State.SPEECH
         speechStartIndex = pendingSpeechStartIndex
+        speechStartCaptureNs = pendingSpeechStartCaptureNs
         speechStartCount += 1L
         consecutiveSpeechChunks = 0
         consecutiveSilenceChunks = 0
@@ -167,6 +206,9 @@ class SileroVadStateMachine(
             inferenceIndex = inferenceIndex,
             speechDurationMs = 0L,
             reason = "SPEECH_CONFIRMED",
+            monotonicTimestampNs = captureEndNs,
+            captureStartNs = captureStartNs,
+            captureEndNs = captureEndNs,
         )
     }
 
@@ -184,6 +226,8 @@ class SileroVadStateMachine(
         speech: Boolean,
         probability: Float,
         inferenceIndex: Long,
+        captureStartNs: Long,
+        captureEndNs: Long,
     ): Transition? {
         if (speech) {
             state = State.SPEECH
@@ -196,7 +240,7 @@ class SileroVadStateMachine(
         }
 
         speechStopCount += 1L
-        val durationMs = speechDurationMs(inferenceIndex)
+        val durationMs = speechDurationMs(inferenceIndex, captureEndNs)
         state = State.SILENCE
         consecutiveSpeechChunks = 0
         consecutiveSilenceChunks = 0
@@ -209,12 +253,18 @@ class SileroVadStateMachine(
             inferenceIndex = inferenceIndex,
             speechDurationMs = durationMs,
             reason = "SILENCE_CONFIRMED",
+            monotonicTimestampNs = captureEndNs,
+            captureStartNs = captureStartNs,
+            captureEndNs = captureEndNs,
         )
     }
 
-    private fun speechDurationMs(inferenceIndex: Long): Long {
+    private fun speechDurationMs(inferenceIndex: Long, captureEndNs: Long): Long {
         if (speechStartIndex <= 0L || inferenceIndex < speechStartIndex) {
             return 0L
+        }
+        if (speechStartCaptureNs != NO_CAPTURE_TIMESTAMP && captureEndNs >= speechStartCaptureNs) {
+            return (captureEndNs - speechStartCaptureNs) / NANOS_PER_MILLISECOND
         }
         return (inferenceIndex - speechStartIndex + 1L) * config.inferenceChunkDurationMs
     }
@@ -225,5 +275,20 @@ class SileroVadStateMachine(
         consecutiveSilenceChunks = 0
         pendingSpeechStartIndex = 0L
         speechStartIndex = 0L
+        pendingSpeechStartCaptureNs = NO_CAPTURE_TIMESTAMP
+        speechStartCaptureNs = NO_CAPTURE_TIMESTAMP
+    }
+
+    private fun syntheticCaptureStartNs(inferenceIndex: Long): Long =
+        (inferenceIndex - 1L).coerceAtLeast(0L) *
+            config.inferenceChunkDurationMs.toLong() * NANOS_PER_MILLISECOND
+
+    private fun syntheticCaptureEndNs(inferenceIndex: Long): Long =
+        inferenceIndex.coerceAtLeast(0L) *
+            config.inferenceChunkDurationMs.toLong() * NANOS_PER_MILLISECOND
+
+    private companion object {
+        const val NANOS_PER_MILLISECOND = 1_000_000L
+        const val NO_CAPTURE_TIMESTAMP = Long.MIN_VALUE
     }
 }

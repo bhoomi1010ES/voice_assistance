@@ -1,5 +1,6 @@
 package com.voiceaipoc.vad.silero
 
+import com.voiceaipoc.audio.FarEndReferenceBuffer
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -150,6 +151,169 @@ class SileroVadEngineTest {
         assertEquals(2, input?.get(FRAME_SAMPLES)?.toInt())
         assertEquals(2, input?.get(INFERENCE_SAMPLES - 1)?.toInt())
         assertEquals(1L, engine.getStatus().successfulInferenceCount)
+        engine.stopSession()
+    }
+
+    @Test
+    fun inferenceObservationCarriesTheExactSourceIntervalAndMetadataSnapshot() {
+        val runtime = ScriptedRuntime(probabilities = listOf(0.9f))
+        val listener = RecordingListener()
+        val engine = newEngine(
+            config = CONFIG.copy(speechStartConfirmationMs = 32),
+            runtimeFactory = SileroVadRuntimeFactory { runtime },
+            listener = listener,
+        )
+        assertTrue(engine.startSession().succeeded)
+        assertTrue(listener.startedLatch.await(1, TimeUnit.SECONDS))
+
+        val oldAssessment = FarEndReferenceBuffer.Assessment.stopped(1_020_000_000L).copy(
+            state = FarEndReferenceBuffer.State.PLAYING,
+            playbackActive = true,
+            playbackPositionMs = 120L,
+            responseId = "old-response",
+            referenceAvailable = true,
+            timestampConfidence = "AUDIO_TIMESTAMP",
+            estimatedDelayMs = 40,
+            similarity = 0.8,
+        )
+        val newAssessment = oldAssessment.copy(
+            responseId = "new-response",
+            playbackPositionMs = 140L,
+            estimatedDelayMs = 60,
+        )
+        assertTrue(
+            engine.offerPcmFrame(
+                ShortArray(FRAME_SAMPLES) { 1 },
+                FRAME_SAMPLES,
+                frameSequence = 10L,
+                captureStartNs = 1_000_000_000L,
+                captureEndNs = 1_020_000_000L,
+                assessment = oldAssessment,
+            ),
+        )
+        assertTrue(
+            engine.offerPcmFrame(
+                ShortArray(FRAME_SAMPLES) { 2 },
+                FRAME_SAMPLES,
+                frameSequence = 11L,
+                captureStartNs = 1_020_000_000L,
+                captureEndNs = 1_040_000_000L,
+                assessment = newAssessment,
+            ),
+        )
+
+        waitUntil { listener.speechStarted.size == 1 }
+        val event = listener.speechStarted.single()
+        assertEquals(10L, event.sourceFrameSequenceStart)
+        assertEquals(11L, event.sourceFrameSequenceEnd)
+        assertEquals(1_000_000_000L, event.captureStartNs)
+        assertEquals(1_032_000_000L, event.captureEndNs)
+        assertEquals("AUDIO_TIMESTAMP", event.referenceConfidence)
+        assertEquals("MIXED", event.playbackResponseId ?: "MIXED")
+        assertEquals(48, event.estimatedEchoDelayMs)
+        assertEquals(128L, event.playbackPositionMs)
+
+        assertTrue(
+            engine.offerPcmFrame(
+                ShortArray(FRAME_SAMPLES) { 3 },
+                FRAME_SAMPLES,
+                frameSequence = 12L,
+                captureStartNs = 1_040_000_000L,
+                captureEndNs = 1_060_000_000L,
+                assessment = oldAssessment.copy(responseId = "newer-response"),
+            ),
+        )
+        assertEquals("AUDIO_TIMESTAMP", event.referenceConfidence)
+        assertEquals(10L, event.sourceFrameSequenceStart)
+        engine.stopSession()
+    }
+
+    @Test
+    fun queueOverflowMarksNextObservationDiscontinuousAndKeepsFrameMetadataAligned() {
+        val releaseInitialization = CountDownLatch(1)
+        val runtime = ScriptedRuntime(
+            probabilities = listOf(0.9f),
+            initializationGate = releaseInitialization,
+        )
+        val listener = RecordingListener()
+        val engine = newEngine(
+            config = CONFIG.copy(
+                speechStartConfirmationMs = 32,
+                queueCapacityFrames = 2,
+            ),
+            runtimeFactory = SileroVadRuntimeFactory { runtime },
+            listener = listener,
+        )
+        var startResult: SileroVadEngine.StartResult? = null
+        val startThread = Thread { startResult = engine.startSession() }
+        startThread.start()
+        assertTrue(runtime.initializationEntered.await(1, TimeUnit.SECONDS))
+
+        repeat(3) { index ->
+            val sequence = (index + 1).toLong()
+            assertTrue(
+                engine.offerPcmFrame(
+                    ShortArray(FRAME_SAMPLES) { (index + 1).toShort() },
+                    FRAME_SAMPLES,
+                    sequence,
+                    sequence * 20_000_000L,
+                    (sequence + 1L) * 20_000_000L,
+                    FarEndReferenceBuffer.Assessment.stopped(sequence).copy(
+                        responseId = "response-$sequence",
+                        referenceAvailable = true,
+                        timestampConfidence = "AUDIO_TIMESTAMP",
+                    ),
+                ),
+            )
+        }
+        assertEquals(1L, engine.getStatus().droppedFrames)
+        releaseInitialization.countDown()
+        startThread.join(1_000L)
+        assertTrue(startResult?.succeeded == true)
+
+        waitUntil { listener.speechStarted.size == 1 }
+        val event = listener.speechStarted.single()
+        assertEquals(2L, event.sourceFrameSequenceStart)
+        assertEquals(3L, event.sourceFrameSequenceEnd)
+        assertTrue(event.discontinuous)
+        assertTrue(runtime.resetCount >= 2)
+        assertEquals(2, runtime.lastInput?.firstOrNull()?.toInt())
+        assertEquals(2, runtime.lastInput?.get(FRAME_SAMPLES - 1)?.toInt())
+        assertEquals(3, runtime.lastInput?.get(FRAME_SAMPLES)?.toInt())
+        engine.stopSession()
+    }
+
+    @Test
+    fun sessionRestartClearsQueuedMetadataAndSequenceOwnership() {
+        val runtimes = Collections.synchronizedList(mutableListOf<ScriptedRuntime>())
+        val listener = RecordingListener(startedCount = 2)
+        val engine = newEngine(
+            config = CONFIG.copy(speechStartConfirmationMs = 32),
+            runtimeFactory = SileroVadRuntimeFactory {
+                ScriptedRuntime(probabilities = listOf(0.9f)).also { runtimes += it }
+            },
+            listener = listener,
+        )
+
+        assertTrue(engine.startSession().succeeded)
+        waitUntil { engine.getStatus().runtimeInitialized }
+        offerMetadataFrames(engine, 100L, "old-response")
+        waitUntil { listener.speechStarted.size == 1 }
+        assertEquals("old-response", listener.speechStarted.single().playbackResponseId)
+        engine.stopSession()
+
+        assertTrue(engine.startSession().succeeded)
+        waitUntil { engine.getStatus().runtimeInitialized }
+        offerMetadataFrames(engine, 0L, "new-response")
+        waitUntil { listener.speechStarted.size == 2 }
+
+        val restartedEvent = listener.speechStarted.last()
+        assertEquals(0L, restartedEvent.sourceFrameSequenceStart)
+        assertEquals(1L, restartedEvent.sourceFrameSequenceEnd)
+        assertEquals("new-response", restartedEvent.playbackResponseId)
+        assertFalse(restartedEvent.discontinuous)
+        assertEquals(2, runtimes.size)
+        assertTrue(listener.startedLatch.await(1, TimeUnit.SECONDS))
         engine.stopSession()
     }
 
@@ -342,6 +506,30 @@ class SileroVadEngineTest {
     private fun offerFrames(engine: SileroVadEngine, count: Int) {
         repeat(count) {
             assertTrue(engine.offerPcmFrame(ShortArray(FRAME_SAMPLES), FRAME_SAMPLES))
+        }
+    }
+
+    private fun offerMetadataFrames(
+        engine: SileroVadEngine,
+        firstSequence: Long,
+        responseId: String,
+    ) {
+        repeat(2) { offset ->
+            val sequence = firstSequence + offset
+            assertTrue(
+                engine.offerPcmFrame(
+                    ShortArray(FRAME_SAMPLES) { (offset + 1).toShort() },
+                    FRAME_SAMPLES,
+                    sequence,
+                    sequence * 20_000_000L,
+                    (sequence + 1L) * 20_000_000L,
+                    FarEndReferenceBuffer.Assessment.stopped(sequence).copy(
+                        responseId = responseId,
+                        referenceAvailable = true,
+                        timestampConfidence = "AUDIO_TIMESTAMP",
+                    ),
+                ),
+            )
         }
     }
 

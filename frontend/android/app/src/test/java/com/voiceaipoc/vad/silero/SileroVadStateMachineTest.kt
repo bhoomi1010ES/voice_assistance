@@ -153,6 +153,37 @@ class SileroVadStateMachineTest {
         assertTrue(machine.getStatus().speechStopCount >= 1L)
     }
 
+    @Test
+    fun speechDurationUsesMonotonicCaptureTimeWhenWallClockJumps() {
+        wallClockMs = 10_000L
+        val machine = newMachine()
+        repeat(config.speechStartConfirmationChunks) { offset ->
+            machine.onProbability(
+                probability = 0.9f,
+                inferenceIndex = offset + 1L,
+                captureStartNs = offset * 32_000_000L,
+                captureEndNs = (offset + 1L) * 32_000_000L,
+            )
+        }
+
+        wallClockMs = 2L
+        var stopped: SileroVadStateMachine.Transition? = null
+        repeat(config.speechStopConfirmationChunks) { offset ->
+            stopped = machine.onProbability(
+                probability = 0.1f,
+                inferenceIndex = config.speechStartConfirmationChunks + offset + 1L,
+                captureStartNs = (config.speechStartConfirmationChunks + offset) *
+                    32_000_000L,
+                captureEndNs = (config.speechStartConfirmationChunks + offset + 1L) *
+                    32_000_000L,
+            )
+        }
+
+        assertEquals(2L, stopped?.timestampMs)
+        assertEquals(416L, stopped?.speechDurationMs)
+        assertEquals(416_000_000L, stopped?.monotonicTimestampNs)
+    }
+
     private fun speakingMachine(): SileroVadStateMachine = newMachine().also { machine ->
         repeat(config.speechStartConfirmationChunks) { offset ->
             machine.onProbability(0.9f, offset + 1L)

@@ -4,12 +4,53 @@ import {
   PermissionsAndroid,
   Platform,
 } from 'react-native';
+import { VoiceRolloutConfig } from '../config/voiceRollout';
+
+export type VoiceRolloutStatus = VoiceRolloutConfig & {
+  nativeBargeInAuthoritative: boolean;
+  nativeBargeInShadowMode: boolean;
+  automaticLoudspeakerBargeInEnabled: boolean;
+  rolloutMode: string;
+};
 
 export type VoiceDiagnostics = {
   nativeVoiceEngine: string;
   audioCapture: string;
   wakeWord: string;
   vad: string;
+};
+
+export type PlaybackReferenceStatus = {
+  state: string;
+  responseId: string | null;
+  writtenPlaybackFrames: number;
+  presentedPlaybackFrames: number;
+  referenceBufferedFrames: number;
+  referenceReady: boolean;
+  timestampConfidence: string;
+  estimatedDelayMs: number | null;
+  echoSimilarity: number | null;
+  echoCoherence: number | null;
+  farEndRms: number | null;
+  micRms: number | null;
+  nearEndFarEndEnergyRatio: number | null;
+  lastAssessmentTimestampNs: string;
+};
+
+export type BargeInDetectorStatus = {
+  state: string;
+  lastEvent: string;
+  lastReason: string;
+  candidateCount: number;
+  rejectedEchoCount: number;
+  confirmedCount: number;
+  degradedCount: number;
+  lastResponseId: string | null;
+  lastSourceFrameSequenceStart: number;
+  lastSourceFrameSequenceEnd: number;
+  lastInferenceIndex: number;
+  lastLocalStopLatencyMs: number | null;
+  lastLocalStopResponseId: string | null;
 };
 
 export type MicrophoneStatus = {
@@ -29,6 +70,40 @@ export type MicrophoneStatus = {
   captureDurationMs: number;
   microphoneErrorCount: number;
   lastError: string | null;
+  requestedCaptureSource: AudioCaptureSource;
+  actualCaptureSource: string;
+  playbackUsage: string;
+  playbackContentType: string;
+  playback: PlaybackReferenceStatus;
+  detector: BargeInDetectorStatus;
+  softwareAec: SoftwareAecStatus;
+  route: AudioRouteStatus;
+  rollout?: VoiceRolloutStatus;
+};
+
+export type AudioRouteStatus = {
+  communicationRouteEnabled?: boolean;
+  activeLeaseCount: number;
+  captureLeaseCount: number;
+  playbackLeaseCount: number;
+  requestedMode: number;
+  actualMode: number;
+  priorMode: number | null;
+  modeAcquired: boolean;
+  modeRestored: boolean;
+  requestedCommunicationDevice: string;
+  actualCommunicationDevice: string;
+  inputDeviceType: string;
+  outputDeviceType: string;
+  communicationDeviceSelected: boolean;
+  playbackRoute: string;
+  audioFocusRequested: boolean;
+  audioFocusGranted: boolean;
+  audioFocusState: string;
+  audioFocusRestored: boolean;
+  restorationCount: number;
+  api31CommunicationDeviceSupported: boolean;
+  lastError: string | null;
 };
 
 export type AudioEffectStatus = {
@@ -37,6 +112,8 @@ export type AudioEffectStatus = {
   requested: boolean;
   created: boolean;
   enabled: boolean;
+  platformEnabledBeforeAttach: boolean;
+  effectiveness: string;
   lastError: string | null;
 };
 
@@ -47,6 +124,38 @@ export type AudioProcessingStatus = {
   manufacturer: string;
   model: string;
   androidSdk: number;
+  aecSelection: string;
+  aecHealth: string;
+  noiseSuppressionSelection: string;
+  noiseSuppressionHealth: string;
+  softwareAec: SoftwareAecStatus;
+};
+
+export type SoftwareAecStatus = {
+  requestedMode: 'PLATFORM' | 'AUTO' | 'WEBRTC_AEC3' | string;
+  state: 'DISABLED' | 'STARTING' | 'ACTIVE' | 'DEGRADED' | 'STOPPED' | string;
+  implementation: string;
+  sampleRateHz: number;
+  frameDurationMs: number;
+  frameSizeSamples: number;
+  renderToCaptureDelayMs: number;
+  aecRequested: boolean;
+  noiseSuppressionRequested: boolean;
+  platformAecDisabled: boolean;
+  platformNoiseSuppressionDisabled: boolean;
+  referenceReadyFrames: number;
+  referenceMissingFrames: number;
+  captureFrames: number;
+  renderFrames: number;
+  processedFrames: number;
+  bypassedFrames: number;
+  droppedFrames: number;
+  processingErrorCount: number;
+  lastReferenceConfidence: string;
+  lastFarEndRms: number;
+  lastInputRms: number;
+  lastOutputRms: number;
+  lastError: string | null;
 };
 
 export type VadStatus = {
@@ -140,6 +249,14 @@ export type SileroVadStatus = {
   averageInferenceDurationMs: number;
   maximumInferenceDurationMs: number;
   lastInferenceTimestampMs: number;
+  lastInferenceMonotonicNs?: string;
+  lastObservationSourceFrameSequenceStart?: number;
+  lastObservationSourceFrameSequenceEnd?: number;
+  lastObservationCaptureStartNs?: string;
+  lastObservationCaptureEndNs?: string;
+  lastObservationDiscontinuous?: boolean;
+  discontinuityCount?: number;
+  discontinuityPending?: boolean;
   currentProbability: number | null;
   speechStartCount: number;
   speechStopCount: number;
@@ -150,12 +267,84 @@ export type SileroVadStatus = {
 };
 
 export type SileroVadEvent = {
-  event: 'SILERO_VAD_SPEECH_STARTED' | 'SILERO_VAD_SPEECH_STOPPED';
+  event:
+    | 'SILERO_VAD_SPEECH_STARTED'
+    | 'SILERO_VAD_SPEECH_ACTIVITY'
+    | 'SILERO_VAD_SPEECH_STOPPED';
   timestampMs: number;
+  monotonicNs?: string;
   probability: number;
   inferenceIndex: number;
   speechDurationMs: number;
   reason: string;
+  sourceFrameSequenceStart?: number;
+  sourceFrameSequenceEnd?: number;
+  captureStartNs?: string;
+  captureEndNs?: string;
+  discontinuous?: boolean;
+  playbackState?: string;
+  playbackActive?: boolean;
+  playbackReferenceAvailable?: boolean;
+  playbackResponseId?: string | null;
+  echoLikely?: boolean;
+  echoSimilarity?: number | null;
+  echoLagMs?: number | null;
+  playbackPositionMs?: number;
+  timestampConfidence?: string;
+  estimatedDelayMs?: number | null;
+  echoCoherence?: number | null;
+  farEndRms?: number | null;
+  micRms?: number | null;
+  nearEndResidualRatio?: number | null;
+  nearEndFarEndEnergyRatio?: number | null;
+};
+
+/** Native playback-aware barge-in semantics. Payloads contain metrics only. */
+export type BargeInSemanticEvent = {
+  event:
+    | 'BARGE_IN_CANDIDATE'
+    | 'BARGE_IN_REJECTED_ECHO'
+    | 'BARGE_IN_CONFIRMED'
+    | 'BARGE_IN_DEGRADED';
+  state: string;
+  reason: string;
+  responseId?: string | null;
+  monotonicNs: string;
+  captureStartNs: string;
+  captureEndNs: string;
+  segmentDurationMs: number;
+  probability: number;
+  playbackState: string;
+  playbackActive: boolean;
+  playbackPositionMs: number;
+  referenceReady: boolean;
+  referenceUsable: boolean;
+  timestampConfidence: string;
+  aecHealthy: boolean;
+  communicationModeActive: boolean;
+  aecAvailable: boolean;
+  aecEnabled: boolean;
+  aecEffectiveness: string;
+  automaticLoudspeakerBargeInAllowed?: boolean;
+  sourceFrameSequenceStart: number;
+  sourceFrameSequenceEnd: number;
+  inferenceIndex: number;
+  discontinuous: boolean;
+  echoSimilarity?: number | null;
+  echoCoherence?: number | null;
+  estimatedDelayMs?: number | null;
+  farEndRms?: number | null;
+  micRms?: number | null;
+  nearEndResidualRatio?: number | null;
+  localStopRequested?: boolean;
+  localStopCompleted?: boolean;
+  audioTrackStopped?: boolean;
+  audioTrackFlushed?: boolean;
+  audioTrackReleased?: boolean;
+  localStopReleasePending?: boolean;
+  localStopLatencyMs?: number | null;
+  stopReason?: string | null;
+  stopRequestedMonotonicNs?: string | null;
 };
 
 export type SileroVadErrorEvent = SileroVadStatus & {
@@ -591,6 +780,59 @@ export type VoiceOutputPreferences = {
   enabled: boolean;
 };
 
+export type DiagnosticDecisionRecord = {
+  diagnosticSessionId: string;
+  event: string;
+  state: string;
+  reason: string;
+  responseId: string | null;
+  monotonicNs: string;
+  captureStartNs: string;
+  captureEndNs: string;
+  sourceFrameSequenceStart: number;
+  sourceFrameSequenceEnd: number;
+  inferenceIndex: number;
+  probability: number;
+  playbackState: string;
+  playbackPositionMs: number;
+  referenceReady: boolean;
+  referenceUsable: boolean;
+  timestampConfidence: string;
+  aecHealthy: boolean;
+  communicationModeActive: boolean;
+  aecAvailable: boolean;
+  aecEnabled: boolean;
+  aecEffectiveness: string;
+  automaticLoudspeakerBargeInAllowed?: boolean;
+  echoSimilarity: number | null;
+  echoCoherence: number | null;
+  estimatedDelayMs: number | null;
+  farEndRms: number | null;
+  micRms: number | null;
+  nearEndFarEndEnergyRatio: number | null;
+  discontinuous: boolean;
+  localStopLatencyMs: number | null;
+};
+
+export type DiagnosticEvidence = {
+  metadataOnly: true;
+  diagnosticSessionId: string;
+  exportedAtTimestampMs: number;
+  redactedFields: string[];
+  microphone: MicrophoneStatus;
+  audioProcessing: AudioProcessingStatus;
+  audioPipeline: AudioPipelineStatus;
+  voiceGateway: VoiceGatewayStatus;
+  rollout?: VoiceRolloutStatus;
+  decisions: DiagnosticDecisionRecord[];
+};
+
+export type DiagnosticEvidenceExport = {
+  copied: boolean;
+  diagnosticSessionId: string;
+  byteLength: number;
+};
+
 /** Native VAD transitions label the active turn and gate full barge-in. */
 export type VoiceVadEvent = {
   event: string;
@@ -612,7 +854,12 @@ type NativeVoiceModule = {
   getDiagnostics: () => Promise<VoiceDiagnostics>;
   startMicrophone: () => Promise<MicrophoneStatus>;
   stopMicrophone: () => Promise<MicrophoneStatus>;
+  setAudioCaptureSource: (
+    source: AudioCaptureSource,
+  ) => Promise<MicrophoneStatus>;
   getMicrophoneStatus: () => Promise<MicrophoneStatus>;
+  getDiagnosticEvidence: () => Promise<DiagnosticEvidence>;
+  getVoiceRolloutConfig: () => Promise<VoiceRolloutStatus>;
   getAudioProcessingStatus: () => Promise<AudioProcessingStatus>;
   getAudioPipelineStatus: () => Promise<AudioPipelineStatus>;
   getWakeWordStatus: () => Promise<WakeWordStatus>;
@@ -626,6 +873,7 @@ type NativeVoiceModule = {
   startWakeWordDiagnosticPcmCapture: (
     label: string,
     durationMs: number,
+    consentGranted: boolean,
   ) => Promise<WakeWordDiagnosticCaptureStatus>;
   stopWakeWordDiagnosticPcmCapture: () => Promise<WakeWordDiagnosticCaptureStatus>;
   getWakeWordDiagnosticPcmCaptureStatus: () => Promise<WakeWordDiagnosticCaptureStatus>;
@@ -684,6 +932,10 @@ export type AudioProcessingCalibrationMode =
   | 'NS_ONLY'
   | 'DISABLED';
 
+export type AudioCaptureSource = 'VOICE_COMMUNICATION' | 'MIC';
+
+export const MAX_DIAGNOSTIC_PCM_DURATION_MS = 10_240;
+
 const nativeVoiceModule = NativeModules.VoiceModule as
   | NativeVoiceModule
   | undefined;
@@ -704,6 +956,28 @@ export async function getVoiceDiagnostics(): Promise<VoiceDiagnostics> {
 /** Checks the native AudioRecord/permission state without requesting access. */
 export async function getMicrophoneStatus(): Promise<MicrophoneStatus> {
   return requireNativeVoiceModule().getMicrophoneStatus();
+}
+
+/** Returns metadata-only acoustic evidence with session/frame correlation. */
+export async function getDiagnosticEvidence(): Promise<DiagnosticEvidence> {
+  return requireNativeVoiceModule().getDiagnosticEvidence();
+}
+
+/** Reads the immutable native release/canary rollout switches for this build. */
+export async function getVoiceRolloutConfig(): Promise<VoiceRolloutStatus> {
+  return requireNativeVoiceModule().getVoiceRolloutConfig();
+}
+
+/** Copies the metadata-only evidence JSON to the platform clipboard. */
+export async function exportDiagnosticEvidence(): Promise<DiagnosticEvidenceExport> {
+  const evidence = await getDiagnosticEvidence();
+  const json = JSON.stringify(evidence, null, 2);
+  const copied = await copyTextToClipboard(json);
+  return {
+    copied,
+    diagnosticSessionId: evidence.diagnosticSessionId,
+    byteLength: json.length,
+  };
 }
 
 /** Reads device and session-bound Android AEC/NS diagnostics. */
@@ -752,10 +1026,12 @@ export async function resetWakeWordAcousticDiagnostics(): Promise<WakeWordStatus
 export async function startWakeWordDiagnosticPcmCapture(
   label: string,
   durationMs = 5120,
+  consentGranted = false,
 ): Promise<WakeWordDiagnosticCaptureStatus> {
   return requireNativeVoiceModule().startWakeWordDiagnosticPcmCapture(
     label,
     durationMs,
+    consentGranted,
   );
 }
 
@@ -794,6 +1070,13 @@ export async function startMicrophone(): Promise<MicrophoneStatus> {
 
 export async function stopMicrophone(): Promise<MicrophoneStatus> {
   return requireNativeVoiceModule().stopMicrophone();
+}
+
+/** Selects the next-session capture source; MIC is retained for route A/B diagnostics. */
+export async function setAudioCaptureSource(
+  source: AudioCaptureSource,
+): Promise<MicrophoneStatus> {
+  return requireNativeVoiceModule().setAudioCaptureSource(source);
 }
 
 /** Stores credentials through Android Keystore-backed native storage. */
@@ -945,6 +1228,22 @@ export function subscribeVoiceVadEvent(
     'SILERO_VAD_SPEECH_STARTED',
     'SILERO_VAD_SPEECH_STOPPED',
     'SILERO_VAD_SPEECH_ACTIVITY',
+  ];
+  const subscriptions = eventNames.map(eventName =>
+    DeviceEventEmitter.addListener(eventName, listener),
+  );
+  return () => subscriptions.forEach(subscription => subscription.remove());
+}
+
+/** Subscribes to native playback-aware barge-in decisions. */
+export function subscribeVoiceBargeInEvent(
+  listener: (event: BargeInSemanticEvent) => void,
+): () => void {
+  const eventNames = [
+    'BARGE_IN_CANDIDATE',
+    'BARGE_IN_REJECTED_ECHO',
+    'BARGE_IN_CONFIRMED',
+    'BARGE_IN_DEGRADED',
   ];
   const subscriptions = eventNames.map(eventName =>
     DeviceEventEmitter.addListener(eventName, listener),

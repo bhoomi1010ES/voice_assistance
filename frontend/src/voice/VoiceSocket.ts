@@ -1,4 +1,4 @@
-import { AppState, AppStateStatus } from 'react-native';
+import { AppState, AppStateStatus, Platform } from 'react-native';
 import {
   abortAllVoiceResponses,
   cancelVoiceResponse,
@@ -18,7 +18,9 @@ import {
   stopMicrophone,
   subscribeVoiceGatewayEvent,
   subscribeVoiceGatewayStatus,
+  subscribeVoiceBargeInEvent,
   subscribeVoiceVadEvent,
+  BargeInSemanticEvent,
   VoiceGatewayEvent,
   VoiceGatewayStatus,
 } from '../native/VoiceModule';
@@ -56,6 +58,11 @@ import {
   PLAYBACK_START_GUARD_MS,
 } from './playbackBargeInPolicy';
 import { emitLatencyTrace } from './latencyTrace';
+import {
+  isNativeBargeInAuthoritative,
+  VoiceRolloutConfig,
+  voiceRolloutConfig,
+} from '../config/voiceRollout';
 
 export const VOICE_GATEWAY_URL = `${publicApiConfig.websocketBaseUrl}/v1/voice`;
 
@@ -213,6 +220,7 @@ export type VoiceSocketAdapter = {
   stopMicrophone?: () => Promise<unknown>;
   requestMicrophonePermission?: () => Promise<string>;
   subscribeVad?: (listener: (event: unknown) => void) => () => void;
+  subscribeBargeIn?: (listener: (event: unknown) => void) => () => void;
   subscribeStatus: (
     listener: (status: VoiceGatewayStatus) => void,
   ) => () => void;
@@ -221,6 +229,7 @@ export type VoiceSocketAdapter = {
 
 export type VoiceSocketOptions = {
   adapter?: VoiceSocketAdapter;
+  rollout?: VoiceRolloutConfig;
   url?: string;
   /**
    * Refreshes/validates the authenticated HTTP session before opening a
@@ -350,6 +359,11 @@ const EVENTS_ALLOWED_DURING_CONNECTION_TRANSITION =
     'voice.session.stale.reaped',
   ]);
 const TERMINAL_SESSION_ERROR_CODES = new Set(['session_not_available']);
+const RECOVERABLE_SERVER_ERROR_CODES = new Set([
+  'session_not_ready',
+  'turn_in_progress',
+  'turn_finalizing',
+]);
 const AUTH_EXPIRY_ERROR_CODES = new Set([
   'authentication_expired_or_revoked',
   'invalid_or_revoked_token',
@@ -375,6 +389,8 @@ const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
   subscribeStatus: subscribeVoiceGatewayStatus,
   subscribeEvent: subscribeVoiceGatewayEvent,
   subscribeVad: subscribeVoiceVadEvent,
+  subscribeBargeIn:
+    Platform.OS === 'android' ? subscribeVoiceBargeInEvent : undefined,
 };
 
 export type NormalizedVoiceEvent = {
@@ -466,6 +482,7 @@ export function normalizeVoiceGatewayEvent(
 
 export class VoiceSocket {
   private readonly adapter: VoiceSocketAdapter;
+  private readonly rollout: VoiceRolloutConfig;
   private readonly url: string;
   private readonly prepareConnection?: () => Promise<void>;
   private readonly appState: VoiceAppStateSource;
@@ -502,6 +519,9 @@ export class VoiceSocket {
   private statusUnsubscribe: (() => void) | null = null;
   private eventUnsubscribe: (() => void) | null = null;
   private vadUnsubscribe: (() => void) | null = null;
+  private bargeInUnsubscribe: (() => void) | null = null;
+  /** True for the Android adapter whose native detector owns playback policy. */
+  private nativePlaybackDetectorAvailable = false;
   private appStateSubscription: { remove: () => void } | null = null;
   private speechEndedAtMs: number | null = null;
   private responseServerCompleted = false;
@@ -522,6 +542,7 @@ export class VoiceSocket {
 
   constructor(options: VoiceSocketOptions = {}) {
     this.adapter = options.adapter ?? nativeVoiceSocketAdapter;
+    this.rollout = options.rollout ?? voiceRolloutConfig;
     this.url = options.url ?? VOICE_GATEWAY_URL;
     this.prepareConnection = options.prepareConnection;
     this.appState = (options.appState ?? AppState) as VoiceAppStateSource;
@@ -556,6 +577,14 @@ export class VoiceSocket {
     );
     this.vadUnsubscribe =
       this.adapter.subscribeVad?.(event => this.handleVadEvent(event)) ?? null;
+    this.nativePlaybackDetectorAvailable =
+      this.rollout.nativeBargeInDetectorEnabled &&
+      isNativeBargeInAuthoritative(this.rollout) &&
+      Boolean(this.adapter.subscribeBargeIn);
+    this.bargeInUnsubscribe =
+      this.adapter.subscribeBargeIn?.(event =>
+        this.handleNativeBargeInEvent(event),
+      ) ?? null;
     this.appStateSubscription = this.appState.addEventListener(
       'change',
       nextState => {
@@ -729,7 +758,10 @@ export class VoiceSocket {
     });
   }
 
-  async startTurn(options: VoiceTurnStartOptions = {}): Promise<void> {
+  private async ensureReadySessionForTurn(): Promise<void> {
+    if (this.snapshot.session === 'idle') {
+      await this.startSession();
+    }
     if (this.snapshot.session === 'starting') {
       await this.waitForReadySession();
     }
@@ -741,44 +773,48 @@ export class VoiceSocket {
     ) {
       throw new Error('Start a voice session before starting a turn.');
     }
-    if (this.snapshot.ttsPlaybackState === 'speaking') {
-      throw new Error(
-        'Wait for playback-aware speech confirmation before starting a turn.',
-      );
-    }
-    this.clearAutoListenTimer();
-    this.clearSpeechEndCommitTimer();
-    const queueFollowUp =
-      ['committing', 'waiting'].includes(this.snapshot.turn) &&
-      !this.confirmationAwaitingVoice;
-    if (queueFollowUp) {
-      options = {
-        ...options,
-        preserveMicrophone: true,
-        autoCommitOnSpeechEnd: true,
-      };
-      this.autoListenSuppressed = false;
-      this.setSnapshot({ followUpQueued: true, error: null });
-    } else if (this.snapshot.turn !== 'idle') {
-      throw new Error('Finish the current voice turn before starting another.');
-    } else {
-      this.autoListenSuppressed = false;
-    }
-    if (['failed', 'cancelled', 'completed'].includes(this.snapshot.turn)) {
-      this.retireCurrentTurnCorrelation();
-      this.setSnapshot({
-        turn: 'idle',
-        turnId: null,
-        responseId: null,
-        ttsPlaybackState: 'idle',
-        ttsResponseId: null,
-        ttsError: null,
-        waitPhrase: null,
-        followUpQueued: false,
-      });
-    }
+  }
 
+  async startTurn(options: VoiceTurnStartOptions = {}): Promise<void> {
     try {
+      await this.ensureReadySessionForTurn();
+      if (this.snapshot.ttsPlaybackState === 'speaking') {
+        throw new Error(
+          'Wait for playback-aware speech confirmation before starting a turn.',
+        );
+      }
+      this.clearAutoListenTimer();
+      this.clearSpeechEndCommitTimer();
+      const queueFollowUp =
+        ['committing', 'waiting'].includes(this.snapshot.turn) &&
+        !this.confirmationAwaitingVoice;
+      if (queueFollowUp) {
+        options = {
+          ...options,
+          preserveMicrophone: true,
+          autoCommitOnSpeechEnd: true,
+        };
+        this.autoListenSuppressed = false;
+        this.setSnapshot({ followUpQueued: true, error: null });
+      } else if (this.snapshot.turn !== 'idle') {
+        throw new Error('Finish the current voice turn before starting another.');
+      } else {
+        this.autoListenSuppressed = false;
+      }
+      if (['failed', 'cancelled', 'completed'].includes(this.snapshot.turn)) {
+        this.retireCurrentTurnCorrelation();
+        this.setSnapshot({
+          turn: 'idle',
+          turnId: null,
+          responseId: null,
+          ttsPlaybackState: 'idle',
+          ttsResponseId: null,
+          ttsError: null,
+          waitPhrase: null,
+          followUpQueued: false,
+        });
+      }
+
       const permission = await this.adapter.requestMicrophonePermission?.();
       if (
         permission &&
@@ -1151,6 +1187,7 @@ export class VoiceSocket {
     this.clearAutoListenTimer();
     this.clearSpeechEndCommitTimer();
     this.clearReconnectTimer();
+    this.hadConnected = false;
 
     if (!this.started) {
       this.resetToDisconnected();
@@ -1158,6 +1195,12 @@ export class VoiceSocket {
     }
 
     const operations: Promise<unknown>[] = [];
+    if (
+      this.adapter.stopPlayback &&
+      ['buffering', 'speaking'].includes(this.snapshot.ttsPlaybackState)
+    ) {
+      operations.push(this.adapter.stopPlayback());
+    }
     if (this.snapshot.responseId) {
       operations.push(this.adapter.cancelResponse(reason));
     }
@@ -1183,6 +1226,9 @@ export class VoiceSocket {
     this.eventUnsubscribe = null;
     this.vadUnsubscribe?.();
     this.vadUnsubscribe = null;
+    this.bargeInUnsubscribe?.();
+    this.bargeInUnsubscribe = null;
+    this.nativePlaybackDetectorAvailable = false;
     this.appStateSubscription = null;
     this.started = false;
     if (this.heartbeatTimer) {
@@ -1307,7 +1353,31 @@ export class VoiceSocket {
     this.sessionStartInFlight = true;
     try {
       this.handleStatus(await this.adapter.startSession(resumeSessionId));
+      if (
+        this.snapshot.session !== 'ready' &&
+        this.desiredSession &&
+        this.snapshot.connection === 'connected'
+      ) {
+        this.setSnapshot({ session: 'starting', error: null });
+      }
     } catch (error) {
+      try {
+        const status = await this.adapter.getStatus();
+        const nativeState = status.state.toUpperCase();
+        if (
+          [
+            'SESSION_STARTING',
+            'SESSION_READY',
+            'TURN_STARTING',
+            'STREAMING_AUDIO',
+          ].includes(nativeState)
+        ) {
+          this.handleStatus(status);
+          return;
+        }
+      } catch {
+        // Fall through to the original start failure.
+      }
       this.sessionStartInFlight = false;
       this.setSnapshot({
         session: 'idle',
@@ -1389,6 +1459,12 @@ export class VoiceSocket {
     if (nativeState === 'DISCONNECTED' || nativeState === 'CLOSING') {
       if (this.explicitStop || !this.desiredConnection) {
         this.resetToDisconnected();
+        return;
+      }
+      // A user-owned connect() already flipped explicitStop off. Stale
+      // CLOSING/DISCONNECTED from the previous Stop turn must not enter the
+      // auto-reconnect path and show "Connection lost. Reconnecting…".
+      if (this.connectPromise && !this.allowAutoReconnect) {
         return;
       }
       if (this.hadConnected || this.allowAutoReconnect) {
@@ -1635,6 +1711,14 @@ export class VoiceSocket {
         this.ensureTranscriptPlaceholder('listening');
         if (this.autoCommitBargeInTurn) {
           this.bargeInTurnId = event.turnId;
+          emitLatencyTrace({
+            sessionId: event.sessionId,
+            turnId: event.turnId,
+            responseId: event.responseId,
+            component: 'client',
+            event: 'barge_in_replacement_turn_ready',
+            metadata: { source: 'server.turn.ready' },
+          });
           console.info('BARGE_IN_NEW_TURN_CREATED', {
             turnId: event.turnId,
             responseId: event.responseId,
@@ -1819,6 +1903,14 @@ export class VoiceSocket {
         this.maybeStartVoiceConfirmationTurn();
         break;
       case 'response.cancelled':
+        emitLatencyTrace({
+          sessionId: event.sessionId,
+          turnId: event.turnId,
+          responseId: event.responseId,
+          component: 'client',
+          event: 'response_cancelled_received',
+          metadata: { source: 'server' },
+        });
         this.applyConversationEvent({
           type: 'assistant.response.cancelled',
           sessionId: event.sessionId,
@@ -1873,6 +1965,22 @@ export class VoiceSocket {
         }
         if (isTerminalSessionError(event.errorCode)) {
           this.handleUnavailableSession();
+          break;
+        }
+        if (isRecoverableServerError(event.errorCode)) {
+          if (event.errorCode?.toLowerCase() === 'session_not_ready') {
+            this.setSnapshot({
+              turn: this.snapshot.turn === 'starting' ? 'idle' : this.snapshot.turn,
+              speechDetected: false,
+              error:
+                'The voice session is still starting. Try again in a moment.',
+            });
+            break;
+          }
+          const recoverableError = mapTranscriptError(event.errorCode);
+          this.setSnapshot({
+            error: recoverableError.message,
+          });
           break;
         }
         const serverError = mapTranscriptError(event.errorCode);
@@ -2185,29 +2293,80 @@ export class VoiceSocket {
     });
   }
 
-  private async interruptForBargeIn(): Promise<void> {
+  private handleNativeBargeInEvent(input: unknown): void {
+    if (!this.nativePlaybackDetectorAvailable) {
+      return;
+    }
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return;
+    }
+    const event = input as Partial<BargeInSemanticEvent>;
     if (
-      this.bargeInInFlight ||
-      !this.shouldBargeIn('SILERO_VAD_SPEECH_STARTED')
+      event.event !== 'BARGE_IN_CONFIRMED' ||
+      event.localStopRequested !== true ||
+      typeof event.responseId !== 'string'
     ) {
+      return;
+    }
+    const currentResponseId =
+      this.snapshot.responseId ?? this.snapshot.ttsResponseId;
+    if (currentResponseId !== event.responseId) {
+      console.info('BARGE_IN_NATIVE_STALE_IGNORED', {
+        eventResponseId: event.responseId,
+        currentResponseId,
+        reason: 'response_replaced_or_retired',
+        timestampMs: this.now(),
+      });
+      return;
+    }
+    this.interruptForBargeIn(event as BargeInSemanticEvent).catch(() => undefined);
+  }
+
+  private async interruptForBargeIn(
+    nativeEvent?: BargeInSemanticEvent,
+  ): Promise<void> {
+    if (this.bargeInInFlight) {
       return;
     }
 
     const turnId = this.snapshot.turnId;
-    const responseId = this.snapshot.responseId;
+    const responseId = nativeEvent?.responseId ?? this.snapshot.responseId;
     if (!turnId || !responseId) {
+      return;
+    }
+    if (
+      nativeEvent == null &&
+      !this.shouldBargeIn('SILERO_VAD_SPEECH_STARTED')
+    ) {
+      return;
+    }
+    if (
+      nativeEvent != null &&
+      (this.snapshot.responseId ?? this.snapshot.ttsResponseId) !== responseId
+    ) {
       return;
     }
 
     this.bargeInInFlight = true;
+    const nativeDetectionNs =
+      nativeEvent && typeof nativeEvent.monotonicNs === 'string'
+        ? Number(nativeEvent.monotonicNs)
+        : null;
+    const nativeStopNs =
+      nativeEvent && typeof nativeEvent.stopRequestedMonotonicNs === 'string'
+        ? Number(nativeEvent.stopRequestedMonotonicNs)
+        : null;
     console.info('BARGE_IN_REAL_SPEECH_CONFIRMED', {
       oldTurnId: turnId,
       oldResponseId: responseId,
+      source: nativeEvent ? 'native' : 'legacy_js_fallback',
+      reason: nativeEvent?.reason ?? 'near_end_speech',
       timestampMs: this.now(),
     });
     console.info('BARGE_IN_CONFIRMED', {
       oldTurnId: turnId,
       oldResponseId: responseId,
+      source: nativeEvent ? 'native' : 'legacy_js_fallback',
       timestampMs: this.now(),
     });
     emitLatencyTrace({
@@ -2216,7 +2375,41 @@ export class VoiceSocket {
       responseId,
       component: 'client',
       event: 'barge_in_confirmed',
+      monotonicNs:
+        nativeDetectionNs != null && Number.isFinite(nativeDetectionNs)
+          ? nativeDetectionNs
+          : undefined,
+      clockDomain:
+        nativeDetectionNs != null && Number.isFinite(nativeDetectionNs)
+          ? 'android_elapsed_realtime'
+          : undefined,
+      metadata: {
+        source: nativeEvent ? 'native' : 'legacy_js_fallback',
+        reason: nativeEvent?.reason ?? 'near_end_speech',
+      },
     });
+    if (nativeEvent) {
+      emitLatencyTrace({
+        sessionId: this.snapshot.sessionId,
+        turnId,
+        responseId,
+        component: 'android',
+        event: 'barge_in_playback_stop_requested',
+        monotonicNs:
+          nativeStopNs != null && Number.isFinite(nativeStopNs)
+            ? nativeStopNs
+            : undefined,
+        clockDomain: 'android_elapsed_realtime',
+        metadata: {
+          local_stop_completed: nativeEvent.localStopCompleted === true,
+          audio_track_stopped: nativeEvent.audioTrackStopped === true,
+          audio_track_flushed: nativeEvent.audioTrackFlushed === true,
+          audio_track_released: nativeEvent.audioTrackReleased === true,
+          release_pending: nativeEvent.localStopReleasePending === true,
+          stop_reason: nativeEvent.stopReason ?? null,
+        },
+      });
+    }
     // Retire the old correlation before any asynchronous work so late text
     // deltas and audio chunks cannot leak into the new user turn.
     this.retireCorrelation(null, turnId, responseId);
@@ -2240,7 +2433,12 @@ export class VoiceSocket {
       // Local audio must stop before the network cancellation to prevent the
       // old response from speaking over the newly detected user turn.
       try {
-        await this.adapter.stopPlayback?.();
+        // Native confirmation already stopped/flushed the response-scoped
+        // AudioTrack before this event crossed the bridge. Compatibility
+        // adapters without native semantics retain the legacy local stop.
+        if (!nativeEvent?.localStopRequested) {
+          await this.adapter.stopPlayback?.();
+        }
       } catch {
         // A local player failure must not leave the server response running.
         // The cancellation below is still sent, while the UI is reset to the
@@ -2261,6 +2459,18 @@ export class VoiceSocket {
           responseId,
           component: 'android',
           event: 'barge_in_playback_stopped',
+          monotonicNs:
+            nativeStopNs != null && Number.isFinite(nativeStopNs)
+              ? nativeStopNs
+              : undefined,
+          clockDomain:
+            nativeStopNs != null && Number.isFinite(nativeStopNs)
+              ? 'android_elapsed_realtime'
+              : undefined,
+          metadata: {
+            source: nativeEvent ? 'native' : 'legacy_js_fallback',
+            local_stop_completed: nativeEvent?.localStopCompleted ?? true,
+          },
         });
       }
 
@@ -2387,7 +2597,11 @@ export class VoiceSocket {
         },
       });
     }
-    if (this.shouldBargeIn(eventType)) {
+    if (
+      !this.nativePlaybackDetectorAvailable &&
+      this.rollout.legacyJsBargeInDetectorEnabled &&
+      this.shouldBargeIn(eventType)
+    ) {
       const decision = this.playbackBargeInDecision(event);
       const candidateAtMs =
         typeof event.timestampMs === 'number' &&
@@ -2537,6 +2751,8 @@ export class VoiceSocket {
       return;
     }
     if (
+      !this.nativePlaybackDetectorAvailable &&
+      this.rollout.legacyJsBargeInDetectorEnabled &&
       eventType === 'SILERO_VAD_SPEECH_ACTIVITY' &&
       this.canBargeInDuringPlayback()
     ) {
@@ -2644,7 +2860,12 @@ export class VoiceSocket {
       this.interruptForBargeIn().catch(() => undefined);
       return;
     }
-    if (isSileroSpeechEvent && this.snapshot.ttsPlaybackState === 'speaking') {
+    if (
+      !this.nativePlaybackDetectorAvailable &&
+      this.rollout.legacyJsBargeInDetectorEnabled &&
+      isSileroSpeechEvent &&
+      this.snapshot.ttsPlaybackState === 'speaking'
+    ) {
       const decision = this.playbackBargeInDecision(event);
       console.info('BARGE_IN_CANDIDATE', {
         reason: 'silero_not_eligible_state',
@@ -3589,6 +3810,10 @@ function isTransportConnected(status: VoiceGatewayStatus): boolean {
 
 function isTerminalSessionError(code: string | undefined): boolean {
   return Boolean(code && TERMINAL_SESSION_ERROR_CODES.has(code.toLowerCase()));
+}
+
+function isRecoverableServerError(code: string | undefined): boolean {
+  return Boolean(code && RECOVERABLE_SERVER_ERROR_CODES.has(code.toLowerCase()));
 }
 
 function isAuthenticationExpiredError(

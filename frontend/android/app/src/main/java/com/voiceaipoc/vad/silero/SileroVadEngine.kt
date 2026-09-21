@@ -2,11 +2,13 @@ package com.voiceaipoc.vad.silero
 
 import android.util.Log
 import com.voiceaipoc.audio.AudioEngine
-import com.voiceaipoc.audio.AudioRingBuffer
+import com.voiceaipoc.audio.DuplexAudioFrameQueue
+import com.voiceaipoc.audio.FarEndReferenceBuffer
 import com.voiceaipoc.diagnostics.DiagnosticSessionContext
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * Bounded native worker that decouples Silero inference from PCM capture.
@@ -47,6 +49,27 @@ class SileroVadEngine(
         val inferenceIndex: Long,
         val speechDurationMs: Long,
         val reason: String,
+        val monotonicTimestampNs: Long,
+        val sourceFrameSequenceStart: Long,
+        val sourceFrameSequenceEnd: Long,
+        val captureStartNs: Long,
+        val captureEndNs: Long,
+        val playbackState: String,
+        val playbackActive: Boolean,
+        val playbackPositionMs: Long,
+        val playbackResponseId: String?,
+        val referenceReady: Boolean,
+        val referenceConfidence: String,
+        val estimatedEchoDelayMs: Int?,
+        val echoSimilarity: Double?,
+        val echoLagMs: Int?,
+        val echoCoherence: Double?,
+        val farEndRms: Double?,
+        val micRms: Double?,
+        val nearEndResidualRatio: Double?,
+        val echoLikely: Boolean,
+        val discontinuous: Boolean,
+        val nearEndFarEndEnergyRatio: Double? = null,
     )
 
     data class Status(
@@ -98,6 +121,14 @@ class SileroVadEngine(
         val averageInferenceDurationMs: Double,
         val maximumInferenceDurationMs: Double,
         val lastInferenceTimestampMs: Long,
+        val lastInferenceMonotonicNs: Long,
+        val lastObservationSourceFrameSequenceStart: Long,
+        val lastObservationSourceFrameSequenceEnd: Long,
+        val lastObservationCaptureStartNs: Long,
+        val lastObservationCaptureEndNs: Long,
+        val lastObservationDiscontinuous: Boolean,
+        val discontinuityCount: Long,
+        val discontinuityPending: Boolean,
         val currentProbability: Float?,
         val speechStartCount: Long,
         val speechStopCount: Long,
@@ -143,16 +174,19 @@ class SileroVadEngine(
         private const val MALFORMED_LOG_INTERVAL = 100L
         private const val ACTIVITY_EVENT_INTERVAL_INFERENCES = 5L
         private const val NANOS_PER_MILLISECOND = 1_000_000.0
+        private const val NANOS_PER_MILLISECOND_LONG = 1_000_000L
     }
 
     private val lock = Any()
     private val stateMachine = SileroVadStateMachine(config, wallClockMs)
-    private val frameQueue = AudioRingBuffer(
+    private val frameQueue = DuplexAudioFrameQueue(
         capacityFrames = config.queueCapacityFrames,
         frameSizeSamples = frameSizeSamples,
     )
     private val workerFrame = ShortArray(frameSizeSamples)
+    private val workerMetadata = DuplexAudioFrameQueue.FrameMetadata()
     private val inferenceChunk = ShortArray(config.inferenceChunkSamples)
+    private val inferenceMetadata = InferenceMetadataAccumulator()
 
     @Volatile
     private var running = false
@@ -163,6 +197,10 @@ class SileroVadEngine(
     private var startupLatch: CountDownLatch? = null
     private var lifecycleState = "IDLE"
     private var pendingInferenceSamples = 0
+    private var observationDiscontinuous = false
+    private var discontinuityPending = false
+    private var discontinuityCount = 0L
+    private var legacyFrameSequence = 0L
     private var framesOffered = 0L
     private var framesConsumed = 0L
     private var droppedFrames = 0L
@@ -174,6 +212,8 @@ class SileroVadEngine(
     private var totalInferenceDurationNanos = 0L
     private var maximumInferenceDurationNanos = 0L
     private var lastInferenceTimestampMs = 0L
+    private var lastInferenceMonotonicNs = 0L
+    private var lastObservation: SileroInferenceObservation? = null
     private var resetCount = 0L
     private var errorCount = 0L
     private var lastErrorCode: String? = null
@@ -302,12 +342,40 @@ class SileroVadEngine(
         return StartResult(true)
     }
 
-    /** Non-blocking producer call from the existing native PCM consumer. */
+    /** Compatibility producer call for tests and legacy native callers. */
     fun offerPcmFrame(pcmSamples: ShortArray, samplesRead: Int): Boolean {
+        val frameSequence = synchronized(lock) { legacyFrameSequence++ }
+        val captureEndNs = nanoClock()
+        val captureStartNs = captureEndNs -
+            frameDurationMs.toLong() * NANOS_PER_MILLISECOND_LONG
+        return offerPcmFrame(
+            pcmSamples = pcmSamples,
+            samplesRead = samplesRead,
+            frameSequence = frameSequence,
+            captureStartNs = captureStartNs,
+            captureEndNs = captureEndNs,
+            assessment = FarEndReferenceBuffer.Assessment.stopped(captureEndNs),
+        )
+    }
+
+    /** Non-blocking producer call carrying the exact capture frame metadata. */
+    fun offerPcmFrame(
+        pcmSamples: ShortArray,
+        samplesRead: Int,
+        frameSequence: Long,
+        captureStartNs: Long,
+        captureEndNs: Long,
+        assessment: FarEndReferenceBuffer.Assessment,
+    ): Boolean {
         if (!running) {
             return false
         }
-        if (samplesRead != frameSizeSamples || samplesRead > pcmSamples.size) {
+        if (
+            samplesRead != frameSizeSamples ||
+            samplesRead > pcmSamples.size ||
+            frameSequence < 0L ||
+            captureStartNs > captureEndNs
+        ) {
             val count = synchronized(lock) {
                 malformedFrames += 1L
                 recordErrorLocked(
@@ -327,18 +395,27 @@ class SileroVadEngine(
             return false
         }
 
-        val result = frameQueue.write(pcmSamples, sampleCount = samplesRead)
+        val result = frameQueue.offer(
+            source = pcmSamples,
+            sampleCount = samplesRead,
+            frameSequence = frameSequence,
+            captureStartNs = captureStartNs,
+            captureEndNs = captureEndNs,
+            assessment = assessment,
+        )
         val depth = frameQueue.currentBufferedFrames()
         val overflowCount = synchronized(lock) {
             framesOffered += 1L
             queueHighWaterMarkFrames = max(queueHighWaterMarkFrames, depth)
-            if (result == AudioRingBuffer.WriteResult.WROTE_AFTER_DROPPING_OLDEST) {
+            if (result == DuplexAudioFrameQueue.WriteResult.WROTE_AFTER_DROPPING_OLDEST) {
                 droppedFrames += 1L
+                discontinuityPending = true
+                discontinuityCount += 1L
             }
             droppedFrames
         }
         if (
-            result == AudioRingBuffer.WriteResult.WROTE_AFTER_DROPPING_OLDEST &&
+            result == DuplexAudioFrameQueue.WriteResult.WROTE_AFTER_DROPPING_OLDEST &&
             (overflowCount == 1L || overflowCount % OVERFLOW_LOG_INTERVAL == 0L)
         ) {
             Log.w(
@@ -373,7 +450,12 @@ class SileroVadEngine(
         }
 
         val stillAlive = thread?.isAlive == true
-        val transition = stateMachine.stop(synchronized(lock) { inferenceCount })
+        val stopObservation = synchronized(lock) { lastObservation }
+        val transition = stateMachine.stop(
+            inferenceIndex = synchronized(lock) { inferenceCount },
+            captureStartNs = stopObservation?.captureStartNs ?: 0L,
+            captureEndNs = stopObservation?.captureEndNs ?: 0L,
+        )
         synchronized(lock) {
             if (stillAlive) {
                 recordErrorLocked(
@@ -390,13 +472,17 @@ class SileroVadEngine(
                 lifecycleState = "STOPPED"
             }
             pendingInferenceSamples = 0
+            inferenceMetadata.clear()
+            observationDiscontinuous = false
+            discontinuityPending = false
             workerFrame.fill(0)
+            workerMetadata.clear()
             inferenceChunk.fill(0)
             resetCount += 1L
         }
         frameQueue.clear()
 
-        transition?.let(::emitTransition)
+        transition?.let { emitTransition(it, stopObservation) }
         if (stillAlive) {
             listener?.onEngineError(getStatus())
         }
@@ -471,8 +557,18 @@ class SileroVadEngine(
                 failedInferenceCount = failedInferenceCount,
                 averageInferenceDurationMs = averageMs,
                 maximumInferenceDurationMs =
-                    maximumInferenceDurationNanos.toDouble() / NANOS_PER_MILLISECOND,
+                maximumInferenceDurationNanos.toDouble() / NANOS_PER_MILLISECOND,
                 lastInferenceTimestampMs = lastInferenceTimestampMs,
+                lastInferenceMonotonicNs = lastInferenceMonotonicNs,
+                lastObservationSourceFrameSequenceStart = lastObservation
+                    ?.sourceFrameSequenceStart ?: 0L,
+                lastObservationSourceFrameSequenceEnd = lastObservation
+                    ?.sourceFrameSequenceEnd ?: 0L,
+                lastObservationCaptureStartNs = lastObservation?.captureStartNs ?: 0L,
+                lastObservationCaptureEndNs = lastObservation?.captureEndNs ?: 0L,
+                lastObservationDiscontinuous = lastObservation?.discontinuous == true,
+                discontinuityCount = discontinuityCount,
+                discontinuityPending = discontinuityPending,
                 currentProbability = vadStatus.lastProbability,
                 speechStartCount = vadStatus.speechStartCount,
                 speechStopCount = vadStatus.speechStopCount,
@@ -521,7 +617,11 @@ class SileroVadEngine(
 
             while (running) {
                 val samplesRead = try {
-                    frameQueue.read(workerFrame, waitTimeoutMs = QUEUE_WAIT_TIMEOUT_MS)
+                    frameQueue.read(
+                        destination = workerFrame,
+                        metadata = workerMetadata,
+                        waitTimeoutMs = QUEUE_WAIT_TIMEOUT_MS,
+                    )
                 } catch (interrupted: InterruptedException) {
                     if (running) {
                         throw SileroVadRuntimeException(
@@ -535,8 +635,14 @@ class SileroVadEngine(
                 if (!running || samplesRead == 0) {
                     continue
                 }
+                if (workerMetadata.discontinuous || consumeDiscontinuityPending()) {
+                    runtime.reset()
+                    pendingInferenceSamples = 0
+                    inferenceMetadata.clear()
+                    observationDiscontinuous = true
+                }
                 synchronized(lock) { framesConsumed += 1L }
-                appendFrameAndInfer(runtime, samplesRead)
+                appendFrameAndInfer(runtime, samplesRead, workerMetadata)
             }
         } catch (exception: Throwable) {
             if (running) {
@@ -568,7 +674,11 @@ class SileroVadEngine(
         }
     }
 
-    private fun appendFrameAndInfer(runtime: SileroVadRuntime, samplesRead: Int) {
+    private fun appendFrameAndInfer(
+        runtime: SileroVadRuntime,
+        samplesRead: Int,
+        metadata: DuplexAudioFrameQueue.FrameMetadata,
+    ) {
         var sourceOffset = 0
         while (sourceOffset < samplesRead && running) {
             val samplesToCopy = minOf(
@@ -582,12 +692,20 @@ class SileroVadEngine(
                 pendingInferenceSamples,
                 samplesToCopy,
             )
+            inferenceMetadata.append(
+                metadata = metadata,
+                sourceOffset = sourceOffset,
+                sampleCount = samplesToCopy,
+                frameSampleCount = samplesRead,
+            )
             pendingInferenceSamples += samplesToCopy
             sourceOffset += samplesToCopy
 
             if (pendingInferenceSamples == config.inferenceChunkSamples) {
                 runInference(runtime)
                 pendingInferenceSamples = 0
+                inferenceMetadata.clear()
+                observationDiscontinuous = false
             }
         }
     }
@@ -607,22 +725,36 @@ class SileroVadEngine(
                     "Silero runtime returned invalid probability $probability.",
                 )
             }
-            val transition = stateMachine.onProbability(probability, inferenceIndex)
+            val observation = inferenceMetadata.toObservation(
+                inferenceIndex = inferenceIndex,
+                probability = probability,
+                discontinuous = observationDiscontinuous,
+            )
+            val transition = stateMachine.onProbability(
+                probability = probability,
+                inferenceIndex = inferenceIndex,
+                captureStartNs = observation.captureStartNs,
+                captureEndNs = observation.captureEndNs,
+            )
             val state = stateMachine.getStatus().state
             synchronized(lock) {
                 successfulInferenceCount += 1L
+                lastObservation = observation
+                lastInferenceMonotonicNs = observation.monotonicTimestampNs
             }
             successful = true
-            transition?.let(::emitTransition)
+            transition?.let { emitTransition(it, observation) }
             if (
                 (state == SileroVadStateMachine.State.SPEECH ||
                     state == SileroVadStateMachine.State.SPEECH_STOP_PENDING) &&
                 inferenceIndex % ACTIVITY_EVENT_INTERVAL_INFERENCES == 0L
             ) {
                 emitSpeechActivity(
-                    probability = probability,
-                    inferenceIndex = inferenceIndex,
-                    speechDurationMs = stateMachine.currentSpeechDurationMs(inferenceIndex),
+                    observation = observation,
+                    speechDurationMs = stateMachine.currentSpeechDurationMs(
+                        inferenceIndex,
+                        observation.captureEndNs,
+                    ),
                 )
             }
         } catch (exception: SileroVadRuntimeException) {
@@ -646,7 +778,11 @@ class SileroVadEngine(
         }
     }
 
-    private fun emitTransition(transition: SileroVadStateMachine.Transition) {
+    private fun emitTransition(
+        transition: SileroVadStateMachine.Transition,
+        observation: SileroInferenceObservation?,
+    ) {
+        val source = observation ?: lastObservation ?: emptyObservation(transition)
         val event = Event(
             event = transition.event,
             timestampMs = transition.timestampMs,
@@ -654,6 +790,28 @@ class SileroVadEngine(
             inferenceIndex = transition.inferenceIndex,
             speechDurationMs = transition.speechDurationMs,
             reason = transition.reason,
+            monotonicTimestampNs = transition.monotonicTimestampNs
+                .takeIf { it != 0L } ?: source.monotonicTimestampNs,
+            sourceFrameSequenceStart = source.sourceFrameSequenceStart,
+            sourceFrameSequenceEnd = source.sourceFrameSequenceEnd,
+            captureStartNs = source.captureStartNs,
+            captureEndNs = source.captureEndNs,
+            playbackState = source.playbackState,
+            playbackActive = source.playbackActive,
+            playbackPositionMs = source.playbackPositionMs,
+            playbackResponseId = source.playbackResponseId,
+            referenceReady = source.referenceReady,
+            referenceConfidence = source.referenceConfidence,
+            estimatedEchoDelayMs = source.estimatedEchoDelayMs,
+            echoSimilarity = source.echoSimilarity,
+            echoLagMs = source.echoLagMs,
+            echoCoherence = source.echoCoherence,
+            farEndRms = source.farEndRms,
+            micRms = source.micRms,
+            nearEndResidualRatio = source.nearEndResidualRatio,
+            echoLikely = source.echoLikely,
+            discontinuous = source.discontinuous,
+            nearEndFarEndEnergyRatio = source.nearEndFarEndEnergyRatio,
         )
         when (event.event) {
             EVENT_SPEECH_STARTED -> {
@@ -661,7 +819,11 @@ class SileroVadEngine(
                     AudioEngine.TAG,
                     diagnosticSession.tag(
                         "SILERO_VAD_SPEECH_STARTED probability=${event.probability} " +
-                            "inference=${event.inferenceIndex}",
+                            "inference=${event.inferenceIndex} " +
+                            "frames=${event.sourceFrameSequenceStart}-" +
+                            "${event.sourceFrameSequenceEnd} " +
+                            "capture=${event.captureStartNs}-${event.captureEndNs} " +
+                            "discontinuous=${event.discontinuous}",
                     ),
                 )
                 listener?.onSpeechStarted(event)
@@ -671,7 +833,11 @@ class SileroVadEngine(
                     AudioEngine.TAG,
                     diagnosticSession.tag(
                         "SILERO_VAD_SPEECH_STOPPED durationMs=${event.speechDurationMs} " +
-                            "inference=${event.inferenceIndex}",
+                            "inference=${event.inferenceIndex} " +
+                            "frames=${event.sourceFrameSequenceStart}-" +
+                            "${event.sourceFrameSequenceEnd} " +
+                            "capture=${event.captureStartNs}-${event.captureEndNs} " +
+                            "discontinuous=${event.discontinuous}",
                     ),
                 )
                 listener?.onSpeechStopped(event)
@@ -680,23 +846,44 @@ class SileroVadEngine(
     }
 
     private fun emitSpeechActivity(
-        probability: Float,
-        inferenceIndex: Long,
+        observation: SileroInferenceObservation,
         speechDurationMs: Long,
     ) {
         val event = Event(
             event = EVENT_SPEECH_ACTIVITY,
             timestampMs = wallClockMs(),
-            probability = probability,
-            inferenceIndex = inferenceIndex,
+            probability = observation.probability,
+            inferenceIndex = observation.inferenceIndex,
             speechDurationMs = speechDurationMs,
             reason = "SPEECH_CONTINUING",
+            monotonicTimestampNs = observation.monotonicTimestampNs,
+            sourceFrameSequenceStart = observation.sourceFrameSequenceStart,
+            sourceFrameSequenceEnd = observation.sourceFrameSequenceEnd,
+            captureStartNs = observation.captureStartNs,
+            captureEndNs = observation.captureEndNs,
+            playbackState = observation.playbackState,
+            playbackActive = observation.playbackActive,
+            playbackPositionMs = observation.playbackPositionMs,
+            playbackResponseId = observation.playbackResponseId,
+            referenceReady = observation.referenceReady,
+            referenceConfidence = observation.referenceConfidence,
+            estimatedEchoDelayMs = observation.estimatedEchoDelayMs,
+            echoSimilarity = observation.echoSimilarity,
+            echoLagMs = observation.echoLagMs,
+            echoCoherence = observation.echoCoherence,
+            farEndRms = observation.farEndRms,
+            micRms = observation.micRms,
+            nearEndResidualRatio = observation.nearEndResidualRatio,
+            echoLikely = observation.echoLikely,
+            discontinuous = observation.discontinuous,
+            nearEndFarEndEnergyRatio = observation.nearEndFarEndEnergyRatio,
         )
         Log.i(
             AudioEngine.TAG,
             diagnosticSession.tag(
                 "SILERO_VAD_SPEECH_ACTIVITY probability=${event.probability} " +
-                    "durationMs=${event.speechDurationMs} inference=${event.inferenceIndex}",
+                    "durationMs=${event.speechDurationMs} inference=${event.inferenceIndex} " +
+                    "frames=${event.sourceFrameSequenceStart}-${event.sourceFrameSequenceEnd}",
             ),
         )
         listener?.onSpeechActivity(event)
@@ -724,11 +911,53 @@ class SileroVadEngine(
         }
     }
 
+    private fun consumeDiscontinuityPending(): Boolean = synchronized(lock) {
+        if (!discontinuityPending) {
+            false
+        } else {
+            discontinuityPending = false
+            true
+        }
+    }
+
+    private fun emptyObservation(
+        transition: SileroVadStateMachine.Transition,
+    ): SileroInferenceObservation = SileroInferenceObservation(
+        inferenceIndex = transition.inferenceIndex,
+        sourceFrameSequenceStart = 0L,
+        sourceFrameSequenceEnd = 0L,
+        captureStartNs = transition.captureStartNs,
+        captureEndNs = transition.captureEndNs,
+        probability = transition.probability,
+        playbackState = FarEndReferenceBuffer.State.STOPPED.name,
+        playbackActive = false,
+        playbackPositionMs = 0L,
+        playbackResponseId = null,
+        referenceReady = false,
+        referenceConfidence = "NONE",
+        estimatedEchoDelayMs = null,
+        echoSimilarity = null,
+        echoLagMs = null,
+        echoCoherence = null,
+        farEndRms = null,
+        micRms = null,
+        nearEndResidualRatio = null,
+        echoLikely = false,
+        discontinuous = true,
+        monotonicTimestampNs = transition.monotonicTimestampNs,
+    )
+
     private fun resetForNewSessionLocked() {
         frameQueue.clear()
         workerFrame.fill(0)
+        workerMetadata.clear()
         inferenceChunk.fill(0)
+        inferenceMetadata.clear()
         pendingInferenceSamples = 0
+        observationDiscontinuous = false
+        discontinuityPending = false
+        discontinuityCount = 0L
+        legacyFrameSequence = 0L
         framesOffered = 0L
         framesConsumed = 0L
         droppedFrames = 0L
@@ -740,6 +969,8 @@ class SileroVadEngine(
         totalInferenceDurationNanos = 0L
         maximumInferenceDurationNanos = 0L
         lastInferenceTimestampMs = 0L
+        lastInferenceMonotonicNs = 0L
+        lastObservation = null
         errorCount = 0L
         lastErrorCode = null
         lastErrorMessage = null
@@ -748,6 +979,216 @@ class SileroVadEngine(
         startupLatch = null
         stateMachine.reset()
         resetCount += 1L
+    }
+
+    private class InferenceMetadataAccumulator {
+        private var sampleCount = 0
+        private var sourceFrameSequenceStart = 0L
+        private var sourceFrameSequenceEnd = 0L
+        private var captureStartNs = 0L
+        private var captureEndNs = 0L
+        private var playbackState = FarEndReferenceBuffer.State.STOPPED.name
+        private var playbackStateMixed = false
+        private var playbackActive = true
+        private var playbackActiveInitialized = false
+        private var playbackPositionSum = 0.0
+        private var playbackPositionWeight = 0L
+        private var responseId: String? = null
+        private var responseIdMixed = false
+        private var referenceReady = true
+        private var referenceInitialized = false
+        private var referenceConfidence = "NONE"
+        private var referenceConfidenceMixed = false
+        private var estimatedEchoDelaySum = 0.0
+        private var estimatedEchoDelayWeight = 0L
+        private var echoSimilaritySum = 0.0
+        private var echoSimilarityWeight = 0L
+        private var echoLagSum = 0.0
+        private var echoLagWeight = 0L
+        private var echoCoherenceSum = 0.0
+        private var echoCoherenceWeight = 0L
+        private var farEndRmsSum = 0.0
+        private var farEndRmsWeight = 0L
+        private var micRmsSum = 0.0
+        private var micRmsWeight = 0L
+        private var nearEndResidualSum = 0.0
+        private var nearEndResidualWeight = 0L
+        private var nearEndFarEndEnergyRatioSum = 0.0
+        private var nearEndFarEndEnergyRatioWeight = 0L
+        private var echoLikely = false
+
+        fun append(
+            metadata: DuplexAudioFrameQueue.FrameMetadata,
+            sourceOffset: Int,
+            sampleCount: Int,
+            frameSampleCount: Int,
+        ) {
+            require(sampleCount > 0) { "sampleCount must be positive" }
+            val durationNs = metadata.captureEndNs - metadata.captureStartNs
+            val portionStartNs = metadata.captureStartNs +
+                durationNs * sourceOffset.toLong() / frameSampleCount.toLong()
+            val portionEndNs = metadata.captureStartNs +
+                durationNs * (sourceOffset + sampleCount).toLong() / frameSampleCount.toLong()
+
+            if (this.sampleCount == 0) {
+                sourceFrameSequenceStart = metadata.frameSequence
+                captureStartNs = portionStartNs
+                playbackState = metadata.playbackState.name
+                responseId = metadata.playbackResponseId
+                playbackActive = metadata.playbackActive
+                playbackActiveInitialized = true
+                referenceReady = metadata.referenceReady
+                referenceInitialized = true
+                referenceConfidence = metadata.referenceConfidence
+            } else {
+                playbackStateMixed = playbackStateMixed ||
+                    playbackState != metadata.playbackState.name
+                responseIdMixed = responseIdMixed ||
+                    responseId != metadata.playbackResponseId
+                referenceConfidenceMixed = referenceConfidenceMixed ||
+                    referenceConfidence != metadata.referenceConfidence
+                playbackActive = playbackActive && metadata.playbackActive
+                referenceReady = referenceReady && metadata.referenceReady
+            }
+
+            sourceFrameSequenceEnd = metadata.frameSequence
+            captureEndNs = portionEndNs
+            this.sampleCount += sampleCount
+            echoLikely = echoLikely || metadata.echoLikely
+            addWeighted(metadata.playbackPositionMs.toDouble(), sampleCount) { sum, weight ->
+                playbackPositionSum += sum
+                playbackPositionWeight += weight
+            }
+            addWeighted(metadata.estimatedEchoDelayMs?.toDouble(), sampleCount) { sum, weight ->
+                estimatedEchoDelaySum += sum
+                estimatedEchoDelayWeight += weight
+            }
+            addWeighted(metadata.echoSimilarity, sampleCount) { sum, weight ->
+                echoSimilaritySum += sum
+                echoSimilarityWeight += weight
+            }
+            addWeighted(metadata.echoLagMs?.toDouble(), sampleCount) { sum, weight ->
+                echoLagSum += sum
+                echoLagWeight += weight
+            }
+            addWeighted(metadata.echoCoherence, sampleCount) { sum, weight ->
+                echoCoherenceSum += sum
+                echoCoherenceWeight += weight
+            }
+            addWeighted(metadata.farEndRms, sampleCount) { sum, weight ->
+                farEndRmsSum += sum
+                farEndRmsWeight += weight
+            }
+            addWeighted(metadata.micRms, sampleCount) { sum, weight ->
+                micRmsSum += sum
+                micRmsWeight += weight
+            }
+            addWeighted(metadata.nearEndResidualRatio, sampleCount) { sum, weight ->
+                nearEndResidualSum += sum
+                nearEndResidualWeight += weight
+            }
+            addWeighted(metadata.nearEndFarEndEnergyRatio, sampleCount) { sum, weight ->
+                nearEndFarEndEnergyRatioSum += sum
+                nearEndFarEndEnergyRatioWeight += weight
+            }
+        }
+
+        fun toObservation(
+            inferenceIndex: Long,
+            probability: Float,
+            discontinuous: Boolean,
+        ): SileroInferenceObservation {
+            check(sampleCount > 0) { "An inference observation requires source samples" }
+            return SileroInferenceObservation(
+                inferenceIndex = inferenceIndex,
+                sourceFrameSequenceStart = sourceFrameSequenceStart,
+                sourceFrameSequenceEnd = sourceFrameSequenceEnd,
+                captureStartNs = captureStartNs,
+                captureEndNs = captureEndNs,
+                probability = probability,
+                playbackState = if (playbackStateMixed) "MIXED" else playbackState,
+                playbackActive = playbackActiveInitialized && playbackActive,
+                playbackPositionMs = average(playbackPositionSum, playbackPositionWeight)
+                    ?.roundToInt()?.toLong() ?: 0L,
+                playbackResponseId = if (responseIdMixed) null else responseId,
+                referenceReady = referenceInitialized && referenceReady,
+                referenceConfidence = if (referenceConfidenceMixed) {
+                    "MIXED"
+                } else {
+                    referenceConfidence
+                },
+                estimatedEchoDelayMs = averageInt(
+                    estimatedEchoDelaySum,
+                    estimatedEchoDelayWeight,
+                ),
+                echoSimilarity = average(echoSimilaritySum, echoSimilarityWeight),
+                echoLagMs = averageInt(echoLagSum, echoLagWeight),
+                echoCoherence = average(echoCoherenceSum, echoCoherenceWeight),
+                farEndRms = average(farEndRmsSum, farEndRmsWeight),
+                micRms = average(micRmsSum, micRmsWeight),
+                nearEndResidualRatio = average(nearEndResidualSum, nearEndResidualWeight),
+                echoLikely = echoLikely,
+                discontinuous = discontinuous,
+                monotonicTimestampNs = captureEndNs,
+                nearEndFarEndEnergyRatio = average(
+                    nearEndFarEndEnergyRatioSum,
+                    nearEndFarEndEnergyRatioWeight,
+                ),
+            )
+        }
+
+        fun clear() {
+            sampleCount = 0
+            sourceFrameSequenceStart = 0L
+            sourceFrameSequenceEnd = 0L
+            captureStartNs = 0L
+            captureEndNs = 0L
+            playbackState = FarEndReferenceBuffer.State.STOPPED.name
+            playbackStateMixed = false
+            playbackActive = true
+            playbackActiveInitialized = false
+            playbackPositionSum = 0.0
+            playbackPositionWeight = 0L
+            responseId = null
+            responseIdMixed = false
+            referenceReady = true
+            referenceInitialized = false
+            referenceConfidence = "NONE"
+            referenceConfidenceMixed = false
+            estimatedEchoDelaySum = 0.0
+            estimatedEchoDelayWeight = 0L
+            echoSimilaritySum = 0.0
+            echoSimilarityWeight = 0L
+            echoLagSum = 0.0
+            echoLagWeight = 0L
+            echoCoherenceSum = 0.0
+            echoCoherenceWeight = 0L
+            farEndRmsSum = 0.0
+            farEndRmsWeight = 0L
+            micRmsSum = 0.0
+            micRmsWeight = 0L
+            nearEndResidualSum = 0.0
+            nearEndResidualWeight = 0L
+            nearEndFarEndEnergyRatioSum = 0.0
+            nearEndFarEndEnergyRatioWeight = 0L
+            echoLikely = false
+        }
+
+        private fun addWeighted(
+            value: Double?,
+            sampleCount: Int,
+            sink: (sum: Double, weight: Long) -> Unit,
+        ) {
+            if (value != null) {
+                sink(value * sampleCount.toDouble(), sampleCount.toLong())
+            }
+        }
+
+        private fun average(sum: Double, weight: Long): Double? =
+            if (weight == 0L) null else sum / weight.toDouble()
+
+        private fun averageInt(sum: Double, weight: Long): Int? =
+            average(sum, weight)?.roundToInt()
     }
 
     private fun recordNonFatalError(code: String, message: String) {

@@ -2,14 +2,40 @@ package com.voiceaipoc.voice
 
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioTimestamp
 import android.media.AudioTrack
+import android.os.Build
+import android.os.SystemClock
 import android.util.Log
+import com.voiceaipoc.audio.AudioRouteController
 import com.voiceaipoc.diagnostics.DiagnosticSessionContext
 import java.util.ArrayDeque
 import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+
+data class TtsAudioTimestamp(
+    val framePosition: Long,
+    val nanoTime: Long,
+)
+
+data class TtsPlaybackPosition(
+    val playbackHeadFramePosition: Long?,
+    val timestamp: TtsAudioTimestamp?,
+    val measuredAtNs: Long,
+)
+
+/** Result of a local, response-scoped stop request. */
+data class TtsLocalStopResult(
+    val responseId: UUID,
+    val wasActive: Boolean,
+    val requestedAtNs: Long,
+    val audioTrackStopped: Boolean,
+    val audioTrackFlushed: Boolean,
+    val audioTrackReleased: Boolean,
+    val releasePending: Boolean,
+)
 
 internal interface TtsAudioTrack {
     val isInitialized: Boolean
@@ -19,6 +45,8 @@ internal interface TtsAudioTrack {
     fun flush()
     fun release()
     fun underrunCount(): Int
+    fun playbackHeadPosition(): Int
+    fun timestamp(): TtsAudioTimestamp?
 }
 
 internal interface TtsAudioTrackFactory {
@@ -37,7 +65,7 @@ private object AndroidTtsAudioTrackFactory : TtsAudioTrackFactory {
         val track = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build(),
             )
@@ -66,11 +94,22 @@ private class AndroidTtsAudioTrack(private val delegate: AudioTrack) : TtsAudioT
     override fun flush() = delegate.flush()
     override fun release() = delegate.release()
     override fun underrunCount(): Int = delegate.underrunCount
+    override fun playbackHeadPosition(): Int = delegate.playbackHeadPosition
+    override fun timestamp(): TtsAudioTimestamp? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT) return null
+        val timestamp = AudioTimestamp()
+        return if (delegate.getTimestamp(timestamp)) {
+            TtsAudioTimestamp(timestamp.framePosition, timestamp.nanoTime)
+        } else {
+            null
+        }
+    }
 }
 
 /** Queued PCM16 sink for one complete TTS response. */
 internal class TtsAudioPlayer(
     private val trackFactory: TtsAudioTrackFactory = AndroidTtsAudioTrackFactory,
+    private val routeController: AudioRouteController? = null,
     private val listener: Listener = Listener.NONE,
     private val startupPrebufferBytes: Int = STARTUP_PREBUFFER_BYTES,
     private val maxQueueBytes: Int = MAX_QUEUE_BYTES,
@@ -87,11 +126,17 @@ internal class TtsAudioPlayer(
         val partialWrites: Int,
         val writeErrors: Int,
         val underrunDelta: Int,
+        val pcmFramesWritten: Long,
+        val presentedFrames: Long,
     )
 
     interface Listener {
         fun onPlaybackStarted(responseId: UUID) = Unit
+        fun onPlaybackDraining(responseId: UUID) = Unit
         fun onPlaybackCompleted(responseId: UUID) = Unit
+        fun onPlaybackCompletedAt(responseId: UUID, position: TtsPlaybackPosition) {
+            onPlaybackCompleted(responseId)
+        }
         fun onPlaybackStopped(responseId: UUID) = Unit
         fun onPlaybackError(responseId: UUID, errorCode: String) = Unit
         fun onPcmEnqueued(responseId: UUID, sequence: Long, bytes: Int, queuedBytes: Int) = Unit
@@ -102,13 +147,15 @@ internal class TtsAudioPlayer(
             writtenBytes: Int,
             queueBytesRemaining: Int,
         ) = Unit
-        /** Bytes accepted by AudioTrack, including the original PCM slice. */
-        fun onPcmRendered(
+        /** PCM accepted by AudioTrack; presentation is reported separately. */
+        fun onPcmWritten(
             responseId: UUID,
             sequence: Long,
             payload: ByteArray,
             offsetBytes: Int,
             writtenBytes: Int,
+            writtenFrameStart: Long,
+            playbackPosition: TtsPlaybackPosition,
         ) = Unit
         fun onPlaybackSummary(responseId: UUID, summary: PlaybackSummary) = Unit
 
@@ -121,6 +168,7 @@ internal class TtsAudioPlayer(
         val responseId: UUID,
         val track: TtsAudioTrack,
         val generation: Long,
+        val routeLease: AudioRouteController.Lease?,
     ) {
         var playbackStarted = false
         var finishRequested = false
@@ -130,13 +178,21 @@ internal class TtsAudioPlayer(
         var framesWritten = 0
         var pcmBytesQueued = 0L
         var pcmBytesWritten = 0L
+        var pcmFramesWritten = 0L
+        var presentedFrames = 0L
         var partialWrites = 0
         var writeErrors = 0
         var firstPcmWriteLogged = false
         var writeInProgress = false
         var cancelRequested = false
         var resourcesStopped = false
+        var audioTrackStopped = false
+        var audioTrackFlushed = false
         var queueBackpressureLogged = false
+        var playbackStartedNs = 0L
+        var lastRawPlaybackHead: Int? = null
+        var unwrappedPlaybackHead = 0L
+        var playbackHeadOrigin: Long? = null
     }
 
     private data class Chunk(val sequence: Long, val payload: ByteArray)
@@ -145,6 +201,14 @@ internal class TtsAudioPlayer(
     private val queue = ArrayDeque<Chunk>()
     private var generation = 0L
     private var active: Session? = null
+    private val focusListenerRegistration = routeController?.registerFocusLossListener(
+        object : AudioRouteController.FocusLossListener {
+            override fun onAudioFocusLost(change: Int) {
+                logWarn("TTS_AUDIO_FOCUS_LOST change=$change; stopping active playback")
+                cancel()
+            }
+        },
+    )
 
     private fun logInfo(message: String) = Log.i(TAG, diagnosticSession.tag(message))
 
@@ -173,25 +237,39 @@ internal class TtsAudioPlayer(
                 logError("TTS_PLAYER_REJECTED reason=invalid_min_buffer")
                 return false
             }
+            var routeLease: AudioRouteController.Lease? = null
+            if (routeController != null) {
+                val routeResult = routeController.acquire(AudioRouteController.Owner.PLAYBACK)
+                if (!routeResult.succeeded || routeResult.lease == null) {
+                    logError(
+                        "TTS_PLAYER_REJECTED reason=route_acquire_failed " +
+                            "error=${routeResult.errorCode}:${routeResult.errorMessage}",
+                    )
+                    return false
+                }
+                routeLease = routeResult.lease
+            }
             val bufferSize = maxOf(minBuffer, startupPrebufferBytes)
             val track = runCatching { trackFactory.create(sampleRateHz, bufferSize) }
                 .getOrElse {
+                    routeLease?.release()
                     logError("TTS_PLAYER_REJECTED reason=track_create_failed")
                     return false
                 }
             if (!track.isInitialized) {
                 track.release()
+                routeLease?.release()
                 logError("TTS_PLAYER_REJECTED reason=track_not_initialized")
                 return false
             }
             generation += 1
-            val session = Session(responseId, track, generation)
+            val session = Session(responseId, track, generation, routeLease)
             active = session
             queue.clear()
             logInfo(
-                "TTS_PLAYER_CREATED sample_rate=$sampleRateHz channels=1 " +
-                    "encoding=PCM16 buffer_size_bytes=$bufferSize " +
-                    "prebuffer_bytes=$startupPrebufferBytes playback_usage=USAGE_MEDIA " +
+                    "TTS_PLAYER_CREATED sample_rate=$sampleRateHz channels=1 " +
+                        "encoding=PCM16 buffer_size_bytes=$bufferSize " +
+                        "prebuffer_bytes=$startupPrebufferBytes playback_usage=USAGE_VOICE_COMMUNICATION " +
                     "content_type=CONTENT_TYPE_SPEECH",
             )
             writerExecutor.execute { runWriter(session) }
@@ -264,15 +342,18 @@ internal class TtsAudioPlayer(
     }
 
     fun finish(responseId: UUID): Boolean {
+        var shouldNotifyDraining = false
         synchronized(lock) {
             val session = active?.takeIf { it.responseId == responseId } ?: return false
             session.finishRequested = true
+            shouldNotifyDraining = true
             logInfo(
                 "TTS_END_RECEIVED response_id=$responseId elapsedMs=${android.os.SystemClock.elapsedRealtime()}",
             )
             lock.notifyAll()
-            return true
         }
+        if (shouldNotifyDraining) listener.onPlaybackDraining(responseId)
+        return true
     }
 
     fun cancel(responseId: UUID? = null): Boolean {
@@ -289,8 +370,62 @@ internal class TtsAudioPlayer(
         return wasActive
     }
 
+    /**
+     * Stops one response synchronously at the local player boundary.
+     *
+     * stop()/flush() are issued even when AudioTrack.write() is in progress;
+     * release is deferred until that writer leaves the critical section so a
+     * blocking write cannot leak the route or close the track twice.
+     */
+    fun stopForBargeIn(responseId: UUID): TtsLocalStopResult {
+        val requestedAtNs = SystemClock.elapsedRealtimeNanos()
+        var stoppedResponse: UUID? = null
+        val result: TtsLocalStopResult
+        synchronized(lock) {
+            val session = active
+            if (session == null || session.responseId != responseId) {
+                return TtsLocalStopResult(
+                    responseId = responseId,
+                    wasActive = false,
+                    requestedAtNs = requestedAtNs,
+                    audioTrackStopped = false,
+                    audioTrackFlushed = false,
+                    audioTrackReleased = false,
+                    releasePending = false,
+                )
+            }
+            if (session.cancelRequested || session.resourcesStopped) {
+                return TtsLocalStopResult(
+                    responseId = responseId,
+                    wasActive = false,
+                    requestedAtNs = requestedAtNs,
+                    audioTrackStopped = session.audioTrackStopped,
+                    audioTrackFlushed = session.audioTrackFlushed,
+                    audioTrackReleased = session.resourcesStopped,
+                    releasePending = !session.resourcesStopped,
+                )
+            }
+            generation += 1
+            stopSessionResourcesLocked(session)
+            stoppedResponse = session.responseId.takeIf { session.playbackStarted }
+            result = TtsLocalStopResult(
+                responseId = responseId,
+                wasActive = true,
+                requestedAtNs = requestedAtNs,
+                audioTrackStopped = session.audioTrackStopped,
+                audioTrackFlushed = session.audioTrackFlushed,
+                audioTrackReleased = session.resourcesStopped,
+                releasePending = !session.resourcesStopped,
+            )
+            lock.notifyAll()
+        }
+        stoppedResponse?.let(listener::onPlaybackStopped)
+        return result
+    }
+
     fun shutdown() {
         cancel()
+        focusListenerRegistration?.unregister()
         writerExecutor.shutdownNow()
         writerExecutor.awaitTermination(1, TimeUnit.SECONDS)
     }
@@ -316,6 +451,8 @@ internal class TtsAudioPlayer(
                             session.underrunsBefore = session.track.underrunCount()
                             session.track.play()
                             session.playbackStarted = true
+                            session.playbackStartedNs = SystemClock.elapsedRealtimeNanos()
+                            playbackPosition(session)
                             logInfo(
                                 "TTS_PREBUFFER_READY response_id=${session.responseId} " +
                                     "queued_bytes=${session.queuedBytes} " +
@@ -337,7 +474,7 @@ internal class TtsAudioPlayer(
                 }
                 if (notifyStarted) listener.onPlaybackStarted(session.responseId)
                 if (shouldComplete) {
-                    complete(session)
+                    drainAndComplete(session)
                     return
                 }
                 if (chunk != null) writeFully(session, chunk)
@@ -413,12 +550,21 @@ internal class TtsAudioPlayer(
                 written,
                 queueBytesRemaining,
             )
-            listener.onPcmRendered(
+            val writtenFrameStart = synchronized(lock) {
+                session.pcmFramesWritten
+            }
+            val playbackPosition = playbackPosition(session)
+            synchronized(lock) {
+                session.pcmFramesWritten += written.toLong() / BYTES_PER_SAMPLE
+            }
+            listener.onPcmWritten(
                 session.responseId,
                 chunk.sequence,
                 chunk.payload,
                 offset - written,
                 written,
+                writtenFrameStart,
+                playbackPosition,
             )
             if (cancelled) {
                 synchronized(lock) { stopSessionResourcesLocked(session) }
@@ -427,7 +573,38 @@ internal class TtsAudioPlayer(
         }
     }
 
-    private fun complete(session: Session) {
+    private fun drainAndComplete(session: Session) {
+        var finalPosition: TtsPlaybackPosition? = null
+        while (true) {
+            synchronized(lock) {
+                if (active !== session) return
+                val position = playbackPosition(session)
+                val presentedFrames = maxOf(
+                    position.playbackHeadFramePosition ?: 0L,
+                    if (position.playbackHeadFramePosition == null) {
+                        position.timestamp?.framePosition ?: 0L
+                    } else {
+                        0L
+                    },
+                )
+                if (!session.playbackStarted || presentedFrames >= session.pcmFramesWritten) {
+                    session.presentedFrames = maxOf(session.presentedFrames, presentedFrames)
+                    finalPosition = position
+                    break
+                }
+                session.presentedFrames = maxOf(session.presentedFrames, presentedFrames)
+            }
+            try {
+                Thread.sleep(DRAIN_POLL_INTERVAL_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+        }
+        complete(session, finalPosition ?: playbackPosition(session))
+    }
+
+    private fun complete(session: Session, finalPosition: TtsPlaybackPosition) {
         var notify = false
         var summary: PlaybackSummary? = null
         synchronized(lock) {
@@ -439,6 +616,12 @@ internal class TtsAudioPlayer(
             } else {
                 logInfo("TTS_UNDERRUN count=$underrunsAfter delta=0")
             }
+            session.presentedFrames = maxOf(
+                session.presentedFrames,
+                finalPosition.playbackHeadFramePosition
+                    ?: finalPosition.timestamp?.framePosition
+                    ?: 0L,
+            )
             summary = summaryLocked(session, underrunDelta)
             stopSessionResourcesLocked(session)
             notify = session.playbackStarted
@@ -446,7 +629,7 @@ internal class TtsAudioPlayer(
         if (notify) {
             logInfo("TTS_PLAYBACK_COMPLETED response_id=${session.responseId}")
             listener.onPlaybackSummary(session.responseId, summary!!)
-            listener.onPlaybackCompleted(session.responseId)
+            listener.onPlaybackCompletedAt(session.responseId, finalPosition)
         }
     }
 
@@ -466,9 +649,12 @@ internal class TtsAudioPlayer(
 
     private fun stopLocked(notifyStopped: Boolean): UUID? {
         val session = active ?: return null
+        val alreadyStopping = session.cancelRequested || session.resourcesStopped
         generation += 1
         stopSessionResourcesLocked(session)
-        return session.responseId.takeIf { notifyStopped && session.playbackStarted }
+        return session.responseId.takeIf {
+            notifyStopped && session.playbackStarted && !alreadyStopping
+        }
     }
 
     private fun stopSessionResourcesLocked(session: Session) {
@@ -478,16 +664,41 @@ internal class TtsAudioPlayer(
         }
         if (session.writeInProgress) {
             session.cancelRequested = true
+            if (!session.audioTrackStopped) {
+                session.audioTrackStopped = runCatching {
+                    session.track.stop()
+                    true
+                }.getOrDefault(false)
+            }
+            if (!session.audioTrackFlushed) {
+                session.audioTrackFlushed = runCatching {
+                    session.track.flush()
+                    true
+                }.getOrDefault(false)
+            }
             lock.notifyAll()
             return
         }
         session.resourcesStopped = true
-        if (active === session) active = null
-        queue.clear()
+        if (active === session) {
+            active = null
+            queue.clear()
+        }
         session.queuedBytes = 0
-        runCatching { session.track.stop() }
-        runCatching { session.track.flush() }
+        if (!session.audioTrackStopped) {
+            session.audioTrackStopped = runCatching {
+                session.track.stop()
+                true
+            }.getOrDefault(false)
+        }
+        if (!session.audioTrackFlushed) {
+            session.audioTrackFlushed = runCatching {
+                session.track.flush()
+                true
+            }.getOrDefault(false)
+        }
         runCatching { session.track.release() }
+        session.routeLease?.release()
         lock.notifyAll()
     }
 
@@ -504,7 +715,39 @@ internal class TtsAudioPlayer(
             partialWrites = session.partialWrites,
             writeErrors = session.writeErrors,
             underrunDelta = underrunDelta,
+            pcmFramesWritten = session.pcmFramesWritten,
+            presentedFrames = session.presentedFrames,
         )
+
+    private fun playbackPosition(session: Session): TtsPlaybackPosition {
+        val measuredAtNs = SystemClock.elapsedRealtimeNanos()
+        val rawHead = runCatching { session.track.playbackHeadPosition() }.getOrNull()
+        val unwrappedHead = if (rawHead == null) {
+            null
+        } else {
+            val previous = session.lastRawPlaybackHead
+            if (previous == null) {
+                session.lastRawPlaybackHead = rawHead
+                session.unwrappedPlaybackHead = rawHead.toLong()
+            } else {
+                val delta = rawHead.toLong() - previous.toLong()
+                val wrapAdjusted = when {
+                    delta < Int.MIN_VALUE.toLong() -> delta + (1L shl 32)
+                    delta > Int.MAX_VALUE.toLong() -> delta - (1L shl 32)
+                    else -> delta
+                }
+                session.unwrappedPlaybackHead += wrapAdjusted
+                session.lastRawPlaybackHead = rawHead
+            }
+            session.unwrappedPlaybackHead
+        }
+        val timestamp = runCatching { session.track.timestamp() }.getOrNull()
+        val relativeHead = unwrappedHead?.let {
+            if (session.playbackHeadOrigin == null) session.playbackHeadOrigin = it
+            it - (session.playbackHeadOrigin ?: it)
+        }
+        return TtsPlaybackPosition(relativeHead, timestamp, measuredAtNs)
+    }
 
     private fun queuedDurationMs(bytes: Int): Int =
         (bytes * 1_000L / (TTS_SAMPLE_RATE_HZ * BYTES_PER_SAMPLE)).toInt()
@@ -515,5 +758,6 @@ internal class TtsAudioPlayer(
         const val BYTES_PER_SAMPLE = 2
         const val STARTUP_PREBUFFER_BYTES = TTS_SAMPLE_RATE_HZ * BYTES_PER_SAMPLE * 200 / 1_000
         const val MAX_QUEUE_BYTES = TTS_SAMPLE_RATE_HZ * BYTES_PER_SAMPLE * 2
+        const val DRAIN_POLL_INTERVAL_MS = 10L
     }
 }
