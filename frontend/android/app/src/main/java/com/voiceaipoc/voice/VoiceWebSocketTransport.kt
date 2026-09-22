@@ -104,6 +104,7 @@ class VoiceWebSocketTransport(
         val status: String? = null,
         val errorCode: String? = null,
         val retryable: Boolean? = null,
+        val stopReason: String? = null,
     )
 
     interface Listener {
@@ -115,6 +116,7 @@ class VoiceWebSocketTransport(
             turnId: String?,
             responseId: String?,
             timestampMs: Long,
+            stopReason: String? = null,
         ) = Unit
 
         fun onServerEvent(
@@ -225,13 +227,13 @@ class VoiceWebSocketTransport(
                 notifyTtsPlayback("tts.playback.completed", responseId)
             }
 
-            override fun onPlaybackStopped(responseId: java.util.UUID) {
+            override fun onPlaybackStopped(responseId: java.util.UUID, reason: String?) {
                 farEndReferenceBuffer.onPlaybackStopped(responseId.toString())
                 ttsLogInfo(
-                    "TTS_AUDIO_RENDER_ENDED response_id=$responseId reason=stopped " +
+                    "TTS_AUDIO_RENDER_ENDED response_id=$responseId reason=${reason ?: "stopped"} " +
                         "elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
-                notifyTtsPlayback("tts.playback.stopped", responseId)
+                notifyTtsPlayback("tts.playback.stopped", responseId, reason)
             }
 
             override fun onPlaybackError(responseId: java.util.UUID, errorCode: String) {
@@ -941,6 +943,24 @@ class VoiceWebSocketTransport(
         return ack
     }
 
+    fun recordBargeInDecision(
+        eventType: String,
+        responseId: String?,
+        monotonicNs: Long,
+        metadata: Map<String, Any?>,
+    ) {
+        val current = synchronized(stateLock) { status }
+        logLatency(
+            sessionId = current.sessionId,
+            turnId = current.turnId,
+            responseId = responseId,
+            component = "android",
+            event = eventType.lowercase(Locale.ROOT),
+            monotonicNs = monotonicNs,
+            metadata = metadata,
+        )
+    }
+
     private val socketListener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             if (!isCurrentSocket(webSocket)) {
@@ -1590,7 +1610,11 @@ class VoiceWebSocketTransport(
         }
     }
 
-    private fun notifyTtsPlayback(eventType: String, responseId: java.util.UUID) {
+    private fun notifyTtsPlayback(
+        eventType: String,
+        responseId: java.util.UUID,
+        stopReason: String? = null,
+    ) {
         val current = synchronized(stateLock) { status }
         val nowNs = SystemClock.elapsedRealtimeNanos()
         val durationMs = if (eventType == "tts.playback.completed") {
@@ -1610,7 +1634,10 @@ class VoiceWebSocketTransport(
             component = "android",
             event = eventType.replace('.', '_'),
             durationMs = durationMs,
-            metadata = mapOf("duration_basis" to "android_elapsed_realtime"),
+            metadata = mapOf(
+                "duration_basis" to "android_elapsed_realtime",
+                "stop_reason" to stopReason,
+            ),
         )
         listener.onTtsPlayback(
             eventType,
@@ -1618,6 +1645,7 @@ class VoiceWebSocketTransport(
             current.turnId,
             responseId.toString(),
             System.currentTimeMillis(),
+            stopReason,
         )
     }
 

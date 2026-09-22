@@ -63,7 +63,7 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
                     }
                 )
                 continue
-            if message.role.value == "assistant" and message.tool_calls:
+            if message.role.value == "assistant":
                 if message.content:
                     input_items.append(
                         {

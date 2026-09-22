@@ -114,6 +114,39 @@ async def test_openai_responses_maps_native_text_usage_and_request_shape() -> No
     assert completed.provider_request_id == "resp-1"
 
 
+def test_openai_responses_serializes_plain_assistant_history_as_output_text() -> None:
+    request = _request().model_copy(
+        update={
+            "messages": (
+                LLMMessage(role=LLMRole.USER, content="Hello"),
+                LLMMessage(role=LLMRole.ASSISTANT, content="Hello! How can I help?"),
+                LLMMessage(role=LLMRole.USER, content="Tell me a short joke."),
+            )
+        }
+    )
+
+    payload = OpenAIResponsesProvider(
+        _settings("openai", "https://api.openai.com/v1")
+    )._build_payload(request)
+
+    assert payload["input"] == [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Hello"}],
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "output_text", "text": "Hello! How can I help?"}
+            ],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Tell me a short joke."}],
+        },
+    ]
+
+
 @pytest.mark.asyncio
 async def test_openai_responses_maps_function_call_fragments_once() -> None:
     tool = LLMToolDefinition(

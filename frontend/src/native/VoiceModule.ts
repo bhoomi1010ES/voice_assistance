@@ -774,6 +774,7 @@ export type VoiceGatewayEvent = {
   code?: string | null;
   message?: string | null;
   retryable?: boolean | null;
+  stopReason?: string | null;
 };
 
 export type VoiceOutputPreferences = {

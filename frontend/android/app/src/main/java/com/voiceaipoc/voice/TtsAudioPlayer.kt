@@ -137,7 +137,7 @@ internal class TtsAudioPlayer(
         fun onPlaybackCompletedAt(responseId: UUID, position: TtsPlaybackPosition) {
             onPlaybackCompleted(responseId)
         }
-        fun onPlaybackStopped(responseId: UUID) = Unit
+        fun onPlaybackStopped(responseId: UUID, reason: String? = null) = Unit
         fun onPlaybackError(responseId: UUID, errorCode: String) = Unit
         fun onPcmEnqueued(responseId: UUID, sequence: Long, bytes: Int, queuedBytes: Int) = Unit
         fun onPcmWrite(
@@ -275,7 +275,7 @@ internal class TtsAudioPlayer(
             writerExecutor.execute { runWriter(session) }
             lock.notifyAll()
         }
-        stoppedResponse?.let(listener::onPlaybackStopped)
+        stoppedResponse?.let { listener.onPlaybackStopped(it) }
         return true
     }
 
@@ -366,7 +366,7 @@ internal class TtsAudioPlayer(
             stoppedResponse = stopLocked(notifyStopped = true)
             lock.notifyAll()
         }
-        stoppedResponse?.let(listener::onPlaybackStopped)
+        stoppedResponse?.let { listener.onPlaybackStopped(it) }
         return wasActive
     }
 
@@ -419,7 +419,7 @@ internal class TtsAudioPlayer(
             )
             lock.notifyAll()
         }
-        stoppedResponse?.let(listener::onPlaybackStopped)
+        stoppedResponse?.let { listener.onPlaybackStopped(it, STOP_REASON_BARGE_IN) }
         return result
     }
 
@@ -753,6 +753,7 @@ internal class TtsAudioPlayer(
         (bytes * 1_000L / (TTS_SAMPLE_RATE_HZ * BYTES_PER_SAMPLE)).toInt()
 
     private companion object {
+        const val STOP_REASON_BARGE_IN = "barge_in"
         const val TAG = "VoiceAI-TTS"
         const val TTS_SAMPLE_RATE_HZ = 24_000
         const val BYTES_PER_SAMPLE = 2

@@ -112,6 +112,7 @@ class VoiceModule(
                 turnId: String?,
                 responseId: String?,
                 timestampMs: Long,
+                stopReason: String?,
             ) {
                 when (eventType) {
                     "tts.playback.started" -> bargeInDetector.reset("playback_started")
@@ -127,7 +128,7 @@ class VoiceModule(
                     responseId,
                     null,
                     timestampMs,
-                    null,
+                    VoiceWebSocketTransport.ServerEventPayload(stopReason = stopReason),
                 )
             }
 
@@ -902,6 +903,7 @@ class VoiceModule(
         val status = eventPayload?.status
         val errorCode = eventPayload?.errorCode
         val retryable = eventPayload?.retryable
+        val stopReason = eventPayload?.stopReason
         val metrics = eventPayload?.metrics
         val usage = eventPayload?.usage
         val payload = Arguments.createMap().apply {
@@ -939,6 +941,7 @@ class VoiceModule(
             if (status == null) putNull("status") else putString("status", status)
             if (errorCode == null) putNull("code") else putString("code", errorCode)
             if (retryable == null) putNull("retryable") else putBoolean("retryable", retryable)
+            if (stopReason == null) putNull("stopReason") else putString("stopReason", stopReason)
             if (metrics == null) {
                 putNull("metrics")
             } else {
@@ -1206,6 +1209,46 @@ class VoiceModule(
                     "local_stop_latency_ms=${playbackStopAck?.localStopLatencyMs ?: "NONE"}",
             ),
         )
+        if (decision.event == EVENT_BARGE_IN_CONFIRMED ||
+            decision.event == EVENT_BARGE_IN_REJECTED_ECHO ||
+            decision.event == EVENT_BARGE_IN_DEGRADED
+        ) {
+            voiceGateway.recordBargeInDecision(
+                eventType = decision.event,
+                responseId = decision.responseId,
+                monotonicNs = input.monotonicTimestampNs,
+                metadata = mapOf(
+                    "state" to decision.state.name,
+                    "reason" to decision.reason,
+                    "segment_duration_ms" to decision.segmentDurationMs,
+                    "probability" to input.probability,
+                    "playback_state" to input.playbackState,
+                    "playback_active" to input.playbackActive,
+                    "playback_position_ms" to input.playbackPositionMs,
+                    "reference_ready" to input.referenceReady,
+                    "reference_usable" to decision.referenceUsable,
+                    "timestamp_confidence" to decision.timestampConfidence,
+                    "aec_healthy" to decision.aecHealthy,
+                    "communication_mode_active" to input.routeHealth.communicationModeActive,
+                    "aec_available" to input.routeHealth.aecAvailable,
+                    "aec_enabled" to input.routeHealth.aecEnabled,
+                    "aec_effectiveness" to input.routeHealth.aecEffectiveness,
+                    "automatic_loudspeaker_barge_in_allowed" to
+                        input.routeHealth.automaticLoudspeakerBargeInAllowed,
+                    "echo_similarity" to input.echoSimilarity,
+                    "echo_coherence" to input.echoCoherence,
+                    "estimated_delay_ms" to input.estimatedDelayMs,
+                    "far_end_rms" to input.farEndRms,
+                    "mic_rms" to input.micRms,
+                    "near_end_residual_ratio" to input.nearEndResidualRatio,
+                    "near_end_far_end_energy_ratio" to input.nearEndFarEndEnergyRatio,
+                    "discontinuous" to input.discontinuous,
+                    "local_stop_requested" to playbackStopAck?.localStopRequested,
+                    "local_stop_completed" to playbackStopAck?.localStopCompleted,
+                    "local_stop_latency_ms" to playbackStopAck?.localStopLatencyMs,
+                ),
+            )
+        }
         if (!reactApplicationContext.hasActiveReactInstance()) {
             return
         }

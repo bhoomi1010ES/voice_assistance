@@ -20,6 +20,7 @@ services:
       start_period: 5s
 
   redis:
+    profiles: ['docker-redis']
     image: redis:7.4-alpine
     restart: unless-stopped
     command: ['redis-server', '--appendonly', 'yes']
@@ -45,12 +46,15 @@ services:
       PORT: 8000
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-voice}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-voice_assistance}
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://host.docker.internal:6379/0
+      STT_ENGINE: ${STT_ENGINE:-remote}
+      STT_API_URL: ${STT_API_URL:?STT_API_URL is required}
+      STT_API_KEY: ${STT_API_KEY:?STT_API_KEY is required}
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     ports:
       - '${BACKEND_PORT:-8000}:8000'
     healthcheck:

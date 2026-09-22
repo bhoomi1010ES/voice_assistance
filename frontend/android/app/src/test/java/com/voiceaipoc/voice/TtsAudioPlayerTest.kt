@@ -165,8 +165,10 @@ class TtsAudioPlayerTest {
             writeStarted = writeStarted,
             releaseWrite = releaseWrite,
         )
+        val events = Events()
         val player = TtsAudioPlayer(
             trackFactory = factory,
+            listener = events,
             startupPrebufferBytes = 4,
             maxQueueBytes = 64,
         )
@@ -181,6 +183,7 @@ class TtsAudioPlayerTest {
             assertTrue(first.audioTrackStopped)
             assertTrue(first.audioTrackFlushed)
             assertTrue(first.releasePending)
+            assertEquals(listOf("barge_in"), events.stopReasons)
             assertFalse(player.stopForBargeIn(responseId).wasActive)
 
             releaseWrite.countDown()
@@ -300,9 +303,13 @@ class TtsAudioPlayerTest {
         val completed = CountDownLatch(2)
         val error = CountDownLatch(1)
         val summaries = CopyOnWriteArrayList<TtsAudioPlayer.PlaybackSummary>()
+        val stopReasons = CopyOnWriteArrayList<String?>()
 
         override fun onPlaybackStarted(responseId: UUID) = started.countDown()
         override fun onPlaybackCompleted(responseId: UUID) = completed.countDown()
+        override fun onPlaybackStopped(responseId: UUID, reason: String?) {
+            stopReasons += reason
+        }
         override fun onPlaybackError(responseId: UUID, errorCode: String) = error.countDown()
         override fun onPlaybackSummary(
             responseId: UUID,

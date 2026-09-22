@@ -43,6 +43,7 @@ class BargeInAdapter implements VoiceSocketAdapter {
   currentStatus = status();
   readonly calls: string[] = [];
   readonly turnIncludesPreRoll: boolean[] = [];
+  readonly cancelReasons: Array<string | null | undefined> = [];
   cancelResponseDelayMs = 0;
   private readonly eventListeners = new Set<
     (event: VoiceGatewayEvent) => void
@@ -91,8 +92,9 @@ class BargeInAdapter implements VoiceSocketAdapter {
     return this.currentStatus;
   }
 
-  async cancelResponse() {
+  async cancelResponse(reason?: string | null) {
     this.calls.push('cancelResponse');
+    this.cancelReasons.push(reason);
     this.currentStatus = status({
       state: 'SESSION_READY',
       connected: true,
@@ -291,6 +293,126 @@ test('native confirmation stops locally before cancellation and replacement turn
     adapter.calls.indexOf('cancelResponse'),
   );
   expect(adapter.turnIncludesPreRoll).toEqual([false, true]);
+  expect(socket.getSnapshot().turn).toBe('starting');
+});
+
+test('barge-in playback stop cannot finalize before native confirmation', async () => {
+  const adapter = new NativeBargeInAdapter();
+  const { socket } = await prepareTurn(adapter);
+
+  adapter.emitEvent({
+    event: 'server.turn.completed',
+    sessionId: SESSION_ID,
+    turnId: 'turn-1',
+    responseId: 'response-1',
+    eventId: 'server-completed-before-native-stop',
+    timestampMs: 5,
+  });
+  adapter.emitEvent({
+    event: 'tts.playback.stopped',
+    sessionId: SESSION_ID,
+    turnId: 'turn-1',
+    responseId: 'response-1',
+    eventId: 'native-barge-in-stop',
+    timestampMs: 6,
+    stopReason: 'barge_in',
+  });
+
+  expect(socket.getSnapshot().turnId).toBe('turn-1');
+  expect(socket.getSnapshot().responseId).toBe('response-1');
+
+  adapter.emitBargeIn({
+    event: 'BARGE_IN_CONFIRMED',
+    responseId: 'response-1',
+    reason: 'near_end_confirmed',
+    localStopRequested: true,
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  expect(adapter.cancelReasons).toContain('barge_in');
+  expect(adapter.turnIncludesPreRoll).toEqual([false, true]);
+  expect(socket.getSnapshot().turn).toBe('starting');
+});
+
+test('native confirmation interrupts when local stop reports inactive', async () => {
+  const adapter = new NativeBargeInAdapter();
+  const { socket } = await prepareTurn(adapter);
+
+  adapter.emitBargeIn({
+    event: 'BARGE_IN_CONFIRMED',
+    responseId: 'response-1',
+    reason: 'near_end_confirmed',
+    localStopRequested: false,
+    localStopCompleted: false,
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  expect(adapter.calls).not.toContain('stopPlayback');
+  expect(adapter.cancelReasons).toContain('barge_in');
+  expect(adapter.turnIncludesPreRoll).toEqual([false, true]);
+  expect(socket.getSnapshot().turn).toBe('starting');
+});
+
+test('native confirmation interrupts after the old turn id was finalized', async () => {
+  const adapter = new NativeBargeInAdapter();
+  const { socket } = await prepareTurn(adapter);
+
+  adapter.emitEvent({
+    event: 'server.turn.completed',
+    sessionId: SESSION_ID,
+    turnId: 'turn-1',
+    responseId: 'response-1',
+    eventId: 'server-completed-before-untagged-stop',
+    timestampMs: 5,
+  });
+  adapter.emitEvent({
+    event: 'tts.playback.stopped',
+    sessionId: SESSION_ID,
+    turnId: 'turn-1',
+    responseId: 'response-1',
+    eventId: 'untagged-stop',
+    timestampMs: 6,
+  });
+  expect(socket.getSnapshot().turnId).toBeNull();
+  expect(socket.getSnapshot().responseId).toBeNull();
+
+  adapter.emitBargeIn({
+    event: 'BARGE_IN_CONFIRMED',
+    responseId: 'response-1',
+    reason: 'near_end_confirmed',
+    localStopRequested: false,
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  expect(adapter.cancelReasons).toContain('barge_in');
+  expect(adapter.turnIncludesPreRoll).toEqual([false, true]);
+  expect(socket.getSnapshot().turn).toBe('starting');
+});
+
+test('natural playback completion still finalizes and resumes listening', async () => {
+  const adapter = new NativeBargeInAdapter();
+  const { socket } = await prepareTurn(adapter);
+
+  adapter.emitEvent({
+    event: 'server.turn.completed',
+    sessionId: SESSION_ID,
+    turnId: 'turn-1',
+    responseId: 'response-1',
+    eventId: 'server-completed-before-natural-playback',
+    timestampMs: 5,
+  });
+  adapter.emitEvent({
+    event: 'tts.playback.completed',
+    sessionId: SESSION_ID,
+    turnId: 'turn-1',
+    responseId: 'response-1',
+    eventId: 'natural-playback-completed',
+    timestampMs: 6,
+  });
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+  expect(adapter.calls).not.toContain('cancelResponse');
+  expect(adapter.turnIncludesPreRoll).toEqual([false, false]);
   expect(socket.getSnapshot().turn).toBe('starting');
 });
 

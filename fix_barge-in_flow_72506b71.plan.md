@@ -4,16 +4,16 @@ overview: "Barge-in lifecycle is implemented but broken on the live Oppo path: n
 todos:
   - id: fix-stop-confirm-race
     content: "VoiceSocket: barge-in pending flag; skip finalize on barge-in playback.stopped; interrupt without requiring turnId; localStopRequested not a hard gate"
-    status: pending
+    status: completed
   - id: tag-native-stop
     content: Tag native tts.playback.stopped as barge-in so JS can distinguish it from natural stop
-    status: pending
+    status: completed
   - id: forward-detector-traces
     content: Emit BARGE_IN_DECISION (confirm/echo/no_safe + route health) into client latency traces
-    status: pending
+    status: completed
   - id: js-race-tests
     content: Extend phase9-barge-in.test.ts for stopped-before-confirm, missing turnId, localStopRequested false
-    status: pending
+    status: completed
   - id: oppo-gate-if-proven
     content: "Only if traces show no_safe_acoustic_path on SPEAKER: relax MODE_IN_COMMUNICATION/AEC hard block using degraded confirm + echo reject"
     status: pending

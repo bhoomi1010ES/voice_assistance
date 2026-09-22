@@ -408,6 +408,7 @@ export type NormalizedVoiceEvent = {
   errorMessage?: string;
   retryable?: boolean;
   sampleRateHz?: number | null;
+  stopReason?: string;
 };
 
 /**
@@ -459,6 +460,10 @@ export function normalizeVoiceGatewayEvent(
   const retryable = readBoolean(record.retryable);
   const confirmationStatus = readString(record.status, 32);
   const sampleRateHz = readNumber(record.sampleRateHz ?? record.sample_rate_hz);
+  const stopReason = readString(
+    record.stopReason ?? record.stop_reason,
+    MAX_ID_LENGTH,
+  );
   return {
     type: rawType as VoiceServerEventType,
     eventId: readString(record.eventId ?? record.event_id, MAX_ID_LENGTH),
@@ -477,6 +482,7 @@ export function normalizeVoiceGatewayEvent(
     ...(errorMessage ? { errorMessage } : {}),
     ...(retryable !== null ? { retryable } : {}),
     ...(sampleRateHz !== null ? { sampleRateHz } : {}),
+    ...(stopReason ? { stopReason } : {}),
   };
 }
 
@@ -527,6 +533,8 @@ export class VoiceSocket {
   private responseServerCompleted = false;
   private ttsPlaybackTerminal = true;
   private bargeInInFlight = false;
+  /** Response whose native playback stop is waiting for its confirm event. */
+  private pendingNativeBargeInResponseId: string | null = null;
   private autoCommitBargeInTurn = false;
   private bargeInSpeechEndedPending = false;
   private bargeInCommitInFlight = false;
@@ -711,7 +719,9 @@ export class VoiceSocket {
       this.snapshot.connection !== 'connected' ||
       this.snapshot.session !== 'starting'
     ) {
-      return Promise.reject(new Error('Start a voice session before starting a turn.'));
+      return Promise.reject(
+        new Error('Start a voice session before starting a turn.'),
+      );
     }
 
     return new Promise((resolve, reject) => {
@@ -797,7 +807,9 @@ export class VoiceSocket {
         this.autoListenSuppressed = false;
         this.setSnapshot({ followUpQueued: true, error: null });
       } else if (this.snapshot.turn !== 'idle') {
-        throw new Error('Finish the current voice turn before starting another.');
+        throw new Error(
+          'Finish the current voice turn before starting another.',
+        );
       } else {
         this.autoListenSuppressed = false;
       }
@@ -1620,6 +1632,7 @@ export class VoiceSocket {
         );
         this.responseServerCompleted = false;
         this.ttsPlaybackTerminal = true;
+        this.pendingNativeBargeInResponseId = null;
         this.confirmationAwaitingVoice = false;
         this.confirmationPromptPlaybackCompleted = false;
         this.confirmationTurnStartInFlight = false;
@@ -1771,6 +1784,12 @@ export class VoiceSocket {
         });
         break;
       case 'tts.started':
+        if (
+          this.pendingNativeBargeInResponseId &&
+          this.pendingNativeBargeInResponseId !== event.responseId
+        ) {
+          this.pendingNativeBargeInResponseId = null;
+        }
         this.ttsPlaybackTerminal = false;
         if (this.ttsPlaybackResponseId !== event.responseId) {
           this.ttsPlaybackResponseId = event.responseId;
@@ -1830,7 +1849,14 @@ export class VoiceSocket {
         this.maybeStartVoiceConfirmationTurn();
         break;
       case 'tts.playback.stopped':
-      case 'tts.cancelled':
+      case 'tts.cancelled': {
+        const nativeBargeInStop =
+          event.type === 'tts.playback.stopped' &&
+          event.stopReason === 'barge_in' &&
+          Boolean(event.responseId);
+        if (nativeBargeInStop) {
+          this.pendingNativeBargeInResponseId = event.responseId;
+        }
         this.confirmationPromptPlaybackCompleted = false;
         this.ttsPlaybackTerminal = true;
         this.ttsPlaybackStartedAtMs = null;
@@ -1840,9 +1866,12 @@ export class VoiceSocket {
           ttsResponseId: event.responseId ?? this.snapshot.ttsResponseId,
           ttsError: null,
         });
-        this.finalizeResponseIfReady();
-        this.maybeStartVoiceConfirmationTurn();
+        if (!nativeBargeInStop) {
+          this.finalizeResponseIfReady();
+          this.maybeStartVoiceConfirmationTurn();
+        }
         break;
+      }
       case 'tts.failed':
         this.confirmationPromptPlaybackCompleted = false;
         this.ttsPlaybackTerminal = true;
@@ -1970,7 +1999,8 @@ export class VoiceSocket {
         if (isRecoverableServerError(event.errorCode)) {
           if (event.errorCode?.toLowerCase() === 'session_not_ready') {
             this.setSnapshot({
-              turn: this.snapshot.turn === 'starting' ? 'idle' : this.snapshot.turn,
+              turn:
+                this.snapshot.turn === 'starting' ? 'idle' : this.snapshot.turn,
               speechDetected: false,
               error:
                 'The voice session is still starting. Try again in a moment.',
@@ -2023,6 +2053,7 @@ export class VoiceSocket {
     this.responseServerCompleted = false;
     this.ttsPlaybackTerminal = true;
     this.bargeInInFlight = false;
+    this.pendingNativeBargeInResponseId = null;
     this.confirmationAwaitingVoice = false;
     this.confirmationPromptPlaybackCompleted = false;
     this.confirmationTurnStartInFlight = false;
@@ -2111,7 +2142,8 @@ export class VoiceSocket {
     if (
       !this.responseServerCompleted ||
       !this.ttsPlaybackTerminal ||
-      this.bargeInInFlight
+      this.bargeInInFlight ||
+      this.pendingNativeBargeInResponseId !== null
     ) {
       return;
     }
@@ -2303,13 +2335,14 @@ export class VoiceSocket {
     const event = input as Partial<BargeInSemanticEvent>;
     if (
       event.event !== 'BARGE_IN_CONFIRMED' ||
-      event.localStopRequested !== true ||
       typeof event.responseId !== 'string'
     ) {
       return;
     }
     const currentResponseId =
-      this.snapshot.responseId ?? this.snapshot.ttsResponseId;
+      this.pendingNativeBargeInResponseId ??
+      this.snapshot.responseId ??
+      this.snapshot.ttsResponseId;
     if (currentResponseId !== event.responseId) {
       console.info('BARGE_IN_NATIVE_STALE_IGNORED', {
         eventResponseId: event.responseId,
@@ -2319,7 +2352,10 @@ export class VoiceSocket {
       });
       return;
     }
-    this.interruptForBargeIn(event as BargeInSemanticEvent).catch(() => undefined);
+    this.pendingNativeBargeInResponseId = event.responseId;
+    this.interruptForBargeIn(event as BargeInSemanticEvent).catch(
+      () => undefined,
+    );
   }
 
   private async interruptForBargeIn(
@@ -2331,7 +2367,7 @@ export class VoiceSocket {
 
     const turnId = this.snapshot.turnId;
     const responseId = nativeEvent?.responseId ?? this.snapshot.responseId;
-    if (!turnId || !responseId) {
+    if (!responseId) {
       return;
     }
     if (
@@ -2342,7 +2378,9 @@ export class VoiceSocket {
     }
     if (
       nativeEvent != null &&
-      (this.snapshot.responseId ?? this.snapshot.ttsResponseId) !== responseId
+      (this.pendingNativeBargeInResponseId ??
+        this.snapshot.responseId ??
+        this.snapshot.ttsResponseId) !== responseId
     ) {
       return;
     }
@@ -2413,13 +2451,15 @@ export class VoiceSocket {
     // Retire the old correlation before any asynchronous work so late text
     // deltas and audio chunks cannot leak into the new user turn.
     this.retireCorrelation(null, turnId, responseId);
-    this.applyConversationEvent({
-      type: 'assistant.response.cancelled',
-      sessionId: this.snapshot.sessionId,
-      turnId,
-      responseId,
-      timestampMs: this.now(),
-    });
+    if (turnId) {
+      this.applyConversationEvent({
+        type: 'assistant.response.cancelled',
+        sessionId: this.snapshot.sessionId,
+        turnId,
+        responseId,
+        timestampMs: this.now(),
+      });
+    }
     this.markCurrentTranscriptCancelled();
     this.setSnapshot({
       turn: 'cancelled',
@@ -2436,7 +2476,7 @@ export class VoiceSocket {
         // Native confirmation already stopped/flushed the response-scoped
         // AudioTrack before this event crossed the bridge. Compatibility
         // adapters without native semantics retain the legacy local stop.
-        if (!nativeEvent?.localStopRequested) {
+        if (!nativeEvent) {
           await this.adapter.stopPlayback?.();
         }
       } catch {
@@ -2534,6 +2574,9 @@ export class VoiceSocket {
       });
     } finally {
       this.bargeInInFlight = false;
+      if (this.pendingNativeBargeInResponseId === responseId) {
+        this.pendingNativeBargeInResponseId = null;
+      }
     }
   }
 
@@ -3468,6 +3511,7 @@ export class VoiceSocket {
     this.ttsPlaybackTerminal = true;
     this.autoListenSuppressed = false;
     this.bargeInInFlight = false;
+    this.pendingNativeBargeInResponseId = null;
     this.confirmationAwaitingVoice = false;
     this.confirmationPromptPlaybackCompleted = false;
     this.confirmationTurnStartInFlight = false;
@@ -3813,7 +3857,9 @@ function isTerminalSessionError(code: string | undefined): boolean {
 }
 
 function isRecoverableServerError(code: string | undefined): boolean {
-  return Boolean(code && RECOVERABLE_SERVER_ERROR_CODES.has(code.toLowerCase()));
+  return Boolean(
+    code && RECOVERABLE_SERVER_ERROR_CODES.has(code.toLowerCase()),
+  );
 }
 
 function isAuthenticationExpiredError(
