@@ -250,7 +250,7 @@ async def test_graph_repository_resolution_ownership_traversal_and_evidence(grap
             await add_edge(
                 user_a_id,
                 alpha,
-                "SHIPS_WITH",
+                "RELATED_TO",
                 release,
                 "alpha_release",
                 confidence=0.8,
@@ -266,14 +266,14 @@ async def test_graph_repository_resolution_ownership_traversal_and_evidence(grap
             await add_edge(
                 user_a_id,
                 entities[("a", "cycle_a")],
-                "CYCLE",
+                "RELATED_TO",
                 entities[("a", "cycle_b")],
                 "cycle_ab",
             )
             await add_edge(
                 user_a_id,
                 entities[("a", "cycle_b")],
-                "CYCLE",
+                "RELATED_TO",
                 entities[("a", "cycle_a")],
                 "cycle_ba",
             )
@@ -282,7 +282,7 @@ async def test_graph_repository_resolution_ownership_traversal_and_evidence(grap
             valid_edge = await add_edge(
                 user_a_id,
                 current,
-                "CURRENT_FACT",
+                "RELATED_TO",
                 entities[("a", "current_valid")],
                 "current_valid",
                 valid_from=as_of,
@@ -291,7 +291,7 @@ async def test_graph_repository_resolution_ownership_traversal_and_evidence(grap
             await add_edge(
                 user_a_id,
                 current,
-                "FUTURE_FACT",
+                "RELATED_TO",
                 entities[("a", "current_future")],
                 "current_future",
                 valid_from=tomorrow,
@@ -299,7 +299,7 @@ async def test_graph_repository_resolution_ownership_traversal_and_evidence(grap
             await add_edge(
                 user_a_id,
                 current,
-                "EXPIRED_FACT",
+                "RELATED_TO",
                 entities[("a", "current_expired")],
                 "current_expired",
                 valid_to=yesterday,
@@ -307,14 +307,14 @@ async def test_graph_repository_resolution_ownership_traversal_and_evidence(grap
             inactive_edge = await add_edge(
                 user_a_id,
                 current,
-                "INACTIVE_EVIDENCE",
+                "RELATED_TO",
                 entities[("a", "current_inactive")],
                 "current_inactive",
             )
             superseded_edge = await add_edge(
                 user_a_id,
                 current,
-                "SUPERSEDED_EDGE",
+                "RELATED_TO",
                 entities[("a", "current_superseded")],
                 "current_superseded",
             )
@@ -342,7 +342,7 @@ async def test_graph_repository_resolution_ownership_traversal_and_evidence(grap
                     EntityRelationship(
                         user_id=user_a_id,
                         source_entity_id=benchmark_root.id,
-                        relationship_type="BENCHMARK_FIRST",
+                        relationship_type="WORKS_ON",
                         target_entity_id=node.id,
                         source_memory_id=memories[f"bench_root_{index}"].id,
                         confidence=1.0 - index / 100,
@@ -353,7 +353,7 @@ async def test_graph_repository_resolution_ownership_traversal_and_evidence(grap
                     EntityRelationship(
                         user_id=user_a_id,
                         source_entity_id=node.id,
-                        relationship_type="BENCHMARK_SECOND",
+                        relationship_type="TESTED_BY",
                         target_entity_id=benchmark_sink.id,
                         source_memory_id=memories[f"bench_sink_{index}"].id,
                         confidence=1.0 - index / 100,
@@ -509,7 +509,7 @@ async def test_graph_repository_resolution_ownership_traversal_and_evidence(grap
                     session,
                     user_id=user_a_id,
                     source_entity_id=root.id,
-                    relationship_type="SELF",
+                    relationship_type="WORKS_ON",
                     target_entity_id=root.id,
                     source_memory_id=memories["rahul_alpha"].id,
                     confidence=1.0,
@@ -520,7 +520,7 @@ async def test_graph_repository_resolution_ownership_traversal_and_evidence(grap
                     session,
                     user_id=user_a_id,
                     source_entity_id=root.id,
-                    relationship_type="CROSS_USER",
+                    relationship_type="WORKS_ON",
                     target_entity_id=beta.id,
                     source_memory_id=memories["rahul_alpha"].id,
                     confidence=1.0,
@@ -530,7 +530,7 @@ async def test_graph_repository_resolution_ownership_traversal_and_evidence(grap
                     session,
                     user_id=user_a_id,
                     source_entity_id=root.id,
-                    relationship_type="CROSS_MEMORY",
+                    relationship_type="WORKS_ON",
                     target_entity_id=alpha.id,
                     source_memory_id=memories["user_b_edge"].id,
                     confidence=1.0,
@@ -777,7 +777,7 @@ async def test_graph_repository_resolution_ownership_traversal_and_evidence(grap
                         direction="outgoing",
                         depth=depth,
                         as_of=as_of,
-                        relationship_type="BENCHMARK_FIRST" if depth == 1 else None,
+                        relationship_type="WORKS_ON" if depth == 1 else None,
                         max_paths=2,
                     )
                     samples_ms.append((time.perf_counter_ns() - started_ns) / 1_000_000)

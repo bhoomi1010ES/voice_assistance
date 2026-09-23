@@ -795,6 +795,19 @@ export class VoiceSocket {
       }
       this.clearAutoListenTimer();
       this.clearSpeechEndCommitTimer();
+      if (['failed', 'cancelled', 'completed'].includes(this.snapshot.turn)) {
+        this.retireCurrentTurnCorrelation();
+        this.setSnapshot({
+          turn: 'idle',
+          turnId: null,
+          responseId: null,
+          ttsPlaybackState: 'idle',
+          ttsResponseId: null,
+          ttsError: null,
+          waitPhrase: null,
+          followUpQueued: false,
+        });
+      }
       const queueFollowUp =
         ['committing', 'waiting'].includes(this.snapshot.turn) &&
         !this.confirmationAwaitingVoice;
@@ -813,20 +826,6 @@ export class VoiceSocket {
       } else {
         this.autoListenSuppressed = false;
       }
-      if (['failed', 'cancelled', 'completed'].includes(this.snapshot.turn)) {
-        this.retireCurrentTurnCorrelation();
-        this.setSnapshot({
-          turn: 'idle',
-          turnId: null,
-          responseId: null,
-          ttsPlaybackState: 'idle',
-          ttsResponseId: null,
-          ttsError: null,
-          waitPhrase: null,
-          followUpQueued: false,
-        });
-      }
-
       const permission = await this.adapter.requestMicrophonePermission?.();
       if (
         permission &&
@@ -1601,7 +1600,9 @@ export class VoiceSocket {
         break;
       case 'server.session.ready':
         this.sessionStartInFlight = false;
-        this.autoListenSuppressed = false;
+        if (this.snapshot.turn !== 'failed') {
+          this.autoListenSuppressed = false;
+        }
         console.info('TRANSPORT_HEALTHY_AUDIO_RESUMED', {
           sessionId: event.sessionId,
           timestampMs: this.now(),
@@ -1976,6 +1977,17 @@ export class VoiceSocket {
       case 'assistant.response.failed':
       case 'llm.response.failed':
         this.turnStartedAtMs = null;
+        this.clearAutoListenTimer();
+        this.clearSpeechEndCommitTimer();
+        this.autoListenSuppressed = true;
+        this.autoCommitBargeInTurn = false;
+        this.bargeInSpeechEndedPending = false;
+        this.bargeInCommitInFlight = false;
+        this.retireCorrelation(
+          null,
+          event.turnId ?? this.snapshot.turnId,
+          event.responseId ?? this.snapshot.responseId,
+        );
         this.markCurrentTranscriptError(event.errorCode);
         const turnError = mapTranscriptError(event.errorCode);
         this.setSnapshot({

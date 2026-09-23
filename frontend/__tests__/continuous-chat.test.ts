@@ -238,6 +238,63 @@ test('stops capture after a committed turn so the next turn can start', async ()
   expect(socket.getSnapshot().turn).toBe('starting');
 });
 
+test('failed response suppresses auto-listening until an explicit retry turn', async () => {
+  jest.useFakeTimers();
+  const adapter = new ContinuousChatAdapter();
+  adapter.status = status({ state: 'CONNECTED', connected: true });
+  const socket = new VoiceSocket({ adapter });
+  activeSockets.push(socket);
+
+  await socket.connect();
+  adapter.emit({
+    event: 'server.session.ready',
+    sessionId: SESSION_ID,
+    turnId: null,
+    responseId: null,
+    eventId: 'failure-session-ready',
+    timestampMs: 1,
+  });
+  await jest.advanceTimersByTimeAsync(1);
+  expect(adapter.startTurnCalls).toBe(1);
+
+  adapter.emit({
+    event: 'server.turn.ready',
+    sessionId: SESSION_ID,
+    turnId: 'turn-failed',
+    responseId: 'response-failed',
+    eventId: 'failure-turn-ready',
+    timestampMs: 2,
+  });
+  adapter.emit({
+    event: 'llm.response.failed',
+    sessionId: SESSION_ID,
+    turnId: 'turn-failed',
+    responseId: 'response-failed',
+    eventId: 'failure-response',
+    code: 'llm_provider_error',
+    timestampMs: 3,
+  });
+
+  expect(socket.getSnapshot().turn).toBe('failed');
+  expect(adapter.stopMicrophoneCalls).toBeGreaterThanOrEqual(1);
+
+  // A late session-ready/status event must not create a zero-audio turn.
+  adapter.emit({
+    event: 'server.session.ready',
+    sessionId: SESSION_ID,
+    turnId: null,
+    responseId: null,
+    eventId: 'late-session-ready',
+    timestampMs: 4,
+  });
+  await jest.advanceTimersByTimeAsync(10);
+  expect(adapter.startTurnCalls).toBe(1);
+
+  // The user can explicitly recover by starting a fresh turn.
+  await socket.startTurn();
+  expect(adapter.startTurnCalls).toBe(2);
+});
+
 test('starts listening after session ready and keeps capture for the next turn', async () => {
   jest.useFakeTimers();
   const adapter = new ContinuousChatAdapter();

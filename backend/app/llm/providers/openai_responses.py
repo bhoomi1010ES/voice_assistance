@@ -71,16 +71,24 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
                             "content": [{"type": "output_text", "text": message.content}],
                         }
                     )
-                for tool_call in message.tool_calls:
-                    input_items.append(
-                        {
-                            "type": "function_call",
-                            "call_id": tool_call.tool_call_id,
-                            "name": tool_call.name,
-                            "arguments": tool_call.arguments_json
-                            or json.dumps(tool_call.arguments or {}, separators=(",", ":")),
-                        }
-                    )
+                if message.provider_items:
+                    input_items.extend(dict(item) for item in message.provider_items)
+                else:
+                    for tool_call in message.tool_calls:
+                        input_items.append(
+                            {
+                                "type": "function_call",
+                                # Historical messages may not have provider metadata;
+                                # use the correlation ID as a stable fallback item ID.
+                                "id": tool_call.tool_call_id,
+                                "call_id": tool_call.tool_call_id,
+                                "name": tool_call.name,
+                                "arguments": tool_call.arguments_json
+                                or json.dumps(
+                                    tool_call.arguments or {}, separators=(",", ":")
+                                ),
+                            }
+                        )
                 continue
             input_items.append(
                 {
@@ -97,6 +105,9 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
             "store": False,
         }
         if request.allowed_tools:
+            # Stateless Responses tool loops must receive encrypted reasoning
+            # items so they can be replayed with the function output.
+            payload["include"] = ["reasoning.encrypted_content"]
             payload["tools"] = [
                 {
                     "type": "function",
@@ -156,18 +167,51 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
         tools: dict[str, _ToolAccumulator] = {}
         tool_item_ids: dict[str, str] = {}
         tool_indexes: dict[int, str] = {}
+        output_items: list[dict[str, Any]] = []
+        output_item_positions: dict[str, int] = {}
         event_data: list[str] = []
         event_data_bytes = 0
         total_response_bytes = 0
         completed = False
         saw_payload = False
 
+        def remember_output_item(item: dict[str, Any], output_index: Any = None) -> None:
+            """Retain the model output exactly enough for the next tool round."""
+            item_id = item.get("id")
+            key = item_id if isinstance(item_id, str) and item_id else None
+            if key is None and isinstance(output_index, int):
+                key = f"index:{output_index}"
+            if key is None:
+                output_items.append(dict(item))
+                return
+            position = output_item_positions.get(key)
+            if position is None:
+                output_item_positions[key] = len(output_items)
+                output_items.append(dict(item))
+            else:
+                output_items[position] = dict(item)
+
+        def continuation_items() -> tuple[dict[str, Any], ...]:
+            items = [dict(item) for item in output_items]
+            for item in items:
+                if item.get("type") != "function_call":
+                    continue
+                call_id = item.get("call_id") or item.get("id")
+                if not isinstance(call_id, str):
+                    continue
+                accumulator = tools.get(call_id)
+                if accumulator is not None:
+                    item["arguments"] = accumulator.arguments_json or "{}"
+            return tuple(items)
+
         async def process_data(data: str) -> AsyncIterator[LLMEvent]:
             nonlocal completed, saw_payload, provider_request_id, returned_model, finish_reason
             if not data:
                 return
             if data == "[DONE]":
-                for tool_event in self._complete_responses_tools(tools, event):
+                for tool_event in self._complete_responses_tools(
+                    tools, event, provider_items=continuation_items()
+                ):
                     yield tool_event
                 yield event(
                     "response_completed",
@@ -211,7 +255,10 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
 
             if event_type == "response.output_item.added":
                 item = payload.get("item")
-                if not isinstance(item, dict) or item.get("type") != "function_call":
+                if not isinstance(item, dict):
+                    return
+                remember_output_item(item, payload.get("output_index"))
+                if item.get("type") != "function_call":
                     return
                 call_id = item.get("call_id") or item.get("id")
                 name = item.get("name")
@@ -231,6 +278,27 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
                     tool_call=LLMToolCall(tool_call_id=call_id, name=name),
                 )
                 tools[call_id].started = True
+                return
+
+            if event_type == "response.output_item.done":
+                item = payload.get("item")
+                if isinstance(item, dict):
+                    remember_output_item(item, payload.get("output_index"))
+                    if item.get("type") == "function_call":
+                        call_id = item.get("call_id") or item.get("id")
+                        if isinstance(call_id, str):
+                            call_id = tool_item_ids.get(call_id, call_id)
+                        if isinstance(call_id, str) and call_id in tools:
+                            arguments = item.get("arguments")
+                            if isinstance(arguments, str):
+                                tools[call_id].arguments_json = arguments
+                            for tool_event in self._complete_responses_tools(
+                                {call_id: tools[call_id]},
+                                event,
+                                provider_items=continuation_items(),
+                            ):
+                                yield tool_event
+                            del tools[call_id]
                 return
 
             if event_type == "response.function_call_arguments.delta":
@@ -267,9 +335,6 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
                 arguments = payload.get("arguments")
                 if isinstance(arguments, str):
                     tools[call_id].arguments_json = arguments
-                for tool_event in self._complete_responses_tools({call_id: tools[call_id]}, event):
-                    yield tool_event
-                del tools[call_id]
                 return
 
             if event_type == "response.completed":
@@ -284,7 +349,9 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
                 status = container.get("status")
                 if isinstance(status, str):
                     finish_reason = status
-                for tool_event in self._complete_responses_tools(tools, event):
+                for tool_event in self._complete_responses_tools(
+                    tools, event, provider_items=continuation_items()
+                ):
                     yield tool_event
                 yield event(
                     "response_completed",
@@ -297,6 +364,15 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
                 return
 
             if event_type == "response.failed":
+                error = container.get("error")
+                if isinstance(error, dict):
+                    code = error.get("code")
+                    message = error.get("message")
+                    if isinstance(code, str) and code:
+                        detail = f"{code}: {message}" if isinstance(message, str) else code
+                        raise LLMProviderError(
+                            f"The provider reported a failed response ({detail})."
+                        )
                 raise LLMProviderError("The provider reported a failed response.")
             if event_type == "response.incomplete":
                 raise LLMError("The provider returned an incomplete response.")
@@ -381,7 +457,10 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
 
     @staticmethod
     def _complete_responses_tools(
-        tools: dict[str, _ToolAccumulator], event_factory
+        tools: dict[str, _ToolAccumulator],
+        event_factory,
+        *,
+        provider_items: tuple[dict[str, Any], ...] = (),
     ) -> list[LLMEvent]:
         events: list[LLMEvent] = []
         for accumulator in tools.values():
@@ -401,6 +480,7 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
                         arguments_json=raw_arguments,
                         arguments=arguments,
                     ),
+                    provider_items=provider_items,
                 )
             )
         return events

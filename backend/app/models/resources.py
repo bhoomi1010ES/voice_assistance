@@ -233,6 +233,17 @@ class Entity(Base):
             name="uq_entities_user_type_name",
         ),
         UniqueConstraint("id", "user_id", name="uq_entities_id_user_id"),
+        CheckConstraint(
+            "entity_type IN ('self', 'person', 'place', 'organization', 'project', "
+            "'product', 'event', 'other')",
+            name="ck_entities_type",
+        ),
+        Index(
+            "uq_entities_user_self",
+            "user_id",
+            unique=True,
+            postgresql_where=(entity_type == "self"),
+        ),
         Index("ix_entities_user_name", "user_id", "normalized_name"),
     )
 
@@ -358,6 +369,13 @@ class EntityRelationship(Base):
             "target_entity_id",
             "source_memory_id",
             name="uq_entity_relationships_evidence",
+        ),
+        CheckConstraint(
+            "relationship_type IN ('COLLEAGUE_OF', 'FRIEND_OF', 'FAMILY_OF', 'WORKS_AT', "
+            "'WORKS_ON', 'LIVES_IN', 'LOCATED_AT', 'OWNS', 'MEMBER_OF', 'MANAGES', "
+            "'REPORTS_TO', 'DEPENDS_ON', 'RELATED_TO', 'RESPONSIBLE_FOR', 'TESTED_BY', "
+            "'ASSIGNED_TO', 'BLOCKED_BY', 'DISCUSSED_WITH')",
+            name="ck_entity_relationships_type",
         ),
         CheckConstraint(
             "status IN ('active', 'superseded')",

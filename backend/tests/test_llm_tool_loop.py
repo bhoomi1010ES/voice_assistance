@@ -125,7 +125,26 @@ class FakeLLMService:
         yield _event(request, "text_delta", 1, delta="I will check that.")
         yield _event(request, "tool_call_started", 2, tool_call=call)
         yield _event(request, "tool_call_arguments_delta", 3, delta="}", tool_call=call)
-        yield _event(request, "tool_call_completed", 4, tool_call=call)
+        yield _event(
+            request,
+            "tool_call_completed",
+            4,
+            tool_call=call,
+            provider_items=(
+                {
+                    "type": "reasoning",
+                    "id": "rs-time",
+                    "encrypted_content": "opaque",
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc-time",
+                    "call_id": "call-time-1",
+                    "name": "get_current_time",
+                    "arguments": "{}",
+                },
+            ),
+        )
         yield _event(request, "response_completed", 5, text="", finish_reason="tool_calls")
 
 
@@ -467,6 +486,8 @@ async def test_tool_loop_runs_sequential_round_and_suppresses_premature_text() -
     follow_up = service.requests[1]
     assert follow_up.messages[-2].role == LLMRole.ASSISTANT
     assert follow_up.messages[-2].tool_calls[0].tool_call_id == "call-time-1"
+    assert follow_up.messages[-2].provider_items[0]["type"] == "reasoning"
+    assert follow_up.messages[-2].provider_items[1]["id"] == "fc-time"
     assert follow_up.messages[-1].role == LLMRole.TOOL
     assert follow_up.messages[-1].tool_call_id == "call-time-1"
 

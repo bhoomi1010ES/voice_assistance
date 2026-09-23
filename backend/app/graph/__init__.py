@@ -1,30 +1,42 @@
 """Internal, owner-scoped GraphRAG persistence and bounded traversal foundation."""
 
+from app.graph.backfill import GraphBackfillService
 from app.graph.errors import (
     GraphEntityAmbiguous,
     GraphEntityNotFound,
     GraphInvalidTraversal,
     GraphOwnershipError,
+    GraphQueryCancelled,
+    GraphQueryTimeout,
     GraphRepositoryError,
     GraphWriteConflict,
 )
 from app.graph.indexing import GraphIndexingService
 from app.graph.policy import GRAPH_INDEX_POLICY_VERSION
+from app.graph.query import GraphQueryDecision, build_graph_query_decision
 from app.graph.repository import GraphRepository, normalize_graph_name
-from app.graph.service import GraphService
+from app.graph.service import GraphEvidenceQueryResult, GraphService
 from app.graph.types import (
+    EntityType,
     GraphAlias,
     GraphAliasWriteResult,
+    GraphBackfillResult,
     GraphEdge,
     GraphEntity,
     GraphEntityWriteResult,
+    GraphEvidenceBundle,
+    GraphFallbackReason,
+    GraphIndexJobPayload,
     GraphIndexResult,
     GraphMemory,
     GraphNeighbor,
     GraphPath,
     GraphRelationshipWriteResult,
     GraphResolution,
+    GraphRetrievalMode,
+    GraphSkipReason,
     GraphTraversalResult,
+    RelationshipType,
     TraversalDirection,
 )
 
@@ -37,20 +49,34 @@ __all__ = [
     "GraphEntityWriteResult",
     "GraphEntityAmbiguous",
     "GraphEntityNotFound",
+    "GraphBackfillResult",
+    "GraphEvidenceBundle",
+    "GraphEvidenceQueryResult",
+    "GraphFallbackReason",
     "GraphInvalidTraversal",
+    "GraphIndexJobPayload",
     "GraphIndexResult",
     "GraphIndexingService",
+    "GraphBackfillService",
     "GraphMemory",
     "GraphNeighbor",
     "GraphOwnershipError",
     "GraphPath",
+    "GraphRetrievalMode",
     "GraphRelationshipWriteResult",
     "GraphRepository",
     "GraphRepositoryError",
+    "GraphQueryCancelled",
+    "GraphQueryTimeout",
     "GraphResolution",
+    "GraphQueryDecision",
+    "GraphSkipReason",
     "GraphService",
     "GraphTraversalResult",
     "GraphWriteConflict",
+    "EntityType",
+    "RelationshipType",
     "TraversalDirection",
+    "build_graph_query_decision",
     "normalize_graph_name",
 ]

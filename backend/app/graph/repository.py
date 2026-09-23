@@ -19,6 +19,7 @@ from app.graph.errors import (
     GraphWriteConflict,
 )
 from app.graph.types import (
+    EntityType,
     GraphAlias,
     GraphEdge,
     GraphEntity,
@@ -26,10 +27,11 @@ from app.graph.types import (
     GraphMemory,
     GraphNeighbor,
     GraphRelationshipWriteResult,
+    RelationshipType,
     entity_from_row,
 )
 from app.memory.types import normalize_memory_text
-from app.models import Entity, EntityAlias, EntityRelationship, MemoryEntity, MemoryItem
+from app.models import Entity, EntityAlias, EntityRelationship, MemoryEntity, MemoryItem, User
 
 
 def normalize_graph_name(value: str, *, max_length: int | None = None) -> str:
@@ -68,6 +70,12 @@ class GraphRepository:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings()
+
+    async def memory_enabled(self, session: AsyncSession, *, user_id: uuid.UUID) -> bool:
+        """Return the current owner-scoped memory gate for graph reads."""
+
+        enabled = await session.scalar(select(User.memory_enabled).where(User.id == user_id))
+        return enabled is True
 
     async def cleanup_orphaned_entities(
         self,
@@ -156,7 +164,12 @@ class GraphRepository:
 
         if not isinstance(entity_type, str) or not entity_type.strip():
             raise ValueError("entity_type must not be blank")
-        if len(entity_type) > 64:
+        normalized_entity_type = entity_type.strip().casefold()
+        try:
+            normalized_entity_type = EntityType(normalized_entity_type).value
+        except ValueError:
+            raise ValueError("unsupported graph entity type") from None
+        if len(normalized_entity_type) > 64:
             raise ValueError("entity_type must be at most 64 characters")
         if len(canonical_name.strip()) > 512:
             raise ValueError("canonical_name must be at most 512 characters")
@@ -165,7 +178,7 @@ class GraphRepository:
             pg_insert(Entity)
             .values(
                 user_id=user_id,
-                entity_type=entity_type,
+                entity_type=normalized_entity_type,
                 canonical_name=canonical_name.strip(),
                 normalized_name=normalized_name,
                 metadata_json={},
@@ -184,7 +197,7 @@ class GraphRepository:
         row = await session.scalar(
             select(Entity).where(
                 Entity.user_id == user_id,
-                Entity.entity_type == entity_type,
+                Entity.entity_type == normalized_entity_type,
                 Entity.normalized_name == normalized_name,
             )
         )
@@ -199,6 +212,7 @@ class GraphRepository:
         user_id: uuid.UUID,
         normalized_name: str,
         entity_type: str | None = None,
+        limit: int | None = None,
     ) -> tuple[GraphEntity, ...]:
         query = select(Entity).where(
             Entity.user_id == user_id,
@@ -206,9 +220,12 @@ class GraphRepository:
         )
         if entity_type is not None:
             query = query.where(Entity.entity_type == entity_type)
-        rows = (
-            await session.scalars(query.order_by(Entity.canonical_name.asc(), Entity.id.asc()))
-        ).all()
+        ordered = query.order_by(Entity.canonical_name.asc(), Entity.id.asc())
+        if limit is not None:
+            if not 1 <= limit <= self.settings.graph_max_query_entities:
+                raise ValueError("entity resolution limit exceeds the graph bound")
+            ordered = ordered.limit(limit)
+        rows = (await session.scalars(ordered)).all()
         return tuple(entity_from_row(row) for row in rows)
 
     async def find_entities_by_alias(
@@ -218,6 +235,7 @@ class GraphRepository:
         user_id: uuid.UUID,
         normalized_alias: str,
         entity_type: str | None = None,
+        limit: int | None = None,
     ) -> tuple[GraphEntity, ...]:
         query = (
             select(Entity)
@@ -237,9 +255,12 @@ class GraphRepository:
         )
         if entity_type is not None:
             query = query.where(Entity.entity_type == entity_type)
-        rows = (
-            await session.scalars(query.order_by(Entity.canonical_name.asc(), Entity.id.asc()))
-        ).all()
+        ordered = query.order_by(Entity.canonical_name.asc(), Entity.id.asc())
+        if limit is not None:
+            if not 1 <= limit <= self.settings.graph_max_query_entities:
+                raise ValueError("entity resolution limit exceeds the graph bound")
+            ordered = ordered.limit(limit)
+        rows = (await session.scalars(ordered)).all()
         return tuple(entity_from_row(row) for row in rows)
 
     async def get_aliases_for_entity(
@@ -333,6 +354,10 @@ class GraphRepository:
             raise ValueError("relationship_type must not be blank")
         if relationship_type != relationship_type.strip():
             raise ValueError("relationship_type must already be normalized")
+        try:
+            RelationshipType(relationship_type)
+        except ValueError:
+            raise ValueError("unsupported graph relationship type") from None
         if source_entity_id == target_entity_id:
             raise ValueError("graph relationships cannot connect an entity to itself")
         if (

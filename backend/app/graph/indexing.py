@@ -117,24 +117,26 @@ class GraphIndexingService:
             return result("skipped", "invalid_relationship")
 
         stage_ns = time.perf_counter_ns()
-        subject_links = (
-            await session.scalars(
-                select(Entity)
-                .join(
-                    MemoryEntity,
-                    (MemoryEntity.entity_id == Entity.id)
-                    & (MemoryEntity.user_id == Entity.user_id),
+        subject_links = []
+        if spec.source_entity_type != "self":
+            subject_links = (
+                await session.scalars(
+                    select(Entity)
+                    .join(
+                        MemoryEntity,
+                        (MemoryEntity.entity_id == Entity.id)
+                        & (MemoryEntity.user_id == Entity.user_id),
+                    )
+                    .where(
+                        MemoryEntity.memory_id == memory.id,
+                        MemoryEntity.user_id == user_id,
+                        MemoryEntity.relation == memory.predicate,
+                        Entity.user_id == user_id,
+                    )
+                    .order_by(Entity.id.asc())
+                    .limit(2)
                 )
-                .where(
-                    MemoryEntity.memory_id == memory.id,
-                    MemoryEntity.user_id == user_id,
-                    MemoryEntity.relation == memory.predicate,
-                    Entity.user_id == user_id,
-                )
-                .order_by(Entity.id.asc())
-                .limit(2)
-            )
-        ).all()
+            ).all()
         if len(subject_links) > 1:
             timings["source_entity_resolution_ms"] = elapsed_ms(stage_ns)
             return result("skipped", "ambiguous_subject")

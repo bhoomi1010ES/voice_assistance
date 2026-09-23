@@ -488,11 +488,20 @@ class LLMToolLoop:
                 yield event
 
             next_messages = list(current_request.messages)
+            provider_items = next(
+                (
+                    event.provider_items
+                    for event in reversed(round_events)
+                    if event.event_type == "tool_call_completed" and event.provider_items
+                ),
+                (),
+            )
             next_messages.append(
                 LLMMessage(
                     role=LLMRole.ASSISTANT,
                     content="",
                     tool_calls=tuple(completed_calls),
+                    provider_items=provider_items,
                 )
             )
             execution_results: list[ToolExecutionResult] = []
@@ -566,6 +575,7 @@ class LLMToolLoop:
         characters = len(request.system_instructions) + sum(
             len(message.content)
             + sum(len(call.arguments_json) + len(call.name) for call in message.tool_calls)
+            + sum(len(json.dumps(item, separators=(",", ":"))) for item in message.provider_items)
             for message in request.messages
         )
         if characters > self.settings.llm_max_context_tokens * 4:

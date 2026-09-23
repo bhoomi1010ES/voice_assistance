@@ -182,6 +182,57 @@ async def test_openai_responses_maps_function_call_fragments_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_openai_responses_carries_output_items_into_tool_continuation() -> None:
+    tool = LLMToolDefinition(
+        name="get_current_time",
+        description="Get the current time.",
+        input_schema={"type": "object"},
+    )
+    body = (
+        'data: {"type":"response.output_item.added","output_index":0,'
+        '"item":{"type":"reasoning","id":"rs_1",'
+        '"encrypted_content":"opaque-reasoning"}}\n\n'
+        'data: {"type":"response.output_item.added","output_index":1,'
+        '"item":{"type":"function_call","id":"fc_1",'
+        '"call_id":"call-time","name":"get_current_time"}}\n\n'
+        'data: {"type":"response.function_call_arguments.done","item_id":"fc_1",'
+        '"arguments":"{}"}\n\n'
+        'data: {"type":"response.output_item.done","output_index":1,'
+        '"item":{"type":"function_call","id":"fc_1",'
+        '"call_id":"call-time","name":"get_current_time",'
+        '"arguments":"{}","status":"completed"}}\n\n'
+        'data: {"type":"response.completed","response":{"status":"completed"}}\n\n'
+    )
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    )
+    provider = OpenAIResponsesProvider(
+        _settings("openai", "https://api.openai.com/v1"),
+        client=client,
+    )
+    events = await _collect(provider, _request(tools=(tool,)))
+    await client.aclose()
+
+    completed = [event for event in events if event.event_type == "tool_call_completed"]
+    assert len(completed) == 1
+    assert completed[0].provider_items == (
+        {
+            "type": "reasoning",
+            "id": "rs_1",
+            "encrypted_content": "opaque-reasoning",
+        },
+        {
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call-time",
+            "name": "get_current_time",
+            "arguments": "{}",
+            "status": "completed",
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_anthropic_messages_maps_native_headers_text_usage_and_completion() -> None:
     captured: dict = {}
     body = (
@@ -285,6 +336,72 @@ def test_follow_up_tool_results_map_to_each_native_wire_contract() -> None:
     assert anthropic_payload["messages"][2]["content"][0]["tool_use_id"] == "call-1"
 
 
+def test_openai_responses_preserves_native_tool_and_reasoning_items() -> None:
+    request = _request().model_copy(
+        update={
+            "messages": (
+                LLMMessage(role=LLMRole.USER, content="What time is it?"),
+                LLMMessage(
+                    role=LLMRole.ASSISTANT,
+                    content="",
+                    tool_calls=(
+                        LLMToolCall(
+                            tool_call_id="call-time",
+                            name="get_current_time",
+                            arguments_json="{}",
+                        ),
+                    ),
+                    provider_items=(
+                        {
+                            "type": "reasoning",
+                            "id": "rs_1",
+                            "encrypted_content": "opaque-reasoning",
+                        },
+                        {
+                            "type": "function_call",
+                            "id": "fc_1",
+                            "call_id": "call-time",
+                            "name": "get_current_time",
+                            "arguments": "{}",
+                            "status": "completed",
+                        },
+                    ),
+                ),
+                LLMMessage(
+                    role=LLMRole.TOOL,
+                    content='{"time":"15:40"}',
+                    tool_call_id="call-time",
+                ),
+            )
+        }
+    )
+
+    payload = OpenAIResponsesProvider(
+        _settings("openai", "https://api.openai.com/v1")
+    )._build_payload(request)
+
+    assert payload["input"][1:3] == [
+        {
+            "type": "reasoning",
+            "id": "rs_1",
+            "encrypted_content": "opaque-reasoning",
+        },
+        {
+            "type": "function_call",
+            "id": "fc_1",
+            "call_id": "call-time",
+            "name": "get_current_time",
+            "arguments": "{}",
+            "status": "completed",
+        },
+    ]
+    assert payload["input"][3] == {
+        "type": "function_call_output",
+        "call_id": "call-time",
+        "output": '{"time":"15:40"}',
+    }
+
+
 def test_named_tool_choice_maps_to_each_native_wire_contract() -> None:
     tool = LLMToolDefinition(
         name="create_task",
@@ -305,4 +422,5 @@ def test_named_tool_choice_maps_to_each_native_wire_contract() -> None:
     )._build_payload(request)
 
     assert openai_payload["tool_choice"] == {"type": "function", "name": "create_task"}
+    assert openai_payload["include"] == ["reasoning.encrypted_content"]
     assert anthropic_payload["tool_choice"] == {"type": "tool", "name": "create_task"}

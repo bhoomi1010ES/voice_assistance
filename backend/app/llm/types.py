@@ -30,6 +30,9 @@ class LLMMessage(BaseModel):
     content: str
     tool_call_id: str | None = None
     tool_calls: tuple[LLMToolCall, ...] = ()
+    # Provider-native output items needed to continue a Responses API tool
+    # call.  These are intentionally opaque to the provider-neutral loop.
+    provider_items: tuple[dict[str, Any], ...] = ()
 
     @model_validator(mode="after")
     def validate_tool_correlation(self) -> LLMMessage:
@@ -39,6 +42,8 @@ class LLMMessage(BaseModel):
             raise ValueError("tool_call_id is valid only for tool messages")
         if self.role != LLMRole.ASSISTANT and self.tool_calls:
             raise ValueError("tool_calls are valid only for assistant messages")
+        if self.role != LLMRole.ASSISTANT and self.provider_items:
+            raise ValueError("provider_items are valid only for assistant messages")
         return self
 
 
@@ -156,6 +161,7 @@ class LLMEvent(BaseModel):
     finish_reason: str | None = None
     error_code: str | None = None
     retryable: bool | None = None
+    provider_items: tuple[dict[str, Any], ...] = ()
 
     @model_validator(mode="after")
     def validate_event_payload(self) -> LLMEvent:

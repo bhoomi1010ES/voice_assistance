@@ -192,6 +192,33 @@ def test_graph_ownership_uniqueness_and_check_constraints(graph_database) -> Non
                         source_kind="generated",
                     ),
                 )
+                await _expect_database_rejection(
+                    session,
+                    Entity(
+                        user_id=user_a_id,
+                        entity_type="subject",
+                        canonical_name="Legacy subject",
+                        normalized_name="legacy subject",
+                    ),
+                )
+                session.add(
+                    Entity(
+                        user_id=user_a_id,
+                        entity_type="self",
+                        canonical_name="Self",
+                        normalized_name="self",
+                    )
+                )
+                await session.flush()
+                await _expect_database_rejection(
+                    session,
+                    Entity(
+                        user_id=user_a_id,
+                        entity_type="self",
+                        canonical_name="Me",
+                        normalized_name="me",
+                    ),
+                )
 
                 def edge(
                     *,
@@ -250,6 +277,10 @@ def test_graph_ownership_uniqueness_and_check_constraints(graph_database) -> Non
                 await _expect_database_rejection(
                     session,
                     edge(source_entity_id=entity_a1_id, target_entity_id=entity_a1_id),
+                )
+                await _expect_database_rejection(
+                    session,
+                    edge(relationship_type="NOT_A_REVIEWED_RELATION"),
                 )
                 await _expect_database_rejection(session, edge(confidence=-0.1))
                 await _expect_database_rejection(session, edge(confidence=1.1))

@@ -1,28 +1,49 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.graph.errors import GraphEntityNotFound, GraphInvalidTraversal
+from app.graph.errors import (
+    GraphEntityNotFound,
+    GraphInvalidTraversal,
+    GraphQueryCancelled,
+    GraphRepositoryError,
+)
+from app.graph.query import GraphQueryDecision, build_graph_query_decision
 from app.graph.repository import GraphRepository, normalize_graph_name, normalize_utc_datetime
 from app.graph.types import (
     GraphAlias,
     GraphAliasWriteResult,
     GraphEntityWriteResult,
+    GraphEvidenceBundle,
+    GraphFallbackReason,
     GraphMemory,
     GraphPath,
     GraphRelationshipWriteResult,
     GraphResolution,
     GraphTraversalResult,
+    RelationshipType,
     TraversalDirection,
     resolution_result,
 )
 
 _STAGE3_MAX_DEPTH = 2
+
+
+@dataclass(frozen=True, slots=True)
+class GraphEvidenceQueryResult:
+    decision: GraphQueryDecision
+    bundle: GraphEvidenceBundle | None
+    fallback_reasons: tuple[GraphFallbackReason, ...] = ()
+    cancelled: bool = False
 
 
 class GraphService:
@@ -33,9 +54,15 @@ class GraphService:
         settings: Settings | None = None,
         *,
         repository: GraphRepository | None = None,
+        read_session_factory: Any | None = None,
     ) -> None:
         self.settings = settings or Settings()
         self.repository = repository or GraphRepository(self.settings)
+        # Graph reads may be given a separate session factory so a timeout or
+        # database error cannot poison the transaction used by hybrid memory
+        # retrieval.  The default remains the caller's session for backwards
+        # compatibility with the low-level facade methods.
+        self.read_session_factory = read_session_factory
 
     async def get_or_create_entity(
         self,
@@ -59,6 +86,7 @@ class GraphService:
         user_id: uuid.UUID,
         name: str,
         entity_type: str | None = None,
+        max_candidates: int | None = None,
     ) -> GraphResolution:
         normalized_name = normalize_graph_name(name, max_length=512)
         canonical = await self.repository.find_entities_by_canonical_name(
@@ -66,6 +94,7 @@ class GraphService:
             user_id=user_id,
             normalized_name=normalized_name,
             entity_type=entity_type,
+            limit=max_candidates,
         )
         if canonical:
             return resolution_result(canonical, matched_by="canonical")
@@ -75,6 +104,7 @@ class GraphService:
             user_id=user_id,
             normalized_alias=normalized_name,
             entity_type=entity_type,
+            limit=max_candidates,
         )
         return resolution_result(aliases, matched_by="alias")
 
@@ -215,6 +245,8 @@ class GraphService:
         )
         if not 1 <= edge_limit <= self.settings.graph_max_edges_per_entity:
             raise GraphInvalidTraversal("edge limit must be within the configured graph bound")
+        if not await self.repository.memory_enabled(session, user_id=user_id):
+            raise GraphInvalidTraversal("memory disabled for graph reads")
 
         start_entity = await self.repository.get_owned_entity(
             session,
@@ -307,6 +339,8 @@ class GraphService:
         source_memory_ids: Sequence[uuid.UUID],
         limit: int | None = None,
     ) -> tuple[GraphMemory, ...]:
+        if not await self.repository.memory_enabled(session, user_id=user_id):
+            return ()
         return await self.repository.get_source_memories(
             session,
             user_id=user_id,
@@ -331,3 +365,240 @@ class GraphService:
             source_memory_ids=memory_ids,
             limit=limit,
         )
+
+    async def evidence_for_entity(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        entity_id: uuid.UUID,
+        direction: TraversalDirection = "both",
+        depth: int = 1,
+        relationship_type: str | None = None,
+        max_paths: int | None = None,
+        cancellation_check: Any | None = None,
+    ) -> GraphEvidenceBundle:
+        """Traverse one seed and fetch every bounded active evidence memory."""
+
+        _check_graph_cancellation(cancellation_check)
+        traversal = await self.traverse(
+            session,
+            user_id=user_id,
+            entity_id=entity_id,
+            direction=direction,
+            depth=depth,
+            relationship_type=relationship_type,
+            max_paths=max_paths,
+        )
+        _check_graph_cancellation(cancellation_check)
+        source_memory_ids = tuple(
+            dict.fromkeys(edge.source_memory_id for path in traversal.paths for edge in path.edges)
+        )
+        source_memories = await self.source_memories(
+            session,
+            user_id=user_id,
+            source_memory_ids=source_memory_ids,
+        )
+        _check_graph_cancellation(cancellation_check)
+        return GraphEvidenceBundle(
+            paths=traversal.paths,
+            source_memory_ids=source_memory_ids,
+            source_memories=source_memories,
+            truncated=traversal.truncated or len(source_memories) < len(source_memory_ids),
+        )
+
+    async def query_evidence(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        query: str,
+        cancellation_check: Any | None = None,
+        timeout_ms: int | None = None,
+        read_session_factory: Any | None = None,
+    ) -> GraphEvidenceQueryResult:
+        """Route, resolve, traverse, and fetch evidence without RRF/prompt wiring."""
+
+        decision = build_graph_query_decision(
+            query,
+            graph_rag_mode=self.settings.graph_rag_mode,
+            memory_retrieval_mode=self.settings.memory_retrieval_mode,
+            max_query_entities=self.settings.graph_max_query_entities,
+            max_depth=min(_STAGE3_MAX_DEPTH, self.settings.graph_max_depth),
+        )
+        if not decision.should_query:
+            return GraphEvidenceQueryResult(decision=decision, bundle=None)
+
+        deadline_ms = self.settings.graph_rag_timeout_ms if timeout_ms is None else timeout_ms
+        if not 1 <= deadline_ms <= 5_000:
+            raise ValueError("graph query timeout must be between 1 and 5000 ms")
+
+        factory = read_session_factory or self.read_session_factory
+        if factory is not None:
+            async with factory() as isolated_session:
+                return await self._query_evidence_with_deadline(
+                    isolated_session,
+                    user_id=user_id,
+                    decision=decision,
+                    cancellation_check=cancellation_check,
+                    deadline_ms=deadline_ms,
+                )
+        return await self._query_evidence_with_deadline(
+            session,
+            user_id=user_id,
+            decision=decision,
+            cancellation_check=cancellation_check,
+            deadline_ms=deadline_ms,
+        )
+
+    async def _query_evidence_with_deadline(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        decision: GraphQueryDecision,
+        cancellation_check: Any | None,
+        deadline_ms: int,
+    ) -> GraphEvidenceQueryResult:
+        try:
+            async with asyncio.timeout(deadline_ms / 1_000):
+                return await self._query_evidence_inner(
+                    session,
+                    user_id=user_id,
+                    decision=decision,
+                    cancellation_check=cancellation_check,
+                )
+        except GraphQueryCancelled:
+            return GraphEvidenceQueryResult(
+                decision=decision,
+                bundle=None,
+                fallback_reasons=(GraphFallbackReason.GRAPH_CANCELLED,),
+                cancelled=True,
+            )
+        except TimeoutError:
+            await _safe_rollback(session)
+            return GraphEvidenceQueryResult(
+                decision=decision,
+                bundle=None,
+                fallback_reasons=(GraphFallbackReason.GRAPH_TIMEOUT,),
+            )
+        except GraphRepositoryError:
+            await _safe_rollback(session)
+            return GraphEvidenceQueryResult(
+                decision=decision,
+                bundle=None,
+                fallback_reasons=(GraphFallbackReason.GRAPH_DATABASE_ERROR,),
+            )
+        except SQLAlchemyError:
+            await _safe_rollback(session)
+            return GraphEvidenceQueryResult(
+                decision=decision,
+                bundle=None,
+                fallback_reasons=(GraphFallbackReason.GRAPH_DATABASE_ERROR,),
+            )
+
+    async def _query_evidence_inner(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        decision: GraphQueryDecision,
+        cancellation_check: Any | None,
+    ) -> GraphEvidenceQueryResult:
+        seeds = []
+        fallback_reasons: list[GraphFallbackReason] = []
+        if not await self.repository.memory_enabled(session, user_id=user_id):
+            return GraphEvidenceQueryResult(
+                decision=decision,
+                bundle=None,
+                fallback_reasons=(GraphFallbackReason.MEMORY_DISABLED,),
+            )
+        for entity_name in decision.query_entities:
+            _check_graph_cancellation(cancellation_check)
+            resolution = await self.resolve_entity_exact(
+                session,
+                user_id=user_id,
+                name=entity_name,
+                max_candidates=self.settings.graph_max_query_entities,
+            )
+            if resolution.status == "not_found":
+                fallback_reasons.append(GraphFallbackReason.ENTITY_NOT_FOUND)
+            elif resolution.status == "ambiguous":
+                fallback_reasons.append(GraphFallbackReason.ENTITY_AMBIGUOUS)
+            seeds.extend(resolution.candidates)
+        if not seeds:
+            return GraphEvidenceQueryResult(
+                decision=decision,
+                bundle=None,
+                fallback_reasons=tuple(dict.fromkeys(fallback_reasons)),
+            )
+
+        paths: list[GraphPath] = []
+        path_keys: set[tuple[uuid.UUID, ...]] = set()
+        max_paths = self.settings.graph_max_paths
+        relationship_type = (
+            decision.relationship_type.value
+            if decision.depth == 1
+            and decision.relationship_type not in {None, RelationshipType.RELATED_TO}
+            else None
+        )
+        for seed in seeds:
+            _check_graph_cancellation(cancellation_check)
+            remaining = max_paths - len(paths)
+            if remaining <= 0:
+                break
+            traversal = await self.traverse(
+                session,
+                user_id=user_id,
+                entity_id=seed.id,
+                direction="both",
+                depth=decision.depth,
+                relationship_type=relationship_type,
+                max_paths=remaining,
+            )
+            if traversal.truncated:
+                fallback_reasons.append(GraphFallbackReason.TRAVERSAL_TRUNCATED)
+            for path in traversal.paths:
+                key = tuple(edge.relationship_id for edge in path.edges)
+                if key not in path_keys:
+                    path_keys.add(key)
+                    paths.append(path)
+                    if len(paths) >= max_paths:
+                        break
+
+        _check_graph_cancellation(cancellation_check)
+        source_memory_ids = tuple(
+            dict.fromkeys(edge.source_memory_id for path in paths for edge in path.edges)
+        )
+        source_memories = await self.source_memories(
+            session,
+            user_id=user_id,
+            source_memory_ids=source_memory_ids,
+        )
+        _check_graph_cancellation(cancellation_check)
+        if len(source_memories) < len(source_memory_ids):
+            fallback_reasons.append(GraphFallbackReason.EVIDENCE_INCOMPLETE)
+        bundle = GraphEvidenceBundle(
+            paths=tuple(paths),
+            source_memory_ids=source_memory_ids,
+            source_memories=source_memories,
+            truncated=GraphFallbackReason.TRAVERSAL_TRUNCATED in fallback_reasons
+            or GraphFallbackReason.EVIDENCE_INCOMPLETE in fallback_reasons,
+        )
+        return GraphEvidenceQueryResult(
+            decision=decision,
+            bundle=bundle,
+            fallback_reasons=tuple(dict.fromkeys(fallback_reasons)),
+        )
+
+
+def _check_graph_cancellation(cancellation_check: Any | None) -> None:
+    if cancellation_check is not None and cancellation_check():
+        raise GraphQueryCancelled("graph query cancelled")
+
+
+async def _safe_rollback(session: AsyncSession | None) -> None:
+    """Rollback a failed graph read when the caller supplied a session."""
+
+    if session is not None:
+        await session.rollback()

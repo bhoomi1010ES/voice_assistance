@@ -148,14 +148,17 @@ class MemoryWriter:
             entity = await session.scalar(
                 select(Entity).where(
                     Entity.user_id == user_id,
-                    Entity.entity_type == "subject",
+                    Entity.entity_type == "other",
                     Entity.normalized_name == normalized_subject,
                 )
             )
             if entity is None:
                 entity = Entity(
                     user_id=user_id,
-                    entity_type="subject",
+                    # Legacy memory subjects are not reliably typed. Keep
+                    # them as ``other`` until deterministic graph indexing
+                    # establishes endpoint semantics.
+                    entity_type="other",
                     canonical_name=candidate.subject,
                     normalized_name=normalized_subject,
                 )

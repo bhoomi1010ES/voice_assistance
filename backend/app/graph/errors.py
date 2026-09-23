@@ -23,3 +23,11 @@ class GraphInvalidTraversal(GraphRepositoryError, ValueError):
 
 class GraphWriteConflict(GraphRepositoryError):
     """An idempotent graph write replay conflicts with previously stored values."""
+
+
+class GraphQueryTimeout(GraphRepositoryError):
+    """A bounded graph read exceeded its configured deadline."""
+
+
+class GraphQueryCancelled(GraphRepositoryError):
+    """A graph read was cancelled before its result could be published."""

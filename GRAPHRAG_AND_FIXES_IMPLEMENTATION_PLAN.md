@@ -5,7 +5,23 @@
 
 This is the remediation and GraphRAG delivery plan from that document. It requires implementation and acceptance evidence.
 
-GraphRAG is **not** implemented. It should be added **on top of** the existing hybrid stack rather than replacing it, as a **fourth candidate source** inside the existing fusion pipeline, using PostgreSQL graph tables with the same `user_id` ownership model. A Microsoft-style community GraphRAG (Leiden communities + global map-reduce) is optional later and is **not** the first step for a voice assistant.
+The repository has since implemented the GraphRAG foundation through bounded local graph traversal and isolated evidence reads. The remaining work is acceptance and controlled retrieval integration; the plan below is retained as the target contract and rollout sequence.
+
+## Current repository status (verified 2026-09-22)
+
+| Area | Current state | Evidence / implication |
+|---|---|---|
+| Phase 6 retrieval/privacy/lifecycle fixes | Implemented and covered by focused tests | `test_phase6_foundation.py` and `test_phase6_memory.py`; remaining work is to retain the approved baseline evidence. |
+| Graph flags and bounds (G0) | Implemented; safe defaults remain `graph_rag_mode=off` and `graph_write_enabled=false` | `backend/app/core/config.py` and `backend/tests/test_config.py`. |
+| Graph schema and ownership constraints (G1) | Implemented in Alembic `0012_graph_rag_foundation`, `0015_graph_contract_constraints`, and `0016_one_self_entity_per_owner` | Adds owner-scoped aliases, provenance-bearing relationships, checked entity/relationship vocabularies, legacy `subject` normalization, and one self entity per owner. |
+| Durable graph indexing job (G2) | Implemented in Alembic `0013_graph_index_job_type`, `MemoryWriter`, `MemoryJobWorker`, `app/graph/indexing.py`, and `app/graph/backfill.py` | Deterministic, idempotent, background-only indexing; restartable active-memory backfill; unsupported and owner-disabled cases fail closed. |
+| Supersession ownership/lifecycle guard | Implemented in Alembic `0014_memory_supersession_owner` and graph lifecycle tests | Supersession is followed by G1 contract revisions; current static and live database head is `0016_one_self_entity_per_owner`. |
+| Exact resolution and bounded traversal (G3) | Implemented in `app/graph/query.py`, `app/graph/repository.py`, `app/graph/service.py`, and `app/graph/types.py` | Deterministic routing, bounded exact/alias resolution, owner-scoped cycle-safe one/two-hop traversal, complete source-memory evidence bundles, cancellation, enforced deadlines, and an optional isolated read-session factory. |
+| Graph shadow/inject retrieval (G5) | Not yet integrated into `MemoryRetrievalService`/RRF/context | `MemoryRetrievalService` currently exposes structured, FTS, and dense sources only; keep graph mode off until this phase is implemented and accepted. |
+| Grounded LLM graph extraction (G4) | Not implemented; correctly optional | Deterministic indexing coverage must be measured before adding an asynchronous extractor. |
+| Community/global GraphRAG (G6) | Not implemented; correctly deferred | Do not schedule until local graph acceptance demonstrates a real global-question gap. |
+
+This status changes the execution point: treat F0–F2 and G0–G3 as implemented foundations to verify, not as new code tasks. Continue with F3 evidence freeze, then G5 shadow/candidate/canary work. Do not enable graph inject in production based only on the presence of the schema and worker.
 
 ---
 
@@ -88,10 +104,24 @@ Work:
 1. Use the repository `.venv` Python 3.12 environment.
 2. Run focused Phase 6 unit/contract tests and the PostgreSQL integration tests.
 3. Run the complete backend non-regression suite.
-4. Verify `alembic heads` from the checkout and `alembic current` against the target database. Static head at this audit is `0011_device_aware_task_times`; live database head is still a separate fact.
+4. Verify `alembic heads` from the checkout and `alembic current` against the target database. The F0 baseline recorded `0014_memory_supersession_owner`; after G1 the current checkout and checked target database report `0016_one_self_entity_per_owner`. Keep this check because deployment databases can still lag.
 5. Verify PostgreSQL/pgvector, embedding, and reranker health.
 6. Capture versioned hybrid quality and latency baselines using actual retained evidence artifacts.
 7. Read feature flags from the running process, not only `.env` or defaults.
+
+**F0 execution record (2026-09-22):**
+
+- Repository Python: `3.12.10` from `.venv`.
+- Focused Phase 6/GraphRAG/config tests: `64 passed, 1 skipped`.
+- PostgreSQL graph integration tests: `14 passed` with `RUN_INTEGRATION_TESTS=1`.
+- Complete backend test suite: `335 passed, 53 skipped, 1 warning`.
+- Alembic checkout head and target database at the F0 baseline: `0014_memory_supersession_owner` (advanced to `0016_one_self_entity_per_owner` by G1).
+- Running `/health`: `{"status":"ok"}`. Running `/ready`: PostgreSQL, Redis, LLM, embedding, and reranker all reported healthy/ready. The LLM readiness metadata still reports `live_verified=false`.
+- Versioned live hybrid evaluation: `docs/20260923T002006Z_phase6_retrieval_evaluation.md`; 25 cases, Hybrid Recall@5 `1.000`, final MRR `0.875`, nDCG@5 `0.895`, top-1 `0.800`, p50 `542.812 ms`, p95 `863.597 ms`, zero cross-user/deleted/no-result safety failures.
+- Runtime `.env` values are `MEMORY_RETRIEVAL_MODE=inject`, `MEMORY_WRITE_ENABLED=true`, `GRAPH_RAG_MODE=off`, and `GRAPH_WRITE_ENABLED=false`. The public readiness response does not expose graph flags, so direct graph-flag observation from the already-running process remains an evidence gap rather than being inferred from defaults.
+- The available physical-device trace remains **not accepted** for end-to-end latency because it mixes monotonic clock domains and contains missing/negative intervals.
+
+F0 status: **PASS for reproducible tests, database revision, provider health, and hybrid retrieval evidence; pending runtime graph-flag observability and an accepted physical voice latency trace before the exit gate is considered fully closed.**
 
 Exit gate: supported tests are reproducible, the live database revision and provider contracts are known, and baseline artifacts are stored with environment/model/corpus versions.
 
@@ -205,7 +235,7 @@ Microsoft GraphRAG’s community detection + global search is useful for large d
 
 ## 7. GraphRAG delivery phases
 
-### Phase G0 — Contracts and disabled feature flags
+### Phase G0 — Contracts and disabled feature flags (implemented; acceptance evidence retained)
 
 **Goal:** introduce inert graph contracts without changing database schema, retrieval results, prompts, or voice behavior.
 
@@ -232,7 +262,20 @@ graph timeout = calibrated from PostgreSQL evidence; 50 ms is only a starting hy
 
 Exit gate: with both graph flags at their defaults, current hybrid queries, tool results, prompt messages, and latency traces are byte/semantically equivalent except for explicitly approved inert configuration metadata.
 
-### Phase G1 — Real graph schema (still PostgreSQL)
+**G0 implementation record (2026-09-22):** the existing settings already provide the
+`off|shadow|inject` read mode, independent write flag, master memory-off behavior,
+and bounded defaults. The missing contracts are now implemented in
+`backend/app/graph/query.py` and `backend/app/graph/types.py`: deterministic
+`GraphQueryDecision`, controlled `EntityType`/`RelationshipType` values,
+`GraphPath` validation, provenance-complete `GraphEvidenceBundle`, explicit
+skip/fallback reason enums, and `GraphIndexJobPayload`. These contracts are
+exported from `app.graph` and are not called by retrieval, prompt construction,
+or voice code, so graph reads and writes remain inert.
+
+Focused G0 contract/config/repository tests pass (`37 passed`); the complete
+backend suite passes (`342 passed, 53 skipped`).
+
+### Phase G1 — Real graph schema (implemented; migration and integration evidence retained)
 
 The current model is **star-shaped**: Memory —link→ Entity. Multi-hop needs **entity–entity** (or memory-as-edge) records.
 
@@ -299,13 +342,22 @@ Hard rules:
 - Graph retrieval joins back to an active owned source memory even when edge status is active, preventing lifecycle drift from exposing deleted/superseded evidence.
 - Alias rows without `source_memory_id` are allowed only for an explicitly defined manual/system source kind; evidence-derived aliases require memory provenance.
 
-The migration must also extend `ck_memory_jobs_type` for the deterministic graph-indexing job introduced in G2. At implementation time, confirm the actual next Alembic revision. Static repository head at this audit is `0011_device_aware_task_times`, so `0012_graph_rag_foundation` is the expected name only if the live/repository chain has not advanced.
+The graph-job extension is already in `0013_graph_index_job_type`, followed by owner-scoped supersession in `0014_memory_supersession_owner`. The current G1 contract migrations are `0015_graph_contract_constraints` and `0016_one_self_entity_per_owner`, confirmed as checkout and target-database head on 2026-09-22.
 
 Optional later: Apache AGE inside the same Postgres if CTE hops become awkward. **Not required for G1.**
 
 Exit gate: migration upgrade/downgrade tests preserve existing entities and memory links; PostgreSQL rejects cross-owner aliases, relationships, provenance, and supersession; uniqueness/check/index contracts are verified on representative data; graph flags remain off.
 
-### Phase G2 — Deterministic graph indexing and backfill
+**G1 implementation record (2026-09-22):**
+
+- Added Alembic `0015_graph_contract_constraints`, which maps legacy/unknown `entities.entity_type` values (including `subject`) to `other` before adding `ck_entities_type`. Existing graph edges with unknown relationship types fail the migration rather than being silently reinterpreted; new edges are restricted by `ck_entity_relationships_type` to the reviewed vocabulary. Added `0016_one_self_entity_per_owner` for the partial unique owner index and duplicate-owner preflight.
+- Added matching SQLAlchemy constraints and repository validation. New memory-linked subject rows are stored as `other` until graph indexing establishes endpoint semantics.
+- Added the reviewed deterministic self-role policy. Extracted `Rahul is my colleague` becomes `self --COLLEAGUE_OF--> Rahul`; self resolution bypasses legacy `memory_entities` subject links and is owner-scoped/idempotent.
+- Added schema rejection coverage, self-edge indexing coverage, and updated synthetic graph fixtures to use the controlled vocabulary. Graph flags remain off by default.
+- Verification: focused graph/config contracts `40 passed`; PostgreSQL graph schema/repository/indexing integration `15 passed`; migration/lifecycle integration `2 passed`; Ruff passed. Target database upgraded from `0014_memory_supersession_owner` through `0016_one_self_entity_per_owner` and reports the new head.
+- Recursive CTE traversal remains a G3 concern: the current bounded service uses owner-scoped one/two-hop SQL with explicit cycle protection and active source-memory joins. No retrieval or prompt behavior was enabled by G1.
+
+### Phase G2 — Deterministic graph indexing and backfill (indexing/job foundation implemented)
 
 **Goal:** populate trustworthy graph data from fields already stored on active memories, without adding an LLM call.
 
@@ -338,7 +390,14 @@ Work:
 
 Exit gate: new and backfilled eligible memories produce identical graph records under replay/concurrency; unsupported memories safely produce no edge; graph writes remain off by default; current hybrid results are unchanged.
 
-### Phase G3 — Deterministic routing, bounded traversal, and complete evidence
+**G2 implementation record (2026-09-22):**
+
+- Confirmed the durable `MemoryJobType.INDEX_MEMORY_GRAPH` contract, `0013` database check constraint, same-transaction idempotent enqueue in `MemoryWriter`, and worker retry/dead-letter isolation. Graph job failures do not roll back or delete the source memory.
+- Added `GraphBackfillService.run_batch()` with a bounded UUID cursor, active owner-scoped memory query, deterministic policy-version check, replay-safe indexing, and explicit scanned/indexed/already-indexed/skipped counts. It never mutates memory rows, chunks, embeddings, FTS, dedupe/provenance fields, or supersession state.
+- Added an owner memory gate to graph traversal and source-memory reads. Disabling memory now prevents graph reads as well as new graph jobs/indexing; deletion cascades graph edges and evidence-only aliases through the existing composite foreign keys, and superseded evidence is excluded by active-memory joins.
+- Verification: focused graph contracts `8 passed`; PostgreSQL schema/repository/indexing/backfill/lifecycle integration `17 passed`; complete backend suite `344 passed, 56 skipped, 1 warning`; changed graph Ruff checks passed. Graph flags remain off by default and hybrid retrieval was not modified.
+
+### Phase G3 — Deterministic routing, bounded traversal, and complete evidence (traversal foundation implemented)
 
 **Goal:** prove graph retrieval in isolation before it participates in RRF or prompts.
 
@@ -364,6 +423,15 @@ Initial router examples:
 | “What is my latest preference?” | Structured/hybrid only |
 
 Exit gate: isolated PostgreSQL tests pass for one-hop, reverse lookup, two-hop, ambiguity, cycles, bounds, deletion, supersession, cancellation, timeout rollback, and two-user isolation. Retrieval still does not alter RRF or prompt context.
+
+#### G3 implementation record (2026-09-22)
+
+- `GraphQueryDecision` is the only query router for graph reads; it is deterministic, bounded, and remains separate from `MemoryQueryPlan`.
+- Exact canonical-name and alias resolution accepts a configured candidate cap, preserving ambiguity instead of silently merging same-name entities.
+- `GraphPath` validates endpoint continuity while preserving canonical edge direction, and exposes hop/source-memory metadata. Traversal remains limited to one or two hops with explicit cycle, edge, path, and memory bounds.
+- `GraphEvidenceQueryResult` and `GraphService.query_evidence()` return ordered paths plus every active supporting source-memory text. Missing/deleted/superseded evidence is reported as a safe fallback rather than promoted to a new fact.
+- Graph reads check cancellation before lookup, between traversal stages, after evidence fetch, and before publication. Timeout and SQLAlchemy failures roll back their transaction; callers can provide a separate async session factory so graph failures cannot poison ordinary hybrid retrieval.
+- Added unit coverage for complete evidence, cancellation, timeout rollback/isolation, disabled graph mode, path contracts, and existing graph repository contracts in `backend/tests/test_phase6a_graph_query.py`, `test_phase6a_graph_contracts.py`, and `test_phase6a_graph_repository.py`. No RRF, prompt, REST, or voice retrieval integration was changed.
 
 ### Phase G4 — Coverage gate and graph-aware extraction (only if needed)
 
@@ -553,8 +621,8 @@ VoiceGateway._memory_context_for_transcript
 
 ## 11. Bottom line
 
-**First repair Phase 6 by:** reproducing the baseline; fixing privacy/retrieval correctness; strengthening ownership/lifecycle contracts; then freezing a new hybrid-only baseline.
+**Current next step:** freeze the post-Phase-6 hybrid-only baseline and verify the completed G3 evidence boundary against the disposable PostgreSQL suite. The repository already contains the inert flags, PostgreSQL-local graph tables, owner-scoped lifecycle constraints, deterministic indexing job, bounded traversal, and complete isolated evidence contract.
 
-**Then add GraphRAG by:** introducing inert contracts/flags; adding a PostgreSQL-local graph with `self`, typed entities, aliases, and provenance-bearing relationships; deterministically indexing and backfilling eligible memories; retrieving bounded one/two-hop evidence bundles; shadowing; integrating bundles with the existing RRF/reranker/context path; and enabling canary inject only after acceptance. Rich model extraction and community summaries remain optional later phases.
+**Then complete GraphRAG by:** adding deterministic query routing and complete evidence bundles; shadowing; integrating bundles with the existing RRF/reranker/context path; and enabling canary inject only after acceptance. Rich model extraction and community summaries remain optional later phases.
 
 That is GraphRAG that fits a voice personal assistant, not a second unrelated RAG product.

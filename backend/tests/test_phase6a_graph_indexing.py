@@ -37,12 +37,29 @@ def test_known_relationship_contract_can_type_value_target_without_guessing() ->
     assert spec is not None and spec.target_entity_type == "project"
 
 
-def test_generic_extractor_relationship_predicate_is_not_graphable() -> None:
+def test_generic_extractor_relationship_predicate_maps_reviewed_self_role() -> None:
     spec, reason = derive_relationship_spec(
         memory_type="relationship",
         subject="Rahul",
         predicate="relationship",
         object_json={"value": "my colleague"},
+    )
+
+    assert reason is None
+    assert spec is not None
+    assert spec.source_name == "self"
+    assert spec.source_entity_type == "self"
+    assert spec.relationship_type == "COLLEAGUE_OF"
+    assert spec.target_name == "Rahul"
+    assert spec.target_entity_type == "person"
+
+
+def test_generic_extractor_relationship_rejects_unreviewed_role() -> None:
+    spec, reason = derive_relationship_spec(
+        memory_type="relationship",
+        subject="Rahul",
+        predicate="relationship",
+        object_json={"value": "my neighbor"},
     )
 
     assert spec is None

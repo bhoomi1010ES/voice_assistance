@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings
+from app.graph.backfill import GraphBackfillService
+from app.graph.errors import GraphInvalidTraversal
 from app.graph.indexing import GraphIndexingService
 from app.graph.policy import GRAPH_INDEX_POLICY_VERSION
 from app.graph.repository import GraphRepository
@@ -231,14 +233,14 @@ async def _seed_memory(
             subject_entity = await session.scalar(
                 select(Entity).where(
                     Entity.user_id == user_id,
-                    Entity.entity_type == "subject",
+                    Entity.entity_type == "other",
                     Entity.normalized_name == subject.casefold(),
                 )
             )
             if subject_entity is None:
                 subject_entity = Entity(
                     user_id=user_id,
-                    entity_type="subject",
+                    entity_type="other",
                     canonical_name=subject,
                     normalized_name=subject.casefold(),
                 )
@@ -412,6 +414,217 @@ def test_graph_flag_gates_enqueue_and_worker_indexes_with_provenance(
             )
             await session.execute(delete(User).where(User.id == disabled_owner_id))
             await session.commit()
+
+    asyncio.run(run())
+
+
+def test_first_person_relationship_creates_one_self_entity_and_person_target(
+    graph_index_database, graph_user
+) -> None:
+    factory = graph_index_database
+    user_id = graph_user
+
+    async def run() -> None:
+        memory_id = await _seed_memory(
+            factory,
+            user_id=user_id,
+            subject="Rahul",
+            predicate="relationship",
+            object_json={"value": "my colleague"},
+        )
+        indexer = GraphIndexingService(_graph_settings())
+        async with factory() as session:
+            first = await indexer.index_memory(
+                session,
+                user_id=user_id,
+                memory_id=memory_id,
+                policy_version=GRAPH_INDEX_POLICY_VERSION,
+            )
+            replay = await indexer.index_memory(
+                session,
+                user_id=user_id,
+                memory_id=memory_id,
+                policy_version=GRAPH_INDEX_POLICY_VERSION,
+            )
+            assert first.status == "indexed"
+            assert replay.status == "already_indexed"
+            await session.commit()
+
+        async with factory() as session:
+            self_entities = (
+                await session.scalars(
+                    select(Entity).where(
+                        Entity.user_id == user_id,
+                        Entity.entity_type == "self",
+                        Entity.normalized_name == "self",
+                    )
+                )
+            ).all()
+            assert len(self_entities) == 1
+            edge = await session.scalar(
+                select(EntityRelationship).where(
+                    EntityRelationship.user_id == user_id,
+                    EntityRelationship.source_memory_id == memory_id,
+                )
+            )
+            assert edge is not None
+            assert edge.source_entity_id == self_entities[0].id
+            assert edge.relationship_type == "COLLEAGUE_OF"
+            target = await session.get(Entity, edge.target_entity_id)
+            assert target is not None
+            assert target.entity_type == "person"
+            assert target.normalized_name == "rahul"
+
+    asyncio.run(run())
+
+
+def test_restartable_backfill_is_idempotent_and_preserves_memory_rows(
+    graph_index_database, graph_user
+) -> None:
+    factory = graph_index_database
+    user_id = graph_user
+
+    async def run() -> None:
+        eligible_one = await _seed_memory(
+            factory,
+            user_id=user_id,
+            subject="Backfill One",
+            object_json={"name": "Project One", "type": "project"},
+            subject_link=False,
+        )
+        unsupported = await _seed_memory(
+            factory,
+            user_id=user_id,
+            subject="Backfill Unsupported",
+            predicate="likes",
+            object_json={"name": "Coffee", "type": "product"},
+            subject_link=False,
+        )
+        eligible_two = await _seed_memory(
+            factory,
+            user_id=user_id,
+            subject="Backfill Two",
+            object_json={"name": "Project Two", "type": "project"},
+            subject_link=False,
+        )
+        memory_ids = (eligible_one, unsupported, eligible_two)
+        before: dict[uuid.UUID, tuple[object, ...]] = {}
+        async with factory() as session:
+            for memory_id in memory_ids:
+                memory = await session.get(MemoryItem, memory_id)
+                assert memory is not None
+                before[memory_id] = (
+                    memory.content,
+                    memory.memory_type,
+                    memory.subject,
+                    memory.predicate,
+                    memory.object_json,
+                    memory.confidence,
+                    memory.salience,
+                    memory.source_kind,
+                    memory.dedupe_key,
+                    memory.status,
+                )
+
+        backfill = GraphBackfillService(_graph_settings())
+        cursor = None
+        batches = []
+        while True:
+            async with factory() as session:
+                batch = await backfill.run_batch(
+                    session,
+                    user_id=user_id,
+                    after_memory_id=cursor,
+                    batch_size=2,
+                )
+                await session.commit()
+            batches.append(batch)
+            cursor = batch.next_cursor
+            if batch.complete:
+                break
+
+        assert sum(batch.scanned for batch in batches) == 3
+        assert sum(batch.indexed for batch in batches) == 2
+        assert sum(batch.skipped for batch in batches) == 1
+
+        async with factory() as session:
+            replay = await backfill.run_batch(
+                session,
+                user_id=user_id,
+                after_memory_id=None,
+                batch_size=10,
+            )
+            await session.commit()
+            assert replay.scanned == 3
+            assert replay.already_indexed == 2
+            assert replay.skipped == 1
+            for memory_id, expected in before.items():
+                memory = await session.get(MemoryItem, memory_id)
+                assert memory is not None
+                assert (
+                    memory.content,
+                    memory.memory_type,
+                    memory.subject,
+                    memory.predicate,
+                    memory.object_json,
+                    memory.confidence,
+                    memory.salience,
+                    memory.source_kind,
+                    memory.dedupe_key,
+                    memory.status,
+                ) == expected
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(EntityRelationship)
+                    .where(EntityRelationship.user_id == user_id)
+                )
+                == 2
+            )
+
+    asyncio.run(run())
+
+
+def test_graph_reads_stop_when_owner_memory_is_disabled(graph_index_database, graph_user) -> None:
+    factory = graph_index_database
+    user_id = graph_user
+
+    async def run() -> None:
+        memory_id = await _seed_memory(factory, user_id=user_id, subject_link=False)
+        service = GraphService(_graph_settings())
+        async with factory() as session:
+            indexed = await GraphIndexingService(_graph_settings()).index_memory(
+                session,
+                user_id=user_id,
+                memory_id=memory_id,
+                policy_version=GRAPH_INDEX_POLICY_VERSION,
+            )
+            assert indexed.status == "indexed"
+            await session.commit()
+        async with factory() as session:
+            entity = await session.scalar(
+                select(Entity).where(
+                    Entity.user_id == user_id,
+                    Entity.entity_type == "person",
+                    Entity.normalized_name == "rahul",
+                )
+            )
+            assert entity is not None
+            owner = await session.get(User, user_id)
+            assert owner is not None
+            owner.memory_enabled = False
+            await session.flush()
+            with pytest.raises(GraphInvalidTraversal, match="memory disabled"):
+                await service.paths(session, user_id=user_id, entity_id=entity.id)
+            assert (
+                await service.source_memories(
+                    session,
+                    user_id=user_id,
+                    source_memory_ids=(memory_id,),
+                )
+                == ()
+            )
+            await session.rollback()
 
     asyncio.run(run())
 
@@ -1065,7 +1278,7 @@ def test_memory_supersession_marks_only_its_graph_evidence_superseded(
                 session,
                 user_id=user_id,
                 source_entity_id=source_link.entity_id,
-                relationship_type="PREFERS",
+                relationship_type="RELATED_TO",
                 target_entity_id=target.entity.id,
                 source_memory_id=old_memory.id,
                 confidence=old_memory.confidence,
