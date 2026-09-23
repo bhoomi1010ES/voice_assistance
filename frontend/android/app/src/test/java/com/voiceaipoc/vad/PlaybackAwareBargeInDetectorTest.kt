@@ -50,6 +50,47 @@ class PlaybackAwareBargeInDetectorTest {
     }
 
     @Test
+    fun permittedSpeakerWithUnavailableAecConfirmsOnlyWithUsableReferenceAndStrongResidual() {
+        val degradedDetector = PlaybackAwareBargeInDetector()
+        val unhealthyAec = BargeInRouteHealth(
+            communicationModeActive = true,
+            aecAvailable = false,
+            aecEnabled = false,
+            aecEffectiveness = "UNAVAILABLE",
+            automaticLoudspeakerBargeInAllowed = true,
+        )
+
+        val initial = degradedDetector.evaluate(
+            input(
+                event = "SILERO_VAD_SPEECH_STARTED",
+                positionMs = 1_300L,
+                farEndRms = 2_000.0,
+                micRms = 3_000.0,
+                residual = 0.70,
+                routeHealth = unhealthyAec,
+            ),
+        )
+        assertEquals(PlaybackAwareBargeInDetector.EVENT_DEGRADED, initial?.event)
+        assertEquals(BargeInConfig.REASON_AEC_UNAVAILABLE, initial?.reason)
+
+        nextNs += 700_000_000L
+        val confirmed = degradedDetector.evaluate(
+            input(
+                event = "SILERO_VAD_SPEECH_ACTIVITY",
+                positionMs = 2_000L,
+                farEndRms = 2_000.0,
+                micRms = 3_000.0,
+                residual = 0.70,
+                routeHealth = unhealthyAec,
+            ),
+        )
+
+        assertEquals(PlaybackAwareBargeInDetector.EVENT_CONFIRMED, confirmed?.event)
+        assertFalse(confirmed?.aecHealthy ?: true)
+        assertTrue(confirmed?.referenceUsable ?: false)
+    }
+
+    @Test
     fun ttsOnlySpeechLikeInputNeverConfirms() {
         val start = detector.evaluate(
             input(
@@ -203,6 +244,49 @@ class PlaybackAwareBargeInDetectorTest {
     }
 
     @Test
+    fun unusableReferenceCannotConfirmSustainedHighEnergyTtsLikeLeakage() {
+        val referenceCases = listOf(
+            false to BargeInConfig.TIMESTAMP_NONE,
+            true to BargeInConfig.TIMESTAMP_WRITE,
+        )
+
+        referenceCases.forEach { (referenceReady, confidence) ->
+            val noReferenceDetector = PlaybackAwareBargeInDetector()
+            val expectedReason = if (referenceReady) {
+                BargeInConfig.REASON_REFERENCE_TIMING_UNRELIABLE
+            } else {
+                BargeInConfig.REASON_REFERENCE_NOT_READY
+            }
+
+            repeat(12) { index ->
+                if (index > 0) nextNs += 100_000_000L
+                val decision = noReferenceDetector.evaluate(
+                    input(
+                        event = if (index == 0) {
+                            "SILERO_VAD_SPEECH_STARTED"
+                        } else {
+                            "SILERO_VAD_SPEECH_ACTIVITY"
+                        },
+                        positionMs = 1_300L + index * 100L,
+                        probability = 0.99f,
+                        referenceReady = referenceReady,
+                        confidence = confidence,
+                        echoLikely = false,
+                        similarity = null,
+                        coherence = null,
+                        farEndRms = null,
+                        micRms = 3_000.0,
+                        residual = null,
+                    ),
+                )
+
+                assertEquals(PlaybackAwareBargeInDetector.EVENT_DEGRADED, decision?.event)
+                assertEquals(expectedReason, decision?.reason)
+            }
+        }
+    }
+
+    @Test
     fun unsafeLoudspeakerRouteDisablesAutomaticBargeInWithExplicitReason() {
         val decision = detector.evaluate(
             input(
@@ -266,6 +350,58 @@ class PlaybackAwareBargeInDetectorTest {
         nextNs += 500_000_000L
         val replacement = detector.evaluate(input(event = "SILERO_VAD_SPEECH_ACTIVITY", responseId = "r2", positionMs = 1_800L))
         assertEquals(PlaybackAwareBargeInDetector.EVENT_CONFIRMED, replacement?.event)
+    }
+
+    @Test
+    fun responseReplacementRestartsThePlaybackGuard() {
+        val replacementDetector = PlaybackAwareBargeInDetector()
+        replacementDetector.evaluate(
+            input(
+                event = "SILERO_VAD_SPEECH_STARTED",
+                responseId = "r1",
+                positionMs = 1_300L,
+            ),
+        )
+
+        nextNs += 100_000_000L
+        val replacement = replacementDetector.evaluate(
+            input(
+                event = "SILERO_VAD_SPEECH_STARTED",
+                responseId = "r2",
+                positionMs = 0L,
+            ),
+        )
+
+        assertTrue(replacement != null)
+        assertEquals(PlaybackAwareBargeInDetector.State.PLAYBACK_GUARD, replacement?.state)
+        assertTrue(replacement?.event != PlaybackAwareBargeInDetector.EVENT_CONFIRMED)
+    }
+
+    @Test
+    fun speechStopResetsPendingConfirmationDuration() {
+        val resetDetector = PlaybackAwareBargeInDetector()
+        resetDetector.evaluate(
+            input(event = "SILERO_VAD_SPEECH_STARTED", positionMs = 1_300L),
+        )
+
+        nextNs += 250_000_000L
+        assertNull(
+            resetDetector.evaluate(
+                input(event = "SILERO_VAD_SPEECH_STOPPED", positionMs = 1_550L),
+            ),
+        )
+
+        nextNs += 250_000_000L
+        resetDetector.evaluate(
+            input(event = "SILERO_VAD_SPEECH_STARTED", positionMs = 1_800L),
+        )
+
+        nextNs += 300_000_000L
+        val stillPending = resetDetector.evaluate(
+            input(event = "SILERO_VAD_SPEECH_ACTIVITY", positionMs = 2_100L),
+        )
+
+        assertTrue(stillPending == null || stillPending.event != PlaybackAwareBargeInDetector.EVENT_CONFIRMED)
     }
 
     @Test

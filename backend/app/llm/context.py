@@ -67,11 +67,24 @@ _MEMORY_SAVE_ACTION = re.compile(
     re.IGNORECASE,
 )
 _CURRENT_TIME_REQUEST = re.compile(
-    r"\b(?:what\s+time\s+is\s+it|what(?:'s|\s+is)\s+(?:the\s+)?(?:current\s+)?time)\b",
+    r"\b(?:what\s+time\s+is\s+it(?:\s+now)?|"
+    r"what(?:'s|\s+is)\s+(?:(?:the|current)\s+)?time(?:\s+now)?)\b",
     re.IGNORECASE,
 )
 _CURRENT_DATE_REQUEST = re.compile(
-    r"\b(?:what\s+(?:is|was)\s+(?:today(?:'s)?\s+)?date|what\s+date\s+is\s+it|today(?:'s)?\s+date)\b",
+    r"\b(?:what(?:'s|\s+is|\s+was)\s+(?:the\s+)?"
+    r"(?:(?:current|today(?:'s)?)\s+)?date(?:\s+today)?|"
+    r"what\s+date\s+is\s+it|today(?:'s)?\s+date)\b",
+    re.IGNORECASE,
+)
+_COMBINED_DATE_TIME_REQUEST = re.compile(
+    r"\b(?:what(?:'s|\s+is)\s+(?:(?:the|current|today(?:'s)?)\s+)*"
+    r"date\s+(?:and|&)\s+(?:(?:the|current)\s+)*time|"
+    r"what(?:'s|\s+is)\s+(?:(?:the|current)\s+)*time\s+(?:and|&)\s+"
+    r"(?:(?:the|current|today(?:'s)?)\s+)*date|"
+    r"(?:current|today(?:'s)?)\s+date\s+(?:and|&)\s+(?:current\s+)?time|"
+    r"current\s+time\s+(?:and|&)\s+date|"
+    r"(?:current\s+)?time\s+(?:and|&)\s+(?:current|today(?:'s)?)\s+date)\b",
     re.IGNORECASE,
 )
 _SCHEDULED_ITEM = re.compile(
@@ -88,6 +101,10 @@ _TASK_LOOKUP = re.compile(
 )
 
 
+def is_combined_date_time_request(transcript: str | None) -> bool:
+    return bool(_COMBINED_DATE_TIME_REQUEST.search(transcript or ""))
+
+
 def classify_voice_tool_choice(
     transcript: str,
     allowed_tools: tuple[LLMToolDefinition, ...],
@@ -102,11 +119,7 @@ def classify_voice_tool_choice(
 
     available_tools = {tool.name for tool in allowed_tools}
     user_text = " ".join(transcript.strip().split())
-    if "get_current_time" in available_tools and _CURRENT_TIME_REQUEST.search(user_text):
-        return LLMNamedToolChoice(function={"name": "get_current_time"})
-    if "get_current_date" in available_tools and _CURRENT_DATE_REQUEST.search(user_text):
-        return LLMNamedToolChoice(function={"name": "get_current_date"})
-    if not user_text or _INFORMATIONAL_PREFIX.search(user_text):
+    if not user_text:
         return "auto"
     if "list_tasks" in available_tools and _TASK_LOOKUP.search(user_text):
         return LLMNamedToolChoice(function={"name": "list_tasks"})
@@ -114,12 +127,20 @@ def classify_voice_tool_choice(
         _REMINDER_ACTION.search(user_text) or _TASK_ACTION.search(user_text)
     ):
         return LLMNamedToolChoice(function={"name": "create_task"})
-    if "memory_save" in available_tools and _MEMORY_SAVE_ACTION.search(user_text):
-        return LLMNamedToolChoice(function={"name": "memory_save"})
     if "create_task" in available_tools and (
         _SCHEDULED_ITEM.search(user_text) and has_temporal_expression(user_text)
     ):
         return LLMNamedToolChoice(function={"name": "create_task"})
+    if "get_current_time" in available_tools and is_combined_date_time_request(user_text):
+        return LLMNamedToolChoice(function={"name": "get_current_time"})
+    if "get_current_time" in available_tools and _CURRENT_TIME_REQUEST.search(user_text):
+        return LLMNamedToolChoice(function={"name": "get_current_time"})
+    if "get_current_date" in available_tools and _CURRENT_DATE_REQUEST.search(user_text):
+        return LLMNamedToolChoice(function={"name": "get_current_date"})
+    if _INFORMATIONAL_PREFIX.search(user_text):
+        return "auto"
+    if "memory_save" in available_tools and _MEMORY_SAVE_ACTION.search(user_text):
+        return LLMNamedToolChoice(function={"name": "memory_save"})
     return "auto"
 
 

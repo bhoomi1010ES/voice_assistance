@@ -23,11 +23,13 @@ from app.llm.types import (
     LLMCapabilities,
     LLMEvent,
     LLMMessage,
+    LLMNamedToolChoice,
     LLMProviderInfo,
     LLMRequest,
     LLMRole,
     LLMToolCall,
 )
+from app.services.device_time import DeviceTimeContext
 
 
 class LookupArguments(BaseModel):
@@ -55,24 +57,33 @@ def _settings(**overrides) -> Settings:
     return Settings(**values)
 
 
-def _request() -> LLMRequest:
+def _request(
+    *,
+    user_text: str = "What time is it?",
+    allowed_tools=(),
+    tool_choice="auto",
+) -> LLMRequest:
     return LLMRequest(
         session_id=uuid.uuid4(),
         turn_id=uuid.uuid4(),
         response_id=uuid.uuid4(),
         system_instructions="Answer briefly.",
-        messages=(LLMMessage(role=LLMRole.USER, content="What time is it?"),),
+        messages=(LLMMessage(role=LLMRole.USER, content=user_text),),
+        allowed_tools=allowed_tools,
+        tool_choice=tool_choice,
         max_output_tokens=64,
     )
 
 
-def _context(request: LLMRequest) -> ToolExecutionContext:
-    return ToolExecutionContext(
+def _context(request: LLMRequest, **overrides) -> ToolExecutionContext:
+    values = dict(
         user_id=uuid.uuid4(),
         session_id=request.session_id,
         turn_id=request.turn_id,
         response_id=request.response_id,
     )
+    values.update(overrides)
+    return ToolExecutionContext(**values)
 
 
 def _event(request: LLMRequest, event_type: str, sequence: int, **values) -> LLMEvent:
@@ -169,6 +180,89 @@ class FakeConfirmationLLMService:
         yield _event(request, "response_completed", 4, text="", finish_reason="tool_calls")
 
 
+class FakeClockOnlyLLMService:
+    provider_info = FakeLLMService.provider_info
+
+    def __init__(self, tool_calls: tuple[LLMToolCall, ...]) -> None:
+        self.tool_calls = tool_calls
+        self.requests: list[LLMRequest] = []
+
+    async def stream(self, request: LLMRequest):
+        if any(message.role == LLMRole.TOOL for message in request.messages):
+            raise AssertionError("A successful clock-only round must not call the provider again.")
+        self.requests.append(request)
+        yield _event(request, "request_started", 0)
+        yield _event(request, "text_delta", 1, delta="I will check that.")
+        sequence = 2
+        for call in self.tool_calls:
+            yield _event(request, "tool_call_started", sequence, tool_call=call)
+            sequence += 1
+            yield _event(
+                request,
+                "tool_call_arguments_delta",
+                sequence,
+                delta=call.arguments_json,
+                tool_call=call,
+            )
+            sequence += 1
+            yield _event(request, "tool_call_completed", sequence, tool_call=call)
+            sequence += 1
+        yield _event(request, "response_completed", sequence, text="", finish_reason="tool_calls")
+
+
+class FakeFollowUpLLMService:
+    provider_info = FakeLLMService.provider_info
+
+    def __init__(self, tool_call: LLMToolCall, final_text: str) -> None:
+        self.tool_call = tool_call
+        self.final_text = final_text
+        self.requests: list[LLMRequest] = []
+
+    async def stream(self, request: LLMRequest):
+        self.requests.append(request)
+        if any(message.role == LLMRole.TOOL for message in request.messages):
+            assert request.tool_choice == "auto"
+            yield _event(request, "request_started", 0)
+            yield _event(request, "text_delta", 1, delta=self.final_text)
+            yield _event(
+                request,
+                "response_completed",
+                2,
+                text=self.final_text,
+                finish_reason="stop",
+            )
+            return
+
+        assert isinstance(request.tool_choice, LLMNamedToolChoice)
+        assert request.tool_choice.function.name == self.tool_call.name
+        yield _event(request, "request_started", 0)
+        yield _event(request, "tool_call_started", 1, tool_call=self.tool_call)
+        yield _event(
+            request,
+            "tool_call_arguments_delta",
+            2,
+            delta=self.tool_call.arguments_json,
+            tool_call=self.tool_call,
+        )
+        yield _event(
+            request,
+            "tool_call_completed",
+            3,
+            tool_call=self.tool_call,
+            provider_items=(
+                {"type": "reasoning", "id": "rs-follow-up", "encrypted_content": "opaque"},
+                {
+                    "type": "function_call",
+                    "id": "fc-follow-up",
+                    "call_id": self.tool_call.tool_call_id,
+                    "name": self.tool_call.name,
+                    "arguments": self.tool_call.arguments_json,
+                },
+            ),
+        )
+        yield _event(request, "response_completed", 4, text="", finish_reason="tool_calls")
+
+
 class FakeDatabase:
     def __init__(self) -> None:
         self.tasks = []
@@ -196,6 +290,7 @@ async def test_default_registry_is_server_owned_and_schema_backed() -> None:
         "delete_reminder",
         "list_reminders",
         "get_current_time",
+        "get_current_date",
     }.issubset(registry.names())
     definition = next(
         definition for definition in registry.definitions() if definition.name == "get_current_time"
@@ -462,14 +557,33 @@ async def test_mutating_tool_uses_scoped_idempotency_key() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_loop_runs_sequential_round_and_suppresses_premature_text() -> None:
+async def test_forced_clock_tool_answer_is_terminal_and_suppresses_premature_text() -> None:
     settings = _settings()
-    service = FakeLLMService()
     registry = create_default_tool_registry()
+    call = LLMToolCall(
+        tool_call_id="call-time-1",
+        name="get_current_time",
+        arguments_json="{}",
+        arguments={},
+    )
+    service = FakeClockOnlyLLMService((call,))
     loop = LLMToolLoop(settings, service, registry)
-    request = _request()
+    request = _request(
+        allowed_tools=registry.definitions(),
+        tool_choice=LLMNamedToolChoice(function={"name": "get_current_time"}),
+    )
+    context = _context(
+        request,
+        source_transcript="What time is it?",
+        device_time_context=DeviceTimeContext(
+            device_epoch_ms=int(datetime(2026, 9, 23, 12, 34, tzinfo=UTC).timestamp() * 1000),
+            timezone_id="UTC",
+            utc_offset="+00:00",
+            locale="en-US",
+        ),
+    )
 
-    events = [event async for event in loop.stream(request, context=_context(request))]
+    events = [event async for event in loop.stream(request, context=context)]
 
     assert [event.event_type for event in events] == [
         "request_started",
@@ -477,19 +591,221 @@ async def test_tool_loop_runs_sequential_round_and_suppresses_premature_text() -
         "tool_call_arguments_delta",
         "tool_call_completed",
         "tool_execution_completed",
-        "request_started",
         "text_delta",
         "response_completed",
     ]
     assert all(event.delta != "I will check that." for event in events)
+    assert len(service.requests) == 1
+    assert service.requests[0].tool_choice == request.tool_choice
+    assert events[-2].delta == "The current time is 12:34 PM."
+    assert events[-1].text == events[-2].delta
+    assert events[-1].finish_reason == "tool_result"
+    assert [event.sequence for event in events] == sorted(event.sequence for event in events)
+    assert all(event.session_id == request.session_id for event in events)
+    assert all(event.turn_id == request.turn_id for event in events)
+    assert all(event.response_id == request.response_id for event in events)
+
+
+@pytest.mark.asyncio
+async def test_clock_tool_speaks_date_and_time_once_when_both_tools_return() -> None:
+    registry = create_default_tool_registry()
+    time_call = LLMToolCall(
+        tool_call_id="call-time-1",
+        name="get_current_time",
+        arguments_json="{}",
+        arguments={},
+    )
+    date_call = LLMToolCall(
+        tool_call_id="call-date-1",
+        name="get_current_date",
+        arguments_json="{}",
+        arguments={},
+    )
+    service = FakeClockOnlyLLMService((time_call, date_call))
+    loop = LLMToolLoop(_settings(), service, registry)
+    request = _request(
+        user_text="What's the date and time?",
+        allowed_tools=registry.definitions(),
+        tool_choice=LLMNamedToolChoice(function={"name": "get_current_time"}),
+    )
+    context = _context(
+        request,
+        source_transcript="What's the date and time?",
+        device_time_context=DeviceTimeContext(
+            device_epoch_ms=int(datetime(2026, 9, 23, 12, 34, tzinfo=UTC).timestamp() * 1000),
+            timezone_id="UTC",
+            utc_offset="+00:00",
+            locale="en-US",
+        ),
+    )
+
+    events = [event async for event in loop.stream(request, context=context)]
+    answer = events[-2].delta
+
+    assert answer == "The current time is 12:34 PM and today's date is 23 September 2026."
+    assert answer.count("12:34 PM") == 1
+    assert answer.count("23 September 2026") == 1
+    assert len(service.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_forced_date_tool_returns_one_deterministic_spoken_answer() -> None:
+    registry = create_default_tool_registry()
+    call = LLMToolCall(
+        tool_call_id="call-date-1",
+        name="get_current_date",
+        arguments_json="{}",
+        arguments={},
+    )
+    service = FakeClockOnlyLLMService((call,))
+    loop = LLMToolLoop(_settings(), service, registry)
+    request = _request(
+        user_text="What's today's date?",
+        allowed_tools=registry.definitions(),
+        tool_choice=LLMNamedToolChoice(function={"name": "get_current_date"}),
+    )
+    context = _context(
+        request,
+        source_transcript="What's today's date?",
+        device_time_context=DeviceTimeContext(
+            device_epoch_ms=int(datetime(2026, 9, 23, 12, 34, tzinfo=UTC).timestamp() * 1000),
+            timezone_id="UTC",
+            utc_offset="+00:00",
+            locale="en-US",
+        ),
+    )
+
+    events = [event async for event in loop.stream(request, context=context)]
+
+    assert events[-2].delta == "Today's date is 23 September 2026."
+    assert events[-1].text == events[-2].delta
+    assert events[-1].finish_reason == "tool_result"
+    assert len(service.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_timezone_is_included_in_the_spoken_clock_answer() -> None:
+    registry = create_default_tool_registry()
+    call = LLMToolCall(
+        tool_call_id="call-time-1",
+        name="get_current_time",
+        arguments_json="{}",
+        arguments={},
+    )
+    service = FakeClockOnlyLLMService((call,))
+    loop = LLMToolLoop(_settings(), service, registry)
+    request = _request(
+        user_text="What time is it in Los Angeles?",
+        allowed_tools=registry.definitions(),
+        tool_choice=LLMNamedToolChoice(function={"name": "get_current_time"}),
+    )
+    context = _context(
+        request,
+        timezone_source="explicit",
+        source_transcript="What time is it in Los Angeles?",
+        device_time_context=DeviceTimeContext(
+            device_epoch_ms=int(datetime(2026, 9, 23, 12, 34, tzinfo=UTC).timestamp() * 1000),
+            timezone_id="America/Los_Angeles",
+            utc_offset="-07:00",
+            locale="en-US",
+        ),
+    )
+
+    events = [event async for event in loop.stream(request, context=context)]
+
+    assert events[-2].delta == "The current time in America/Los_Angeles is 5:34 AM."
+
+
+@pytest.mark.asyncio
+async def test_forced_non_clock_tool_continuation_uses_auto_choice() -> None:
+    registry = ToolRegistry()
+
+    async def handler(_context, arguments):
+        return {"city": arguments.city, "temperature": "18 C"}
+
+    registry.register(
+        name="lookup_weather",
+        description="Look up weather.",
+        arguments_model=LookupArguments,
+        handler=handler,
+    )
+    call = LLMToolCall(
+        tool_call_id="weather-1",
+        name="lookup_weather",
+        arguments_json='{"city":"Paris"}',
+        arguments={"city": "Paris"},
+    )
+    service = FakeFollowUpLLMService(call, "The lookup returned a result.")
+    loop = LLMToolLoop(_settings(), service, registry)
+    request = _request(
+        user_text="Check the weather in Paris.",
+        allowed_tools=registry.definitions(),
+        tool_choice=LLMNamedToolChoice(function={"name": "lookup_weather"}),
+    )
+
+    events = [event async for event in loop.stream(request, context=_context(request))]
+
     assert len(service.requests) == 2
+    assert isinstance(service.requests[0].tool_choice, LLMNamedToolChoice)
+    assert service.requests[1].tool_choice == "auto"
     follow_up = service.requests[1]
     assert follow_up.messages[-2].role == LLMRole.ASSISTANT
-    assert follow_up.messages[-2].tool_calls[0].tool_call_id == "call-time-1"
-    assert follow_up.messages[-2].provider_items[0]["type"] == "reasoning"
-    assert follow_up.messages[-2].provider_items[1]["id"] == "fc-time"
+    assert follow_up.messages[-2].provider_items[0]["id"] == "rs-follow-up"
+    assert follow_up.messages[-2].provider_items[1]["id"] == "fc-follow-up"
     assert follow_up.messages[-1].role == LLMRole.TOOL
-    assert follow_up.messages[-1].tool_call_id == "call-time-1"
+    assert follow_up.messages[-1].tool_call_id == call.tool_call_id
+    assert events[-2].delta == "The lookup returned a result."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result_mode", ["failed", "malformed"])
+async def test_failed_or_malformed_clock_result_uses_auto_without_invented_time(
+    result_mode: str,
+) -> None:
+    class EmptyArguments(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+    registry = ToolRegistry()
+
+    async def handler(_context, _arguments):
+        if result_mode == "failed":
+            raise RuntimeError("clock failure")
+        return {
+            "local_time": "",
+            "local_date": "23 September 2026",
+            "timezone": "UTC",
+            "utc_offset": "+00:00",
+        }
+
+    registry.register(
+        name="get_current_time",
+        description="Return the current local time.",
+        arguments_model=EmptyArguments,
+        handler=handler,
+    )
+    call = LLMToolCall(
+        tool_call_id="clock-1",
+        name="get_current_time",
+        arguments_json="{}",
+        arguments={},
+    )
+    service = FakeFollowUpLLMService(call, "I could not retrieve the current time.")
+    loop = LLMToolLoop(_settings(), service, registry)
+    request = _request(
+        allowed_tools=registry.definitions(),
+        tool_choice=LLMNamedToolChoice(function={"name": "get_current_time"}),
+    )
+
+    events = [event async for event in loop.stream(request, context=_context(request))]
+
+    assert len(service.requests) == 2
+    assert service.requests[1].tool_choice == "auto"
+    expected_tool_event = (
+        "tool_execution_failed" if result_mode == "failed" else "tool_execution_completed"
+    )
+    assert any(event.event_type == expected_tool_event for event in events)
+    assert events[-2].delta == "I could not retrieve the current time."
+    assert all(event.finish_reason != "tool_result" for event in events)
 
 
 @pytest.mark.asyncio

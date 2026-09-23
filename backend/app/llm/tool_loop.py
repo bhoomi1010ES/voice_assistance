@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import Clock, SystemClock
 from app.core.config import Settings
+from app.llm.context import is_combined_date_time_request
 from app.llm.errors import (
     LLMContextLimitError,
     LLMToolArgumentsError,
@@ -566,7 +567,48 @@ class LLMToolLoop:
                     error_code="llm_tool_confirmation_required",
                 )
                 return
-            current_request = current_request.model_copy(update={"messages": tuple(next_messages)})
+            clock_answer = _clock_tool_answer(
+                completed_calls,
+                execution_results,
+                transcript=(context.source_transcript or _last_user_text(current_request)),
+                timezone_source=context.timezone_source,
+            )
+            if clock_answer is not None:
+                last_event = round_events[-1] if round_events else None
+                event_attempt = last_event.attempt if last_event is not None else 1
+                yield LLMEvent(
+                    event_type="text_delta",
+                    session_id=current_request.session_id,
+                    turn_id=current_request.turn_id,
+                    response_id=current_request.response_id,
+                    provider=provider_info.provider,
+                    configured_model=provider_info.configured_model,
+                    monotonic_seconds=time.monotonic(),
+                    sequence=lifecycle_sequence,
+                    attempt=event_attempt,
+                    delta=clock_answer,
+                )
+                yield LLMEvent(
+                    event_type="response_completed",
+                    session_id=current_request.session_id,
+                    turn_id=current_request.turn_id,
+                    response_id=current_request.response_id,
+                    provider=provider_info.provider,
+                    configured_model=provider_info.configured_model,
+                    monotonic_seconds=time.monotonic(),
+                    sequence=lifecycle_sequence + 1,
+                    attempt=event_attempt,
+                    text=clock_answer,
+                    finish_reason="tool_result",
+                    provider_request_id=(
+                        last_event.provider_request_id if last_event is not None else None
+                    ),
+                    returned_model=last_event.returned_model if last_event is not None else None,
+                )
+                return
+            current_request = current_request.model_copy(
+                update={"messages": tuple(next_messages), "tool_choice": "auto"}
+            )
             self._enforce_context_bound(current_request)
 
         raise LLMToolLoopLimitError("The tool loop did not reach a terminal response.")
@@ -584,6 +626,87 @@ class LLMToolLoop:
 
 class EmptyToolArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+def _last_user_text(request: LLMRequest) -> str:
+    return next(
+        (message.content for message in reversed(request.messages) if message.role == LLMRole.USER),
+        "",
+    )
+
+
+def _clock_tool_answer(
+    calls: list[LLMToolCall],
+    results: list[ToolExecutionResult],
+    *,
+    transcript: str,
+    timezone_source: str,
+) -> str | None:
+    if not calls or len(calls) != len(results):
+        return None
+
+    clock_results: dict[str, dict[str, str]] = {}
+    for call, result in zip(calls, results, strict=True):
+        if call.name not in {"get_current_time", "get_current_date"}:
+            return None
+        if result.name != call.name or not result.success:
+            return None
+        try:
+            envelope = json.loads(result.content)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(envelope, dict) or envelope.get("ok") is not True:
+            return None
+        value = envelope.get("result")
+        if not isinstance(value, dict):
+            return None
+        required_fields = (
+            ("local_time", "local_date", "timezone", "utc_offset")
+            if call.name == "get_current_time"
+            else ("local_date", "timezone", "utc_offset")
+        )
+        fields: dict[str, str] = {}
+        for field_name in required_fields:
+            field_value = value.get(field_name)
+            if not isinstance(field_value, str) or not field_value.strip():
+                return None
+            fields[field_name] = field_value.strip()
+        clock_results.setdefault(call.name, fields)
+
+    time_result = clock_results.get("get_current_time")
+    date_result = clock_results.get("get_current_date")
+    date_value = (
+        time_result["local_date"]
+        if time_result is not None
+        else date_result["local_date"]
+        if date_result is not None
+        else None
+    )
+    explicit_zone = timezone_source == "explicit"
+    combined = (
+        time_result is not None and date_result is not None
+    ) or is_combined_date_time_request(transcript)
+    timezone_value = (
+        time_result["timezone"]
+        if time_result is not None
+        else date_result["timezone"]
+        if date_result is not None
+        else ""
+    )
+    timezone_prefix = f"In {timezone_value}, " if explicit_zone else ""
+
+    if time_result is not None and combined and date_value is not None:
+        return (
+            f"{timezone_prefix}The current time is {time_result['local_time']} and "
+            f"today's date is {date_value}."
+        )
+    if time_result is not None:
+        zone_suffix = f" in {timezone_value}" if explicit_zone else ""
+        return f"The current time{zone_suffix} is {time_result['local_time']}."
+    if date_value is not None:
+        zone_suffix = f" in {timezone_value}" if explicit_zone else ""
+        return f"Today's date{zone_suffix} is {date_value}."
+    return None
 
 
 async def _current_time(_context: ToolExecutionContext, _arguments: BaseModel) -> dict[str, str]:

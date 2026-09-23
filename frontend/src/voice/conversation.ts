@@ -154,6 +154,7 @@ const MUTATING_TOOL_NAMES = new Set([
 ]);
 const READ_ONLY_TOOL_NAMES = new Set([
   'get_current_time',
+  'get_current_date',
   'memory_search',
   'list_tasks',
   'list_reminders',

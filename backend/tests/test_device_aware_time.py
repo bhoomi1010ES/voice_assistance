@@ -20,6 +20,7 @@ from app.llm.tool_loop import (
     create_default_tool_registry,
 )
 from app.llm.types import LLMNamedToolChoice, LLMToolCall
+from app.services import device_time
 from app.services.device_time import (
     build_device_time_context,
     format_local_time,
@@ -115,6 +116,60 @@ async def test_acceptance_2_current_date_is_device_local_and_creates_no_task() -
         "timezone": "America/New_York",
         "utc_offset": "-04:00",
     }
+
+
+@pytest.mark.parametrize(
+    ("transcript", "expected_tool"),
+    [
+        ("What is the date?", "get_current_date"),
+        ("What's the date today?", "get_current_date"),
+        ("What is the current date?", "get_current_date"),
+        ("What's today's date?", "get_current_date"),
+        ("What time is it now?", "get_current_time"),
+        ("What's the current date and time?", "get_current_time"),
+        ("What is the time and date?", "get_current_time"),
+        ("Current time and date, please.", "get_current_time"),
+        ("What's the current time and date?", "get_current_time"),
+        ("Current date and time, please.", "get_current_time"),
+    ],
+)
+def test_common_clock_phrases_route_to_the_matching_read_only_tool(
+    transcript: str,
+    expected_tool: str,
+) -> None:
+    choice = classify_voice_tool_choice(transcript, create_default_tool_registry().definitions())
+
+    assert isinstance(choice, LLMNamedToolChoice)
+    assert choice.function.name == expected_tool
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "What time is my meeting?",
+        "What date is my reminder?",
+        "What is the current date of my reminder?",
+    ],
+)
+def test_scheduled_item_lookups_precede_broad_clock_routing(transcript: str) -> None:
+    choice = classify_voice_tool_choice(transcript, create_default_tool_registry().definitions())
+
+    assert isinstance(choice, LLMNamedToolChoice)
+    assert choice.function.name == "list_tasks"
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "Schedule a meeting at the current time tomorrow.",
+        "Remind me to ask what time it is tomorrow.",
+    ],
+)
+def test_scheduled_item_creation_does_not_route_to_a_clock_tool(transcript: str) -> None:
+    choice = classify_voice_tool_choice(transcript, create_default_tool_registry().definitions())
+
+    assert isinstance(choice, LLMNamedToolChoice)
+    assert choice.function.name == "create_task"
 
 
 class _TaskDatabase:
@@ -307,6 +362,40 @@ async def test_device_epoch_wins_over_skewed_backend_clock_for_utc_and_isd() -> 
     }
 
 
+@pytest.mark.asyncio
+async def test_clock_tool_advances_turn_snapshot_across_a_minute_and_date_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monotonic_now = [100.0]
+    monkeypatch.setattr(device_time.time, "monotonic", lambda: monotonic_now[0])
+    snapshot = build_device_time_context(
+        _device_context(epoch="2026-09-11T23:59:59", timezone="UTC"),
+        fallback_clock=FrozenClock(datetime(2020, 1, 1, tzinfo=UTC)),
+    )
+    snapshot = replace(snapshot, monotonic_captured_at=monotonic_now[0])
+    monotonic_now[0] += 2.0
+    tool_context = ToolExecutionContext(
+        user_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=uuid.uuid4(),
+        device_time_context=snapshot,
+        user_timezone="UTC",
+    )
+
+    result = await ToolExecutor(create_default_tool_registry()).execute(
+        LLMToolCall(tool_call_id="delayed-time", name="get_current_time", arguments={}),
+        context=tool_context,
+    )
+
+    assert json.loads(result.content)["result"] == {
+        "local_date": "12 September 2026",
+        "local_time": "12:00 AM",
+        "timezone": "UTC",
+        "utc_offset": "+00:00",
+    }
+
+
 @pytest.mark.parametrize("timezone", ["Asia/Kolkata", "America/New_York", "Europe/London"])
 def test_device_zones_are_iana_and_offset_is_derived_from_zone_rules(timezone: str) -> None:
     context = build_device_time_context(
@@ -361,6 +450,7 @@ def test_gateway_formats_request_timezone_and_keeps_lifecycle_on_server_clock() 
     assert explicit_context is not None
     assert explicit_context.timezone_id == "America/New_York"
     assert explicit_context.utc_offset == "-04:00"
+    assert explicit_context.monotonic_captured_at == device_context.monotonic_captured_at
     assert gateway._application_clock().now_utc() == backend_now
     assert gateway._trusted_user_clock().now_utc() == device_context.instant_utc
 

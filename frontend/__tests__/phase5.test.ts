@@ -194,59 +194,62 @@ test('maps backend failures to safe user copy and rejects unauthorized tool stat
   expect(result.state.messages).toHaveLength(0);
 });
 
-test('accepts only ordered read-only tool lifecycle transitions', () => {
-  let state = createConversationState();
-  state = reduce(state, {
-    ...BASE,
-    type: 'tool.status',
-    toolCallId: 'tool-time-1',
-    name: 'get_current_time',
-    status: 'understanding',
-    result: null,
-    confirmationId: null,
-    errorCode: null,
-  });
-  state = reduce(state, {
-    ...BASE,
-    type: 'tool.status',
-    toolCallId: 'tool-time-1',
-    name: 'get_current_time',
-    status: 'executing',
-    result: null,
-    confirmationId: null,
-    errorCode: null,
-  });
-  state = reduce(state, {
-    ...BASE,
-    type: 'tool.status',
-    toolCallId: 'tool-time-1',
-    name: 'get_current_time',
-    status: 'success',
-    result: null,
-    confirmationId: null,
-    errorCode: null,
-  });
-
-  const duplicateSuccess = reduceVoiceEvent(
-    state,
-    {
+test.each(['get_current_time', 'get_current_date'])(
+  'accepts only ordered read-only %s tool lifecycle transitions',
+  name => {
+    let state = createConversationState();
+    state = reduce(state, {
       ...BASE,
       type: 'tool.status',
       toolCallId: 'tool-time-1',
-      name: 'get_current_time',
+      name,
+      status: 'understanding',
+      result: null,
+      confirmationId: null,
+      errorCode: null,
+    });
+    state = reduce(state, {
+      ...BASE,
+      type: 'tool.status',
+      toolCallId: 'tool-time-1',
+      name,
+      status: 'executing',
+      result: null,
+      confirmationId: null,
+      errorCode: null,
+    });
+    state = reduce(state, {
+      ...BASE,
+      type: 'tool.status',
+      toolCallId: 'tool-time-1',
+      name,
       status: 'success',
       result: null,
       confirmationId: null,
       errorCode: null,
-    },
-    2,
-  );
-  expect(duplicateSuccess.accepted).toBe(false);
-  expect(state.messages[state.messages.length - 1]).toMatchObject({
-    role: 'tool',
-    status: 'success',
-  });
-});
+    });
+
+    const duplicateSuccess = reduceVoiceEvent(
+      state,
+      {
+        ...BASE,
+        type: 'tool.status',
+        toolCallId: 'tool-time-1',
+        name,
+        status: 'success',
+        result: null,
+        confirmationId: null,
+        errorCode: null,
+      },
+      2,
+    );
+    expect(duplicateSuccess.accepted).toBe(false);
+    expect(state.messages[state.messages.length - 1]).toMatchObject({
+      role: 'tool',
+      status: 'success',
+    });
+  },
+);
 
 test('requires confirmation before a mutating tool can execute or succeed', () => {
   const understanding: VoiceEvent = {

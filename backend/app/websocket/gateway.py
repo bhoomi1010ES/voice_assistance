@@ -3967,13 +3967,14 @@ class VoiceGateway:
             return None
         valid_name = valid_timezone(timezone_name) or context.timezone_id
         zone = context.zone if valid_name == context.timezone_id else ZoneInfo(valid_name)
-        offset = context.instant_utc.astimezone(zone).utcoffset()
+        offset = context.current_instant_utc().astimezone(zone).utcoffset()
         return DeviceTimeContext(
             device_epoch_ms=context.device_epoch_ms,
             timezone_id=valid_name,
             utc_offset=format_utc_offset(offset),
             locale=context.locale,
             source=context.source,
+            monotonic_captured_at=context.monotonic_captured_at,
         )
 
     def _user_timezone(self) -> str:

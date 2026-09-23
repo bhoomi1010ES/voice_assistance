@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -51,17 +52,28 @@ class DeviceTimeContext:
     utc_offset: str
     locale: str
     source: str = "device"
+    monotonic_captured_at: float = field(
+        default_factory=time.monotonic,
+        compare=False,
+        repr=False,
+    )
 
     @property
     def instant_utc(self) -> datetime:
         return datetime.fromtimestamp(self.device_epoch_ms / 1000, tz=UTC)
+
+    def current_instant_utc(self) -> datetime:
+        """Advance the validated device snapshot by monotonic elapsed time."""
+
+        elapsed = max(0.0, time.monotonic() - self.monotonic_captured_at)
+        return self.instant_utc + timedelta(seconds=elapsed)
 
     @property
     def zone(self) -> ZoneInfo:
         return ZoneInfo(self.timezone_id)
 
     def local_now(self) -> datetime:
-        return self.instant_utc.astimezone(self.zone)
+        return self.current_instant_utc().astimezone(self.zone)
 
 
 def valid_timezone(value: str | None) -> str | None:

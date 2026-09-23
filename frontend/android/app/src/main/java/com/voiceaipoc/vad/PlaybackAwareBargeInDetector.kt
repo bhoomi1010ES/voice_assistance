@@ -274,6 +274,20 @@ class PlaybackAwareBargeInDetector(
             )
         }
 
+        // Without a presentation-aligned reference, high microphone energy
+        // during playback cannot distinguish a user from loudspeaker leakage.
+        // Keep the detector fail-closed until the acoustic path is measurable.
+        if (!referenceUsable) {
+            return decision(
+                EVENT_DEGRADED,
+                state,
+                referenceReason ?: BargeInConfig.REASON_REFERENCE_TIMING_UNRELIABLE,
+                input,
+                referenceUsable,
+                aecHealthy,
+            )
+        }
+
         if (!nearEndEvidence) {
             return decision(
                 if (strictFallback) EVENT_DEGRADED else EVENT_CANDIDATE,
@@ -379,7 +393,9 @@ class PlaybackAwareBargeInDetector(
         val residual = input.nearEndResidualRatio
         val farEnd = input.farEndRms
         val residualStrong = residual != null && residual >= config.minimumResidualRatio
-        val farEndQuiet = farEnd == null || farEnd < config.minimumFarEndRms
+        // An absent reference is unknown, not evidence that the far end is
+        // quiet. This distinction matters on the loudspeaker degraded path.
+        val farEndQuiet = farEnd != null && farEnd < config.minimumFarEndRms
         return residualStrong || farEndQuiet
     }
 
