@@ -148,6 +148,9 @@ logs/latency/
 docs/latency_runs/
 
 # Keep the requested Phase 6 reports visible to git
+!/docs/phase0_router_acceptance_corpus_v1.json
+!/docs/20260923_1739_phase0_router_acceptance_baseline.md
+!/docs/20260923_1819_langgraph_router_foundation.md
 !/docs/phase6_hybrid_rag_current_implementation_audit.md
 !/docs/20260916T015744Z_phase6a_stage4_async_graph_indexing.md
 !/docs/20260916T180134Z_phase_f1_privacy_retrieval_correctness.md

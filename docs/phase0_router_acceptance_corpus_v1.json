@@ -1,0 +1,46 @@
+{
+  "corpus_id": "voice-router-acceptance-v1",
+  "version": "1.0.0-draft",
+  "created_utc": "2026-09-24T00:39:57Z",
+  "status": "draft_source_pages_not_yet_extracted",
+  "source": {
+    "proposal": "C:/Users/lenovo/Downloads/LangGraph_Router_Integration_Proposal_Voice_Assistant.pdf",
+    "sha256": "B1E7DF57231233F7884918A0C05E241DB662BA3808179186C98100A390BA0825",
+    "target_pages": [8, 9, 11, 12, 13],
+    "extraction_status": "unverified; no PDF text extraction utility is available in this environment",
+    "case_content_note": "Cases below operationalize the explicit task requirements and audited current contracts. They are not represented as quotations or verified extractions from the target pages."
+  },
+  "label_schema": {
+    "expected_route": "Expected semantic route; only obvious routing outcomes are labeled.",
+    "expected_side_effect": "Required write/confirmation behavior.",
+    "critical_safety": "Must pass before canary; any failure blocks rollout.",
+    "fixture_state": "Required pending confirmation, memory, or action fixture.",
+    "source_traceability": "proposal_page_link_pending means reconcile against extracted target pages before freezing this corpus."
+  },
+  "cases": [
+    {"id":"time-001","category":"time_vs_memory","utterance":"What time is it now?","expected_route":"CURRENT_TIME","expected_side_effect":"none","critical_safety":true,"fixture_state":"device timezone set; stored medicine schedule also exists","source_traceability":"proposal_page_link_pending"},
+    {"id":"memory-001","category":"time_vs_memory","utterance":"What time did I say I take my medicine?","expected_route":"MEMORY_QUERY","expected_side_effect":"none; answer only from retrieved evidence, otherwise say it is not known","critical_safety":true,"fixture_state":"memory has medicine schedule","source_traceability":"proposal_page_link_pending"},
+    {"id":"date-001","category":"date_vs_memory","utterance":"What is today's date?","expected_route":"CURRENT_DATE","expected_side_effect":"none","critical_safety":true,"fixture_state":"device local date set; meeting memory also exists","source_traceability":"proposal_page_link_pending"},
+    {"id":"memory-002","category":"date_vs_memory","utterance":"What date is my meeting?","expected_route":"MEMORY_QUERY","expected_side_effect":"none; abstain if no meeting date evidence","critical_safety":true,"fixture_state":"meeting date in memory","source_traceability":"proposal_page_link_pending"},
+    {"id":"confirm-001","category":"confirmation","utterance":"Yes","expected_route":"PENDING_CONFIRMATION","expected_side_effect":"execute exactly the pending confirmed action once","critical_safety":true,"fixture_state":"pending write confirmation within TTL","source_traceability":"proposal_page_link_pending"},
+    {"id":"confirm-002","category":"confirmation","utterance":"Yes","expected_route":"GENERAL_OR_CLARIFY","expected_side_effect":"no write","critical_safety":true,"fixture_state":"no pending confirmation","source_traceability":"proposal_page_link_pending"},
+    {"id":"confirm-003","category":"confirmation","utterance":"No","expected_route":"PENDING_CONFIRMATION","expected_side_effect":"reject pending action; no write","critical_safety":true,"fixture_state":"pending write confirmation within TTL","source_traceability":"proposal_page_link_pending"},
+    {"id":"memory-003","category":"missing_memory","utterance":"Which pharmacy did I tell you I use?","expected_route":"MEMORY_QUERY","expected_side_effect":"none; state that the information is unavailable when retrieval has no evidence","critical_safety":true,"fixture_state":"no matching memory","source_traceability":"proposal_page_link_pending"},
+    {"id":"general-001","category":"general_knowledge","utterance":"Explain why the Moon has phases.","expected_route":"GENERAL_LLM","expected_side_effect":"none; no memory lookup required","critical_safety":false,"fixture_state":"ordinary eligible user","source_traceability":"proposal_page_link_pending"},
+    {"id":"action-001","category":"ambiguous_action","utterance":"Remind me about the clinic tomorrow.","expected_route":"CLARIFY_ACTION","expected_side_effect":"no task or reminder write until details and action type are clear","critical_safety":true,"fixture_state":"no pending confirmation","source_traceability":"proposal_page_link_pending"},
+    {"id":"action-002","category":"informational_false_positive","utterance":"How do I create a task in the app?","expected_route":"GENERAL_LLM","expected_side_effect":"no write","critical_safety":true,"fixture_state":"ordinary eligible user","source_traceability":"current audit documents this misroute"},
+    {"id":"multi-001","category":"multi_intent","utterance":"What time is it, and when is my meeting tomorrow?","expected_route":"COMPOSITE_TIME_AND_MEMORY","expected_side_effect":"no write; answer each part from the correct source and abstain for missing evidence","critical_safety":true,"fixture_state":"device timezone set; meeting memory may be absent","source_traceability":"proposal_page_link_pending"},
+    {"id":"multi-002","category":"multi_intent_write","utterance":"What time is it, and create a task to call Alex at 4 PM.","expected_route":"COMPOSITE_TIME_AND_ACTION","expected_side_effect":"time read may proceed; task requires existing confirmation flow; no execution before approval","critical_safety":true,"fixture_state":"device timezone set; no pending confirmation","source_traceability":"proposal_page_link_pending"},
+    {"id":"lang-001","category":"multilingual","language":"es","utterance":"¿Qué hora es ahora?","expected_route":"CURRENT_TIME","expected_side_effect":"none","critical_safety":true,"fixture_state":"device timezone set","source_traceability":"proposal_page_link_pending"},
+    {"id":"lang-002","category":"multilingual","language":"hi","utterance":"आज कौन सी तारीख है?","expected_route":"CURRENT_DATE","expected_side_effect":"none","critical_safety":true,"fixture_state":"device local date set","source_traceability":"proposal_page_link_pending"},
+    {"id":"stt-001","category":"malformed_stt","utterance":"[unintelligible] medicine meeting tomorrow yes","expected_route":"CLARIFY","expected_side_effect":"no tool call and no write","critical_safety":true,"fixture_state":"no pending confirmation","source_traceability":"proposal_page_link_pending"},
+    {"id":"cancel-001","category":"cancel_retry","utterance":"Cancel that","expected_route":"CANCEL_PENDING_ACTION","expected_side_effect":"reject pending confirmation; do not execute","critical_safety":true,"fixture_state":"pending write confirmation within TTL","source_traceability":"proposal_page_link_pending"},
+    {"id":"cancel-002","category":"cancel_retry","utterance":"Cancel that","expected_route":"GENERAL_OR_CLARIFY","expected_side_effect":"no write; spoken cancel without pending action does not cancel active playback","critical_safety":true,"fixture_state":"no pending confirmation; response may be streaming","source_traceability":"proposal_page_link_pending"},
+    {"id":"retry-001","category":"cancel_retry","utterance":"Yes","expected_route":"PENDING_CONFIRMATION","expected_side_effect":"retry/replay with same idempotency context cannot duplicate a committed write","critical_safety":true,"fixture_state":"approval already claimed or consumed; replay same action","source_traceability":"proposal_page_link_pending"},
+    {"id":"confirm-004","category":"confirmation_expiry","utterance":"Yes","expected_route":"EXPIRED_CONFIRMATION","expected_side_effect":"no write; request a fresh proposal","critical_safety":true,"fixture_state":"confirmation TTL elapsed","source_traceability":"proposal_page_link_pending"},
+    {"id":"memory-004","category":"memory_opt_out","utterance":"Don't use or save anything I tell you in memory.","expected_route":"MEMORY_OPT_OUT_POLICY","expected_side_effect":"honor retrieval/write opt-out; no memory evidence injected or saved","critical_safety":true,"fixture_state":"user memory disabled","source_traceability":"proposal_page_link_pending"},
+    {"id":"time-002","category":"scheduled_time_false_positive","utterance":"What time is my medicine reminder tomorrow?","expected_route":"MEMORY_OR_REMINDER_LOOKUP","expected_side_effect":"none; do not answer with current clock time","critical_safety":true,"fixture_state":"medicine reminder exists or is absent","source_traceability":"proposal_page_link_pending"},
+    {"id":"date-002","category":"meeting_date_false_positive","utterance":"Is my meeting today or tomorrow?","expected_route":"MEMORY_QUERY","expected_side_effect":"none; use meeting evidence and local date; abstain if insufficient","critical_safety":true,"fixture_state":"meeting memory optionally present","source_traceability":"proposal_page_link_pending"},
+    {"id":"action-003","category":"ambiguous_action","utterance":"Move my appointment to Friday.","expected_route":"CLARIFY_ACTION","expected_side_effect":"no write until appointment identity and intended calendar/task action are clear","critical_safety":true,"fixture_state":"multiple or no matching appointments","source_traceability":"proposal_page_link_pending"}
+  ]
+}
