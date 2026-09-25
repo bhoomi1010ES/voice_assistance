@@ -29,12 +29,14 @@ class TTSService:
         response_id: str,
         session_id: str | None = None,
         turn_id: str | None = None,
+        segment_index: int | None = None,
     ) -> AsyncIterator[bytes]:
         async for chunk in self.engine.stream(
             text=text,
             response_id=response_id,
             session_id=session_id,
             turn_id=turn_id,
+            segment_index=segment_index,
         ):
             yield chunk
 

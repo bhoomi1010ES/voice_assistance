@@ -6,13 +6,14 @@ from datetime import datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
-from sqlalchemy import select
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator
+from sqlalchemy import or_, select
 
 from app.llm.errors import LLMToolError, LLMToolTemporalResolutionError
 from app.llm.tool_loop import ToolExecutionContext, ToolRegistry
 from app.models import Reminder, Task
 from app.services.recurrence import RecurrenceResolutionError, validate_recurrence_rule
+from app.services.structured_reads import normalize_query_terms, resolve_local_day_bounds
 from app.services.task_due_dates import TaskDueDateResolutionError, resolve_task_due_at
 
 LOGGER = logging.getLogger("voice-assistance-backend")
@@ -59,8 +60,20 @@ class ListRemindersArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["scheduled", "sent", "failed", "cancelled"] | None = None
-    upcoming: bool = False
+    upcoming: StrictBool = False
     limit: int = Field(default=20, ge=1, le=50)
+    date_window: Literal["today", "tomorrow"] | None = None
+    next_only: StrictBool = False
+    search_terms: list[StrictStr] = Field(default_factory=list, max_length=3)
+
+    @field_validator("search_terms")
+    @classmethod
+    def validate_search_terms(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() or len(value) > 48 for value in values):
+            raise ValueError("search terms must contain 1 to 48 characters")
+        if any(not all(char.isalnum() or char in " '-" for char in value) for value in values):
+            raise ValueError("search terms contain unsupported characters")
+        return values
 
 
 def _resolve_trigger(
@@ -82,13 +95,16 @@ def _resolve_trigger(
                 "DATETIME_RESOLUTION",
                 extra={
                     "event": "datetime.resolution",
-                    "input": context.source_transcript or trigger_expression,
                     "timezone": context.user_timezone,
                     "timezone_source": context.timezone_source,
-                    "resolved_local": resolved.astimezone(
-                        ZoneInfo(context.user_timezone)
-                    ).isoformat(),
-                    "resolved_utc": resolved.isoformat(),
+                    "resolution_status": "resolved",
+                    "resolution_basis": (
+                        "explicit_datetime"
+                        if trigger_at is not None
+                        else "explicit_expression"
+                        if trigger_expression is not None
+                        else "transcript"
+                    ),
                 },
             )
         return resolved
@@ -274,18 +290,37 @@ async def list_reminders_handler(
 ) -> dict[str, Any]:
     if context.db is None or not isinstance(arguments, ListRemindersArguments):
         raise LLMToolError("The reminder tool requires a database session.")
-    query = (
-        select(Reminder)
-        .where(Reminder.user_id == context.user_id)
-        .order_by(Reminder.trigger_at.asc(), Reminder.id.asc())
-        .limit(arguments.limit)
-    )
+    query = select(Reminder).where(Reminder.user_id == context.user_id)
     if arguments.status == "scheduled":
         query = query.where(Reminder.status.in_(("scheduled", "processing", "retry_wait")))
     elif arguments.status is not None:
         query = query.where(Reminder.status == arguments.status)
-    if arguments.upcoming:
-        query = query.where(Reminder.trigger_at > context.clock.now_utc())
+    now_utc = context.clock.now_utc()
+    if arguments.date_window is not None:
+        start_utc, end_utc = resolve_local_day_bounds(
+            now_utc=now_utc,
+            timezone_name=context.user_timezone,
+            window=arguments.date_window,
+        )
+        query = query.where(Reminder.trigger_at >= start_utc, Reminder.trigger_at < end_utc)
+    if arguments.upcoming or arguments.next_only:
+        query = query.where(Reminder.trigger_at > now_utc)
+    terms = normalize_query_terms(arguments.search_terms)
+    if terms:
+        query = query.where(
+            or_(
+                *(
+                    predicate
+                    for term in terms
+                    for predicate in (
+                        Reminder.title.contains(term, autoescape=True),
+                        Reminder.body.contains(term, autoescape=True),
+                    )
+                )
+            )
+        )
+    query = query.order_by(Reminder.trigger_at.asc(), Reminder.id.asc())
+    query = query.limit(1 if arguments.next_only else arguments.limit)
     reminders = list((await context.db.scalars(query)).all())
     return {"reminders": [_reminder_result(reminder) for reminder in reminders]}
 

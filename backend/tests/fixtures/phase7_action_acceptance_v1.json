@@ -1,0 +1,25 @@
+{
+  "corpus_id": "phase7-action-acceptance-v1",
+  "version": "1.0.0",
+  "reminder_semantics": {
+    "decision": "A spoken 'Remind me to ...' request creates a task using the existing create_task proposal and confirmation flow.",
+    "notification_delivery_claimed": false,
+    "examples": [
+      {"utterance": "Remind me to call Asha tomorrow at 9 AM.", "expected_route": "TASK_ACTION", "expected_tool": "create_task", "requires_confirmation": true},
+      {"utterance": "Set a reminder to take medicine at 8 AM.", "expected_route": "TASK_ACTION", "expected_tool": "create_task", "requires_confirmation": true}
+    ]
+  },
+  "cases": [
+    {"utterance": "What is photosynthesis?", "expected_route": "GENERAL_LLM", "rag_calls": 0, "proposal": false, "confirmation": false, "mutation_max": 0, "fallback_after_claim": false},
+    {"utterance": "Tell me a joke about memory and tasks.", "expected_route": "GENERAL_LLM", "rag_calls": 0, "proposal": false, "confirmation": false, "mutation_max": 0, "fallback_after_claim": false},
+    {"utterance": "Remind me to call Asha tomorrow at 9 AM.", "expected_route": "TASK_ACTION", "expected_tool": "create_task", "requires_confirmation": true, "rag_calls": 0, "proposal": true, "confirmation": true, "mutation_max": 1, "fallback_after_claim": false},
+    {"utterance": "Set a reminder to take medicine at 8 AM.", "expected_route": "TASK_ACTION", "expected_tool": "create_task", "requires_confirmation": true, "rag_calls": 0, "proposal": true, "confirmation": true, "mutation_max": 1, "fallback_after_claim": false},
+    {"utterance": "Remember that I prefer tea.", "expected_route": "MEMORY_ACTION", "proposal_tool": "memory_save", "requires_confirmation": true, "rag_calls": 0, "proposal": true, "confirmation": true, "mutation_max": 1, "fallback_after_claim": false},
+    {"utterance": "Forget that I prefer tea.", "expected_route": "MEMORY_ACTION", "proposal_tool": "memory_forget", "requires_confirmation": true, "rag_calls": 0, "proposal": true, "confirmation": true, "resolution": "unique active owner row required", "mutation_max": 1, "fallback_after_claim": false},
+    {"utterance": "Forget my preference for a purple helicopter.", "expected_route": "MEMORY_ACTION", "proposal_tool": "memory_forget", "requires_confirmation": true, "rag_calls": 0, "proposal": false, "resolution": "no_match", "mutation_max": 0, "fallback_after_claim": false},
+    {"utterance": "Forget my saved preferences.", "expected_route": "MEMORY_ACTION", "proposal_tool": "memory_forget", "requires_confirmation": true, "rag_calls": 0, "proposal": false, "resolution": "ambiguous requires clarification", "mutation_max": 0, "fallback_after_claim": false},
+    {"utterance": "How do I forget a saved memory?", "expected_route": "GENERAL_LLM", "rag_calls": 0, "proposal": false, "confirmation": false, "mutation_max": 0, "fallback_after_claim": false},
+    {"utterance": "How do I create a reminder?", "expected_route": "GENERAL_LLM", "rag_calls": 0, "proposal": false, "confirmation": false, "mutation_max": 0, "fallback_after_claim": false},
+    {"utterance": "Forget my coffee preference and remember my meeting.", "expected_route": "MIXED_AMBIGUOUS", "rag_calls": 0, "proposal": false, "confirmation": false, "mutation_max": 0, "fallback_after_claim": false}
+  ]
+}

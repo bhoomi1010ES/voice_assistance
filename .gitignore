@@ -87,6 +87,8 @@ yarn-error.log
 !/docs/20260917_180239_auth_field_layout_fix.md
 !/docs/20260923_181828Z_device_time_issue_fix.md
 !/docs/20260923_185955Z_barge_in_issue_fix.md
+!/docs/20260924_1108_phase0_phase2_acceptance.md
+!/docs/phase2_router_acceptance_v1.md
 
 # Production conversation projections contain private user content and stay local.
 /conversation_logs/

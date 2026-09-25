@@ -36,6 +36,19 @@ async def ready(request: Request) -> JSONResponse:
         result["dependencies"]["llm"] = llm_status
         if llm_status["status"] != "ready":
             result["status"] = "not_ready"
+    tts_service = getattr(request.app.state, "tts_service", None)
+    if tts_service is not None and getattr(request.app.state, "settings", None) is not None:
+        info = getattr(tts_service, "info", None)
+        enabled = bool(info is not None and info.enabled)
+        if enabled or request.app.state.settings.tts_api_url:
+            result["dependencies"]["tts"] = {
+                "enabled": enabled,
+                "status": "ready" if enabled else "not_ready",
+                "provider": info.provider if info is not None else None,
+                "model": info.model if info is not None else None,
+            }
+            if not enabled:
+                result["status"] = "not_ready"
     memory_service = getattr(request.app.state, "memory_service", None)
     if memory_service is not None:
         memory_status = await memory_service.readiness()

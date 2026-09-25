@@ -90,6 +90,7 @@ class RemoteTTSEngine:
         response_id: str,
         session_id: str | None = None,
         turn_id: str | None = None,
+        segment_index: int | None = None,
     ) -> AsyncIterator[bytes]:
         if not text.strip():
             return
@@ -117,6 +118,7 @@ class RemoteTTSEngine:
             metadata={
                 "duration_basis": "tts_local_http_stream",
                 "sentence_bytes": len(text.encode("utf-8")),
+                "segment_index": segment_index,
             },
         )
         self._last_stream_metrics = None
@@ -167,7 +169,10 @@ class RemoteTTSEngine:
                                 event="tts_first_audio_received",
                                 monotonic_ns=first_audio_ns,
                                 duration_ms=first_audio_latency_ms,
-                                metadata={"duration_basis": "tts_local_http_stream"},
+                                metadata={
+                                    "duration_basis": "tts_local_http_stream",
+                                    "segment_index": segment_index,
+                                },
                             )
                         pcm_bytes += len(pcm_chunk)
                         if pending_pcm is not None:
@@ -200,6 +205,7 @@ class RemoteTTSEngine:
                     duration_ms=generation_ms,
                     metadata={
                         "duration_basis": "tts_local_http_stream",
+                        "segment_index": segment_index,
                         "pcm_bytes": pcm_bytes,
                         "audio_duration_ms": audio_duration_ms,
                     },
@@ -212,7 +218,10 @@ class RemoteTTSEngine:
                     event="tts_generation_completed",
                     monotonic_ns=completed_ns,
                     duration_ms=generation_ms,
-                    metadata={"duration_basis": "tts_local_http_stream"},
+                    metadata={
+                        "duration_basis": "tts_local_http_stream",
+                        "segment_index": segment_index,
+                    },
                 )
                 if pending_pcm is not None:
                     yield pending_pcm

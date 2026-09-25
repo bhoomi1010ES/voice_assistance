@@ -4413,3 +4413,9 @@ Current status: **PHASE 8: IMPLEMENTED — PHYSICAL ACCEPTANCE PENDING**. Manual
 Detailed evidence: `docs/20260911_184809_phase8_tts_acceptance_pending.md`.
 
 **End of document**
+
+## LangGraph router rollout addendum — 2026-09-24
+
+The router rollout/canary plan is maintained separately in [`plan.md`](plan.md), Phase 0–9. Current Phase 9 rollout readiness is **NOT PASSED**; router mode remains `off`, with cohort `0%`. Phase 0 paired measurement and Phase 7 action-safety gates are still open. The transcript-content logging issue was closed, while current backend/frontend check failures and the rollback runbook are documented in [`docs/20260924_1738_phase9_rollout_readiness.md`](docs/20260924_1738_phase9_rollout_readiness.md). This addendum does not change the status of the physical barge-in acceptance in this document's Phase 9.
+
+The optional LangGraph confirmation-state phase is deferred until Steps 0–9 are stable. Redis remains the sole pending-confirmation authority; no native graph interruption/checkpointer path was added. The preliminary ownership, migration constraints, and future acceptance criteria are in [`docs/20260924_1742_phase10_native_confirmation_assessment.md`](docs/20260924_1742_phase10_native_confirmation_assessment.md).

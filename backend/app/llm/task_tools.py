@@ -6,12 +6,13 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
-from sqlalchemy import select
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator
+from sqlalchemy import or_, select
 
 from app.llm.errors import LLMToolError, LLMToolTemporalResolutionError
 from app.llm.tool_loop import ToolExecutionContext, ToolRegistry
 from app.models import ConversationTurn, Task
+from app.services.structured_reads import normalize_query_terms, resolve_local_day_bounds
 from app.services.task_due_dates import TaskDueDateResolutionError, resolve_task_due_at
 
 LOGGER = logging.getLogger("voice-assistance-backend")
@@ -60,6 +61,19 @@ class ListTasksArguments(BaseModel):
 
     status: Literal["pending", "in_progress", "completed", "cancelled"] | None = None
     limit: int = Field(default=20, ge=1, le=50)
+    date_window: Literal["today", "tomorrow"] | None = None
+    next_only: StrictBool = False
+    active_only: StrictBool = False
+    search_terms: list[StrictStr] = Field(default_factory=list, max_length=3)
+
+    @field_validator("search_terms")
+    @classmethod
+    def validate_search_terms(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() or len(value) > 48 for value in values):
+            raise ValueError("search terms must contain 1 to 48 characters")
+        if any(not all(char.isalnum() or char in " '-" for char in value) for value in values):
+            raise ValueError("search terms contain unsupported characters")
+        return values
 
 
 def _resolve_due(
@@ -81,13 +95,16 @@ def _resolve_due(
                 "DATETIME_RESOLUTION",
                 extra={
                     "event": "datetime.resolution",
-                    "input": context.source_transcript or due_expression,
                     "timezone": context.user_timezone,
                     "timezone_source": context.timezone_source,
-                    "resolved_local": resolved.astimezone(
-                        ZoneInfo(context.user_timezone)
-                    ).isoformat(),
-                    "resolved_utc": resolved.isoformat(),
+                    "resolution_status": "resolved",
+                    "resolution_basis": (
+                        "explicit_datetime"
+                        if due_at is not None
+                        else "explicit_expression"
+                        if due_expression is not None
+                        else "transcript"
+                    ),
                 },
             )
         return resolved
@@ -213,14 +230,40 @@ async def complete_task_handler(
 async def list_tasks_handler(context: ToolExecutionContext, arguments: BaseModel) -> dict[str, Any]:
     if context.db is None or not isinstance(arguments, ListTasksArguments):
         raise LLMToolError("The task tool requires a database session.")
-    query = (
-        select(Task)
-        .where(Task.user_id == context.user_id)
-        .order_by(Task.created_at.desc(), Task.id.desc())
-        .limit(arguments.limit)
-    )
+    query = select(Task).where(Task.user_id == context.user_id)
     if arguments.status is not None:
         query = query.where(Task.status == arguments.status)
+    elif arguments.active_only:
+        query = query.where(Task.status.in_(("pending", "in_progress")))
+    now_utc = context.clock.now_utc()
+    if arguments.date_window is not None:
+        start_utc, end_utc = resolve_local_day_bounds(
+            now_utc=now_utc,
+            timezone_name=context.user_timezone,
+            window=arguments.date_window,
+        )
+        query = query.where(Task.due_at >= start_utc, Task.due_at < end_utc)
+    if arguments.next_only:
+        query = query.where(Task.due_at > now_utc)
+    terms = normalize_query_terms(arguments.search_terms)
+    if terms:
+        query = query.where(
+            or_(
+                *(
+                    predicate
+                    for term in terms
+                    for predicate in (
+                        Task.title.contains(term, autoescape=True),
+                        Task.description.contains(term, autoescape=True),
+                    )
+                )
+            )
+        )
+    if arguments.date_window is not None or arguments.next_only:
+        query = query.order_by(Task.due_at.asc().nulls_last(), Task.id.asc())
+    else:
+        query = query.order_by(Task.created_at.desc(), Task.id.desc())
+    query = query.limit(1 if arguments.next_only else arguments.limit)
     tasks = list((await context.db.scalars(query)).all())
     return {"tasks": [_task_result(task) for task in tasks]}
 

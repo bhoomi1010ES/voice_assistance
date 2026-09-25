@@ -152,6 +152,7 @@ class LLMEvent(BaseModel):
     monotonic_seconds: float = Field(ge=0)
     sequence: int = Field(ge=0)
     attempt: int = Field(default=1, ge=1)
+    tool_round: int = Field(default=1, ge=1)
     delta: str | None = None
     text: str | None = None
     tool_call: LLMToolCall | None = None

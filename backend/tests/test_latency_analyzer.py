@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from scripts.analyze_latency import (
+    accounting_for_turn,
     correlation_errors,
     filter_turn_records,
     incompatible_metric_keys,
@@ -59,6 +60,22 @@ def test_analyzer_normalizes_client_event_aliases() -> None:
     values = metrics_for_turn(records)
     assert values["speech_duration"] == 500.0
     assert values["speech_end_to_stt_final"] == 200.0
+
+
+def test_backend_speech_to_text_audio_and_turn_metrics_use_one_clock_domain() -> None:
+    records = [
+        _record("speech_end", 100.0, 1000, "backend_python_perf_counter"),
+        _record("first_assistant_text_send_started", 240.0, 1140, "backend_python_perf_counter"),
+        _record("tts_first_audio_received", 380.0, 1280, "backend_python_perf_counter"),
+        _record("turn_complete", 900.0, 1800, "backend_python_perf_counter"),
+    ]
+    metrics = metrics_for_turn(records)
+    assert metrics["backend_speech_end_to_first_text"] == 140.0
+    assert metrics["backend_speech_end_to_first_audio"] == 280.0
+    assert metrics["backend_complete_turn"] == 800.0
+
+    records[-1] = _record("turn_complete", 900.0, 1800, "android_elapsed_realtime")
+    assert metrics_for_turn(records)["backend_complete_turn"] is None
 
 
 def test_analyzer_never_uses_wall_clock_for_cross_process_latency() -> None:
@@ -223,6 +240,56 @@ def test_source_local_durations_are_authoritative_and_cross_process_is_n_a() -> 
     assert "speech_end_to_first_token" in incompatible_metric_keys(records)
 
 
+def test_device_commit_and_vad_end_pair_only_with_compatible_clock_boundaries() -> None:
+    android = {
+        "clock_domain": "android_elapsed_realtime",
+        "process": "android:com.voiceaipoc",
+        "session_id": "session-1",
+        "turn_id": "turn-1",
+        "response_id": "response-1",
+    }
+    rn = {
+        "clock_domain": "react_native_performance",
+        "process": "react_native",
+        "session_id": "session-1",
+        "turn_id": "turn-1",
+        "response_id": "response-1",
+    }
+    records = [
+        {**_record("vad_end", 100.0, 10_100, "android_elapsed_realtime"), **android},
+        {**_record("vad_end", 150.0, 10_150, "android_elapsed_realtime"), **android},
+        {
+            **_record("native_turn_commit_sent", 160.0, 10_160, "android_elapsed_realtime"),
+            **android,
+        },
+        {**_record("vad_end", 190.0, 10_190, "android_elapsed_realtime"), **android},
+        {
+            **_record("first_assistant_token_received", 220.0, 10_220, "android_elapsed_realtime"),
+            **android,
+        },
+        {
+            **_record("tts_first_chunk_received", 260.0, 10_260, "android_elapsed_realtime"),
+            **android,
+        },
+        {**_record("turn_commit_sent", 400.0, 10_400, "react_native_performance"), **rn},
+        {**_record("client_stt_final_received", 430.0, 10_430, "react_native_performance"), **rn},
+        {**_record("tts_playback_complete", 500.0, 10_500, "react_native_performance"), **rn},
+    ]
+    values = metrics_for_turn(records)
+    assert values["speech_end_to_first_token"] == 70.0
+    assert values["device_commit_to_first_text"] == 60.0
+    assert values["device_commit_to_first_audio"] == 100.0
+    assert values["device_commit_to_stt_final"] == 30.0
+    assert values["device_commit_to_playback_complete"] == 100.0
+    assert not {
+        "speech_end_to_first_token",
+        "device_commit_to_first_text",
+        "device_commit_to_first_audio",
+        "device_commit_to_stt_final",
+        "device_commit_to_playback_complete",
+    } & incompatible_metric_keys(records)
+
+
 def test_invalid_local_duration_is_not_clamped_to_zero() -> None:
     records = [
         {
@@ -244,6 +311,304 @@ def test_correlation_rejects_wrong_response_and_duplicate_tts() -> None:
     errors = correlation_errors(records)
     assert "wrong_response_id" in errors
     assert "duplicate_tts_playback_complete" in errors
+
+
+def test_multisegment_tts_is_one_response_and_serial_generation_is_summed() -> None:
+    records = [
+        {
+            **_record("tts_request_started", 1000, 10_000),
+            "response_id": "response-1",
+            "metadata": {"segment_index": 0},
+        },
+        {
+            **_record("tts_first_audio_received", 1010, 10_010),
+            "response_id": "response-1",
+            "duration_ms": 10.0,
+            "metadata": {"segment_index": 0},
+        },
+        {
+            **_record("tts_generation_completed", 1050, 10_050),
+            "response_id": "response-1",
+            "duration_ms": 50.0,
+            "metadata": {"segment_index": 0},
+        },
+        {
+            **_record("tts_request_started", 1070, 10_070),
+            "response_id": "response-1",
+            "metadata": {"segment_index": 1},
+        },
+        {
+            **_record("tts_first_audio_received", 1085, 10_085),
+            "response_id": "response-1",
+            "duration_ms": 15.0,
+            "metadata": {"segment_index": 1},
+        },
+        {
+            **_record("tts_generation_completed", 1130, 10_130),
+            "response_id": "response-1",
+            "duration_ms": 60.0,
+            "metadata": {"segment_index": 1},
+        },
+    ]
+    assert correlation_errors(records) == []
+    values = metrics_for_turn(records)
+    assert values["tts_ttfa"] == 10.0
+    assert values["tts_generation_total"] == 110.0
+
+
+def test_single_segment_and_gateway_response_aggregate_are_supported() -> None:
+    records = [
+        {
+            **_record("tts_request_started", 1000, 10_000),
+            "response_id": "response-1",
+            "metadata": {"segment_index": 0},
+        },
+        {
+            **_record("tts_first_audio_received", 1010, 10_010),
+            "response_id": "response-1",
+            "duration_ms": 10.0,
+            "metadata": {"segment_index": 0},
+        },
+        {
+            **_record("tts_generation_completed", 1050, 10_050),
+            "response_id": "response-1",
+            "duration_ms": 50.0,
+            "metadata": {"segment_index": 0},
+        },
+        {
+            **_record("tts_response_metrics", 1060, 10_060),
+            "response_id": "response-1",
+            "duration_ms": 49.0,
+            "metadata": {"segment_count": 1},
+        },
+    ]
+    assert metrics_for_turn(records)["tts_ttfa"] == 10.0
+    assert metrics_for_turn(records)["tts_generation_total"] == 49.0
+
+
+def test_overlapping_tts_segment_intervals_are_not_summed() -> None:
+    records = [
+        {
+            **_record("tts_request_started", 1000, 10_000),
+            "response_id": "response-1",
+            "metadata": {"segment_index": 0},
+        },
+        {
+            **_record("tts_generation_completed", 1050, 10_050),
+            "response_id": "response-1",
+            "duration_ms": 50.0,
+            "metadata": {"segment_index": 0},
+        },
+        {
+            **_record("tts_request_started", 1040, 10_040),
+            "response_id": "response-1",
+            "metadata": {"segment_index": 1},
+        },
+        {
+            **_record("tts_generation_completed", 1080, 10_080),
+            "response_id": "response-1",
+            "duration_ms": 40.0,
+            "metadata": {"segment_index": 1},
+        },
+    ]
+    assert metrics_for_turn(records)["tts_generation_total"] is None
+
+
+def test_duplicate_tts_segment_is_detected_but_out_of_order_segment_is_not() -> None:
+    records = [
+        {
+            **_record("tts_first_audio_received", 1010, 10_010),
+            "response_id": "response-1",
+            "duration_ms": 10.0,
+            "metadata": {"segment_index": 0},
+        },
+        {
+            **_record("tts_request_started", 1000, 10_000),
+            "response_id": "response-1",
+            "metadata": {"segment_index": 0},
+        },
+        {
+            **_record("tts_request_started", 1070, 10_070),
+            "response_id": "response-1",
+            "metadata": {"segment_index": 1},
+        },
+        {
+            **_record("tts_generation_completed", 1130, 10_130),
+            "response_id": "response-1",
+            "duration_ms": 60.0,
+            "metadata": {"segment_index": 1},
+        },
+        {
+            **_record("tts_request_started", 1140, 10_140),
+            "response_id": "response-1",
+            "metadata": {"segment_index": 1},
+        },
+    ]
+    assert "duplicate_tts_request_started" in correlation_errors(records)
+
+
+def test_delayed_out_of_order_segment_ids_are_correlated_by_response_and_time() -> None:
+    records = [
+        {
+            **_record("tts_request_started", 1000, 10_000),
+            "response_id": "response-1",
+            "metadata": {"segment_index": 1},
+        },
+        {
+            **_record("tts_generation_completed", 1050, 10_050),
+            "response_id": "response-1",
+            "duration_ms": 50.0,
+            "metadata": {"segment_index": 1},
+        },
+        {
+            **_record("tts_request_started", 1100, 10_100),
+            "response_id": "response-1",
+            "metadata": {"segment_index": 0},
+        },
+        {
+            **_record("tts_first_audio_received", 1110, 10_110),
+            "response_id": "response-1",
+            "duration_ms": 10.0,
+            "metadata": {"segment_index": 0},
+        },
+        {
+            **_record("tts_generation_completed", 1140, 10_140),
+            "response_id": "response-1",
+            "duration_ms": 40.0,
+            "metadata": {"segment_index": 0},
+        },
+    ]
+    assert correlation_errors(records) == []
+    assert metrics_for_turn(records)["tts_ttfa"] == 10.0
+    assert metrics_for_turn(records)["tts_generation_total"] == 90.0
+
+
+def test_barge_in_diagnostics_do_not_create_response_mismatch() -> None:
+    records = [
+        {**_record("assistant.text.final", 1000, 10_000), "response_id": "response-1"},
+        {**_record("barge_in_confirmed", 1001, 10_001), "response_id": "old-response"},
+        {
+            **_record("barge_in_playback_stop_requested", 1002, 10_002),
+            "response_id": "old-response",
+        },
+        {**_record("tts_playback_complete", 1100, 10_100), "response_id": "response-1"},
+    ]
+    assert correlation_errors(records) == []
+
+
+def test_cancelled_response_and_partial_turn_have_no_false_correlation_error() -> None:
+    records = [
+        {
+            **_record("assistant.text.delta", 1000, 10_000),
+            "turn_id": "old-turn",
+            "response_id": "old-response",
+        },
+        {
+            **_record("response.cancelled", 1010, 10_010),
+            "turn_id": "old-turn",
+            "response_id": "old-response",
+        },
+        {
+            **_record("assistant.text.delta", 1020, 10_020),
+            "turn_id": "new-turn",
+            "response_id": "new-response",
+        },
+    ]
+    assert correlation_errors(records[:2]) == []
+    assert correlation_errors(records[2:]) == []
+
+
+def test_accounting_counts_model_usage_and_retrieval_by_attempt() -> None:
+    records = [
+        {
+            **_record("gateway_llm_request_observed", 1000, 10_000),
+            "response_id": "response-1",
+            "metadata": {
+                "attempt": 1,
+                "sequence": 0,
+                "provider": "local-test",
+                "configured_model": "model-a",
+            },
+        },
+        {
+            **_record("llm_provider_usage", 1100, 10_100),
+            "response_id": "response-1",
+            "metadata": {
+                "attempt": 1,
+                "sequence": 1,
+                "input_tokens": 120,
+                "output_tokens": 24,
+                "total_tokens": 144,
+            },
+        },
+        {
+            **_record("gateway_llm_request_observed", 1200, 10_200),
+            "response_id": "response-1",
+            "metadata": {
+                "attempt": 1,
+                "tool_round": 2,
+                "sequence": 0,
+                "provider": "local-test",
+                "configured_model": "model-a",
+            },
+        },
+        {
+            **_record("llm_provider_usage", 1300, 10_300),
+            "response_id": "response-1",
+            "metadata": {
+                "attempt": 1,
+                "tool_round": 2,
+                "sequence": 1,
+                "input_tokens": 130,
+                "output_tokens": 24,
+                "total_tokens": 154,
+            },
+        },
+        _record("embedding_started", 1000, 10_000),
+        _record("vector_search_started", 1001, 10_001),
+        _record("fts_started", 1002, 10_002),
+        _record("rrf_started", 1003, 10_003),
+        _record("rerank_started", 1004, 10_004),
+        _record("memory_context_pipeline_started", 1005, 10_005),
+        _record("tool_start", 1006, 10_006),
+        _record("tool_write_attempt", 1007, 10_007),
+        _record("tool_confirmation_requested", 1008, 10_008),
+        _record("tool_write_committed", 1009, 10_009),
+    ]
+    summary = accounting_for_turn(records)
+    assert summary["main_model_calls"] == 2
+    assert summary["model_rounds"] == 2
+    assert summary["providers"] == ["local-test"]
+    assert summary["models"] == ["model-a"]
+    assert summary["input_tokens"] == 250
+    assert summary["output_tokens"] == 48
+    assert summary["total_tokens"] == 298
+    assert summary["embedding_calls"] == 1
+    assert summary["vector_retrieval_calls"] == 1
+    assert summary["fts_calls"] == 1
+    assert summary["rrf_executions"] == 1
+    assert summary["reranker_calls"] == 1
+    assert summary["memory_context_pipeline_calls"] == 1
+    assert summary["tool_invocations"] == 1
+    assert summary["write_attempts"] == 1
+    assert summary["confirmation_requests"] == 1
+    assert summary["confirmed_writes"] == 1
+
+
+def test_accounting_reports_provider_usage_n_a_without_usage_event() -> None:
+    summary = accounting_for_turn(
+        [
+            {
+                **_record("gateway_llm_request_observed", 1000, 10_000),
+                "response_id": "response-1",
+                "metadata": {"attempt": 1, "sequence": 0, "provider": "local-test"},
+            }
+        ]
+    )
+    assert summary["main_model_calls"] == 1
+    assert summary["input_tokens"] is None
+    assert summary["output_tokens"] is None
+    assert summary["token_usage_status"] == "n/a — provider usage unavailable"
 
 
 def test_non_rag_turn_has_no_fake_retrieval_zeroes_and_memory_pipeline_is_named() -> None:

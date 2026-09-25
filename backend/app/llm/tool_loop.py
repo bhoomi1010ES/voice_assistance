@@ -60,6 +60,7 @@ class ToolExecutionContext:
     device_time_context: DeviceTimeContext | None = None
     source_transcript: str | None = None
     cancellation_check: Callable[[], bool] | None = None
+    authorization_check: Callable[[str], Awaitable[bool] | bool] | None = None
     tool_execution_started: Callable[[LLMToolCall, float], Awaitable[None] | None] | None = None
     tool_execution_finished: Callable[[LLMToolCall, float], Awaitable[None] | None] | None = None
     tool_execution_audit: (
@@ -376,6 +377,14 @@ class ToolExecutor:
             if inspect.isawaitable(callback_result):
                 await callback_result
         try:
+            if not tool.required_scopes.issubset(context.scopes):
+                return self._failure(call, LLMToolAuthorizationError.code)
+            if context.authorization_check is not None:
+                authorized = context.authorization_check(tool.name)
+                if inspect.isawaitable(authorized):
+                    authorized = await authorized
+                if not authorized:
+                    return self._failure(call, LLMToolAuthorizationError.code)
             if context.cancellation_check is not None and context.cancellation_check():
                 return self._failure(call, "llm_cancelled")
             value = await tool.handler(context, arguments)
@@ -464,6 +473,7 @@ class LLMToolLoop:
             round_events: list[LLMEvent] = []
             completed_calls: list[LLMToolCall] = []
             async for event in self.llm_service.stream(current_request):
+                event = event.model_copy(update={"tool_round": round_number + 1})
                 round_events.append(event)
                 if event.event_type == "tool_call_completed" and event.tool_call is not None:
                     completed_calls.append(event.tool_call)
@@ -535,6 +545,7 @@ class LLMToolLoop:
                         monotonic_seconds=time.monotonic(),
                         sequence=lifecycle_sequence,
                         attempt=(round_events[-1].attempt if round_events else 1),
+                        tool_round=round_number + 1,
                         tool_call=call,
                         error_code=result.error_code,
                     )
@@ -563,11 +574,12 @@ class LLMToolLoop:
                     monotonic_seconds=time.monotonic(),
                     sequence=lifecycle_sequence,
                     attempt=(last_event.attempt if last_event is not None else 1),
+                    tool_round=round_number + 1,
                     tool_call=confirmation_call,
                     error_code="llm_tool_confirmation_required",
                 )
                 return
-            clock_answer = _clock_tool_answer(
+            clock_answer = format_clock_tool_answer(
                 completed_calls,
                 execution_results,
                 transcript=(context.source_transcript or _last_user_text(current_request)),
@@ -586,6 +598,7 @@ class LLMToolLoop:
                     monotonic_seconds=time.monotonic(),
                     sequence=lifecycle_sequence,
                     attempt=event_attempt,
+                    tool_round=round_number + 1,
                     delta=clock_answer,
                 )
                 yield LLMEvent(
@@ -598,6 +611,7 @@ class LLMToolLoop:
                     monotonic_seconds=time.monotonic(),
                     sequence=lifecycle_sequence + 1,
                     attempt=event_attempt,
+                    tool_round=round_number + 1,
                     text=clock_answer,
                     finish_reason="tool_result",
                     provider_request_id=(
@@ -635,7 +649,7 @@ def _last_user_text(request: LLMRequest) -> str:
     )
 
 
-def _clock_tool_answer(
+def format_clock_tool_answer(
     calls: list[LLMToolCall],
     results: list[ToolExecutionResult],
     *,

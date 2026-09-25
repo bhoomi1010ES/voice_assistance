@@ -94,6 +94,13 @@ class MemoryCandidate(BaseModel):
     created_at: datetime
     memory_type: MemoryType
     subject: str | None = None
+    predicate: str | None = None
+    object_json: dict[str, Any] | None = None
+    status: MemoryStatus = MemoryStatus.ACTIVE
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    source_message_id: uuid.UUID | None = None
+    source_kind: MemorySourceKind | None = None
 
 
 class FusedMemory(BaseModel):
@@ -107,6 +114,14 @@ class FusedMemory(BaseModel):
     sources: tuple[str, ...] = ()
     created_at: datetime
     memory_type: MemoryType
+    subject: str | None = None
+    predicate: str | None = None
+    object_json: dict[str, Any] | None = None
+    status: MemoryStatus = MemoryStatus.ACTIVE
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    source_message_id: uuid.UUID | None = None
+    source_kind: MemorySourceKind | None = None
 
 
 class MemoryRetrievalResult(BaseModel):

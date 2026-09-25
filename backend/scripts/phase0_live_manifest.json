@@ -1,0 +1,25 @@
+{
+  "version": "1.0.0",
+  "quiet_settle_seconds": 0.9,
+  "event_timeout_seconds": 75,
+  "cases": [
+    {"case_id": "P0-LIVE-001", "category": "general_llm", "text": "Tell me a short joke.", "must_contain": ["short", "joke"]},
+    {"case_id": "P0-LIVE-002", "category": "general_llm", "text": "What is quantum computing?", "must_contain": ["quantum", "computing"]},
+    {"case_id": "P0-LIVE-003", "category": "general_llm", "text": "Explain black holes simply.", "must_contain": ["black", "holes"]},
+    {"case_id": "P0-LIVE-004", "category": "general_llm", "text": "Tell me a short story about a robot exploring the moon.", "must_contain": ["robot", "moon"]},
+    {"case_id": "P0-LIVE-005", "category": "current_time", "text": "What time is it?", "must_contain": ["time"]},
+    {"case_id": "P0-LIVE-006", "category": "current_date", "text": "What is today's date?", "must_contain": ["date"]},
+    {"case_id": "P0-LIVE-007", "category": "current_time", "text": "What time is it?", "must_contain": ["time"]},
+    {"case_id": "P0-LIVE-008", "category": "structured_task_read", "text": "What tasks do I have today?", "must_contain": ["tasks", "today"]},
+    {"case_id": "P0-LIVE-009", "category": "structured_reminder_read", "text": "What reminders do I have today?", "must_contain": ["reminders", "today"]},
+    {"case_id": "P0-LIVE-010", "category": "memory_query", "text": "What is my Phase Zero test drink?", "must_contain": ["phase", "zero", "drink"]},
+    {"case_id": "P0-LIVE-011", "category": "memory_query_missing", "text": "What is my Phase Zero test color?", "must_contain": ["phase", "zero", "color"]},
+    {"case_id": "P0-LIVE-012", "category": "memory_query", "text": "What was the Phase Zero test drink?", "must_contain": ["phase", "zero", "drink"]},
+    {"case_id": "P0-LIVE-013", "category": "confirmed_task_write", "text": "Remind me to perform Phase Zero test cleanup tomorrow at 9 AM.", "must_contain": ["phase", "zero", "test", "cleanup"], "confirmation": {"text": "Yes", "tool_name": "create_task", "title_marker": "Phase Zero test cleanup", "expected_status": "PENDING"}},
+    {"case_id": "P0-LIVE-015", "category": "structured_reminder_read", "text": "What reminders do I have tomorrow?", "must_contain": ["reminders", "tomorrow"]},
+    {"case_id": "P0-LIVE-016", "category": "confirmed_task_cleanup", "text": "Mark the Phase Zero test cleanup task complete.", "must_contain": ["phase", "zero", "test", "cleanup", "task", "complete"], "confirmation": {"text": "Yes", "tool_name": "complete_task", "target_from_case": "P0-LIVE-013", "expected_status": "PENDING"}},
+    {"case_id": "P0-LIVE-018", "category": "structured_reminder_read", "text": "What reminders do I have tomorrow?", "must_contain": ["reminders", "tomorrow"]},
+    {"case_id": "P0-LIVE-019", "category": "current_time", "text": "What time is it?", "must_contain": ["time"]},
+    {"case_id": "P0-LIVE-020", "category": "current_date", "text": "What is today's date?", "must_contain": ["date"]}
+  ]
+}

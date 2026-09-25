@@ -4,8 +4,18 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 
 class RouteName(StrEnum):
@@ -32,6 +42,48 @@ class DecisionSource(StrEnum):
     LEGACY = "legacy"
 
 
+class TaskReadArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: Literal["pending", "in_progress", "completed", "cancelled"] | None = None
+    limit: StrictInt = Field(default=20, ge=1, le=50)
+    date_window: Literal["today", "tomorrow"] | None = None
+    next_only: StrictBool = False
+    active_only: StrictBool = False
+    search_terms: list[StrictStr] = Field(default_factory=list, max_length=3)
+
+    @field_validator("search_terms")
+    @classmethod
+    def validate_search_terms(cls, values: list[str]) -> list[str]:
+        for value in values:
+            if not value.strip() or len(value) > 48:
+                raise ValueError("search terms must contain 1 to 48 characters")
+            if not all(character.isalnum() or character in " '-" for character in value):
+                raise ValueError("search terms contain unsupported characters")
+        return values
+
+
+class ReminderReadArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: Literal["scheduled", "sent", "failed", "cancelled"] | None = None
+    upcoming: StrictBool = False
+    limit: StrictInt = Field(default=20, ge=1, le=50)
+    date_window: Literal["today", "tomorrow"] | None = None
+    next_only: StrictBool = False
+    search_terms: list[StrictStr] = Field(default_factory=list, max_length=3)
+
+    @field_validator("search_terms")
+    @classmethod
+    def validate_search_terms(cls, values: list[str]) -> list[str]:
+        for value in values:
+            if not value.strip() or len(value) > 48:
+                raise ValueError("search terms must contain 1 to 48 characters")
+            if not all(character.isalnum() or character in " '-" for character in value):
+                raise ValueError("search terms contain unsupported characters")
+        return values
+
+
 class RouteDecision(BaseModel):
     """Validated route metadata; it never contains executable write arguments."""
 
@@ -39,8 +91,17 @@ class RouteDecision(BaseModel):
 
     route: RouteName
     decision_source: DecisionSource = DecisionSource.RULE
-    target_tool: str | None = Field(default=None, min_length=1, max_length=64)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0, allow_inf_nan=False)
+    target_tool: StrictStr | None = Field(default=None, min_length=1, max_length=64)
     action_domain: ActionDomain | None = None
+    read_arguments: dict[str, object] | None = None
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def confidence_must_not_be_boolean(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("confidence must be numeric, not boolean")
+        return value
 
     @model_validator(mode="after")
     def validate_route_fields(self) -> RouteDecision:
@@ -48,30 +109,47 @@ class RouteDecision(BaseModel):
         structured_read_tools = {"list_tasks", "list_reminders"}
 
         if self.route == RouteName.DIRECT_TOOL:
-            if self.target_tool not in direct_tools or self.action_domain is not None:
+            if (
+                self.target_tool not in direct_tools
+                or self.action_domain is not None
+                or self.read_arguments is not None
+            ):
                 raise ValueError("DIRECT_TOOL requires an allowed read-only clock tool")
             return self
 
         if self.route == RouteName.STRUCTURED_READ:
             if self.target_tool not in structured_read_tools or self.action_domain is not None:
                 raise ValueError("STRUCTURED_READ requires an allowed task/reminder read tool")
+            args_model = (
+                TaskReadArguments if self.target_tool == "list_tasks" else ReminderReadArguments
+            )
+            parsed = args_model.model_validate(self.read_arguments or {})
+            object.__setattr__(
+                self,
+                "read_arguments",
+                parsed.model_dump(exclude_defaults=True, exclude_none=True),
+            )
             return self
 
         if self.route == RouteName.TASK_ACTION:
             if self.action_domain not in {ActionDomain.TASK, ActionDomain.REMINDER}:
                 raise ValueError("TASK_ACTION requires task or reminder action_domain")
-            if self.target_tool is not None:
+            if self.target_tool is not None or self.read_arguments is not None:
                 raise ValueError("TASK_ACTION cannot select an executable tool")
             return self
 
         if self.route == RouteName.MEMORY_ACTION:
             if self.action_domain not in {ActionDomain.MEMORY_SAVE, ActionDomain.MEMORY_FORGET}:
                 raise ValueError("MEMORY_ACTION requires memory_save or memory_forget domain")
-            if self.target_tool is not None:
+            if self.target_tool is not None or self.read_arguments is not None:
                 raise ValueError("MEMORY_ACTION cannot select an executable tool")
             return self
 
-        if self.target_tool is not None or self.action_domain is not None:
+        if (
+            self.target_tool is not None
+            or self.action_domain is not None
+            or self.read_arguments is not None
+        ):
             raise ValueError(f"{self.route.value} does not accept a target tool or action domain")
         return self
 
@@ -108,6 +186,9 @@ class RouterRunStatus(StrEnum):
     CANCELLED = "cancelled"
     TIMED_OUT = "timed_out"
     FAILED = "failed"
+    CONFIRMATION_HANDLED = "confirmation_handled"
+    SKIPPED_MEMORY_POLICY = "skipped_memory_policy"
+    SKIPPED_CAPACITY = "skipped_capacity"
 
 
 class RouterCancelledError(Exception):

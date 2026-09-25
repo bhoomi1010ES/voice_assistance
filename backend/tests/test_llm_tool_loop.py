@@ -345,6 +345,46 @@ async def test_executor_rejects_invalid_and_unauthorized_calls_before_handler() 
 
 
 @pytest.mark.asyncio
+async def test_executor_rechecks_dynamic_authorization_immediately_before_handler() -> None:
+    registry = ToolRegistry()
+    invoked = 0
+
+    async def handler(_context, _arguments):
+        nonlocal invoked
+        invoked += 1
+        return {"created": True}
+
+    registry.register(
+        name="create_task",
+        description="Create a task.",
+        arguments_model=CreateArguments,
+        handler=handler,
+        required_scopes=frozenset({"tasks:write"}),
+        read_only=False,
+        requires_confirmation=True,
+    )
+    request = _request()
+    call = LLMToolCall(
+        tool_call_id="authorization-recheck-call",
+        name="create_task",
+        arguments={"title": "Call Asha"},
+    )
+    executor = ToolExecutor(registry, idempotency_store=InMemoryToolIdempotencyStore())
+    context = _context(
+        request,
+        scopes=frozenset({"tasks:write"}),
+        confirmed_tool_call_ids=frozenset({call.tool_call_id}),
+        authorization_check=lambda _tool_name: False,
+    )
+
+    result = await executor.execute(call, context=context)
+
+    assert result.error_code == "llm_tool_not_authorized"
+    assert not result.executed
+    assert invoked == 0
+
+
+@pytest.mark.asyncio
 async def test_create_task_uses_authenticated_owner_and_rejects_privileged_fields() -> None:
     registry = ToolRegistry()
     register_task_tools(registry)

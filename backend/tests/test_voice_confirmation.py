@@ -122,6 +122,7 @@ async def _gateway(*, pending: PendingConfirmation | None = None):
     gateway.voice_session = SimpleNamespace(id=session_id)
     gateway._session_id = session_id
     gateway.confirmation_store = store
+    gateway.tool_registry = registry
     gateway.persistence = _FakePersistence()
     gateway.db = db
     gateway.cancel_guard = CancellationGuard()
@@ -390,9 +391,7 @@ async def test_barge_in_does_not_cancel_pending_confirmation() -> None:
         )
     )
 
-    stored = await store.get(
-        (pending.authenticated_user_id, pending.device_id, pending.session_id)
-    )
+    stored = await store.get((pending.authenticated_user_id, pending.device_id, pending.session_id))
     assert stored is not None and stored.status == "PENDING"
     assert count() == 0
     assert outbound[-1]["type"] == "response.cancelled"

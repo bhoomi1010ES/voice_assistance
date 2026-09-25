@@ -16,7 +16,14 @@ def test_latency_trace_writes_correlated_monotonic_jsonl_and_redacts_secrets(tmp
         event="stt_final",
         monotonic_ms=123.4,
         duration_ms=9.5,
-        metadata={"status": 200, "api_key": "do-not-write"},
+        metadata={
+            "status": 200,
+            "api_key": "do-not-write",
+            "input_tokens": 123,
+            "output_tokens": 17,
+            "total_tokens": 140,
+            "access_token": "must-stay-redacted",
+        },
     )
 
     record = json.loads(path.read_text(encoding="utf-8"))
@@ -27,6 +34,10 @@ def test_latency_trace_writes_correlated_monotonic_jsonl_and_redacts_secrets(tmp
     assert record["monotonic_ns"] == 123_400_000
     assert record["duration_ms"] == 9.5
     assert record["metadata"]["api_key"] == "[redacted]"
+    assert record["metadata"]["input_tokens"] == 123
+    assert record["metadata"]["output_tokens"] == 17
+    assert record["metadata"]["total_tokens"] == 140
+    assert record["metadata"]["access_token"] == "[redacted]"
 
 
 def test_latency_span_emits_high_resolution_duration_and_writer_cost(tmp_path) -> None:

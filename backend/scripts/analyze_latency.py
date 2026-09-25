@@ -8,7 +8,7 @@ import json
 import math
 import statistics
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,7 @@ DIAGNOSTIC_DURATION_MAX_MS = 300_000.0
 METRICS = (
     ("Speech duration", "speech_duration"),
     ("Speech-end → STT final", "speech_end_to_stt_final"),
+    ("Device commit -> client STT final", "device_commit_to_stt_final"),
     ("STT request duration", "stt_request_duration"),
     ("Embedding latency", "embedding"),
     ("Vector retrieval", "vector_search"),
@@ -27,13 +28,19 @@ METRICS = (
     ("LLM TTFT", "llm_ttft"),
     ("LLM total", "llm_total"),
     ("Device speech-end -> first token received", "speech_end_to_first_token"),
+    ("Device commit -> first text", "device_commit_to_first_text"),
     ("TTS TTFA", "tts_ttfa"),
     ("TTS generation", "tts_generation_total"),
     ("Server -> client first audio", "server_to_client_audio"),
     ("Playback buffering", "playback_buffer"),
     ("Playback duration", "playback_duration"),
     ("Speech-end -> first assistant audio", "speech_end_to_first_audio"),
+    ("Device commit -> first audio", "device_commit_to_first_audio"),
+    ("Device commit -> playback complete", "device_commit_to_playback_complete"),
     ("End-to-end", "end_to_end"),
+    ("Backend speech-end -> first text", "backend_speech_end_to_first_text"),
+    ("Backend speech-end -> first TTS audio", "backend_speech_end_to_first_audio"),
+    ("Backend complete turn", "backend_complete_turn"),
 )
 
 EVENT_ALIASES = {
@@ -79,6 +86,16 @@ def load_records(path: Path) -> list[dict[str, Any]]:
 
 
 def _record_key(record: dict[str, Any]) -> tuple[Any, ...]:
+    metadata = record.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    segment = next(
+        (
+            metadata.get(name)
+            for name in ("tts_segment_id", "segment_id", "segment_index", "chunk_id")
+            if metadata.get(name) is not None
+        ),
+        None,
+    )
     return (
         record.get("clock_domain"),
         record.get("event"),
@@ -88,6 +105,8 @@ def _record_key(record: dict[str, Any]) -> tuple[Any, ...]:
         record.get("timestamp_ms"),
         record.get("monotonic_ms"),
         record.get("monotonic_ns"),
+        segment,
+        metadata.get("sequence"),
     )
 
 
@@ -151,6 +170,24 @@ def _events(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         if event not in result or priority < priorities[event]:
             result[event] = normalized
             priorities[event] = priority
+    commit = result.get("native_turn_commit_sent")
+    if commit is not None and _time(commit) is not None:
+        commit_time = _time(commit)
+        candidates = [
+            record
+            for record in records
+            if record.get("event") == "vad_end"
+            and _same_clock(record, commit)
+            and _time(record) is not None
+            and _time(record) <= commit_time
+            and record.get("session_id") == commit.get("session_id")
+            and record.get("turn_id") == commit.get("turn_id")
+            and record.get("response_id") == commit.get("response_id")
+        ]
+        if candidates:
+            result["device_speech_end"] = max(candidates, key=lambda record: _time(record) or -1)
+        else:
+            result.pop("device_speech_end", None)
     return result
 
 
@@ -242,6 +279,91 @@ def _local_duration(
     return round(sum(values), 3) if aggregate else values[0]
 
 
+_RESPONSE_LIFECYCLE_EVENTS = {
+    "response.cancelled",
+    "response_cancelled_received",
+    "response_cancel_queued",
+    "response_cancel_sent",
+    "barge_in_confirmed",
+    "barge_in_playback_stop_requested",
+    "barge_in_playback_stopped",
+    "tts.cancelled",
+    "tts_playback_stopped",
+}
+
+
+def _is_response_lifecycle_event(record: dict[str, Any]) -> bool:
+    event = str(record.get("event", ""))
+    return event in _RESPONSE_LIFECYCLE_EVENTS or event.startswith("barge_in_")
+
+
+def _tts_segment_identity(record: dict[str, Any]) -> str | None:
+    metadata = record.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("tts_segment_id", "segment_id", "segment_index", "chunk_id", "sequence"):
+        value = metadata.get(key)
+        if value is not None:
+            return str(value)
+    return None
+
+
+def _first_tts_segment_audio_duration(records: list[dict[str, Any]]) -> float | None:
+    """Use the provider-local TTFA belonging to the first audio-producing segment."""
+
+    candidates = [
+        record
+        for record in records
+        if record.get("event") == "tts_first_audio_received" and _duration_value(record) is not None
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda record: (_time(record) is None, _time(record) or math.inf))
+    return _duration_value(candidates[0])
+
+
+def _tts_generation_duration(records: list[dict[str, Any]]) -> float | None:
+    """Use a response aggregate, or sum verified non-overlapping serial segments."""
+
+    aggregate = _local_duration(records, ("tts_response_metrics",))
+    if aggregate is not None:
+        return aggregate
+    starts = [record for record in records if record.get("event") == "tts_request_started"]
+    ends = [record for record in records if record.get("event") == "tts_generation_completed"]
+    if not starts or len(starts) != len(ends):
+        return None
+
+    def key(record: dict[str, Any]) -> float:
+        timestamp = _time(record)
+        return timestamp if timestamp is not None else math.inf
+
+    starts.sort(key=key)
+    ends.sort(key=key)
+    total = 0.0
+    previous_end: float | None = None
+    for start, end in zip(starts, ends, strict=True):
+        if not _same_clock(start, end):
+            return None
+        start_time = _time(start)
+        end_time = _time(end)
+        duration = _duration_value(end)
+        if (
+            start_time is None
+            or end_time is None
+            or duration is None
+            or end_time < start_time
+            or (previous_end is not None and start_time < previous_end)
+        ):
+            return None
+        start_segment = _tts_segment_identity(start)
+        end_segment = _tts_segment_identity(end)
+        if start_segment is not None and end_segment is not None and start_segment != end_segment:
+            return None
+        previous_end = end_time
+        total += duration
+    return round(total, 3)
+
+
 def correlation_errors(records: list[dict[str, Any]]) -> list[str]:
     """Reject stale, duplicate, or cross-response records explicitly."""
 
@@ -250,30 +372,36 @@ def correlation_errors(records: list[dict[str, Any]]) -> list[str]:
     if len(turn_ids) > 1:
         errors.append("wrong_turn_id")
     response_ids = {
-        str(record.get("response_id")) for record in records if record.get("response_id")
+        str(record.get("response_id"))
+        for record in records
+        if record.get("response_id") and not _is_response_lifecycle_event(record)
     }
     if len(response_ids) > 1:
         errors.append("wrong_response_id")
-    tts_events = {
+    segmented_tts_events = {
         "tts_request_started",
         "tts_first_audio_received",
         "tts_generation_completed",
-        "tts_playback_complete",
-        "tts_playback_completed",
     }
     counts: dict[tuple[str, str | None, str], int] = {}
+    playback_counts: dict[tuple[str, str | None], int] = {}
     for record in records:
         event = str(record.get("event", ""))
-        if event in tts_events:
-            metadata = json.dumps(record.get("metadata", {}), sort_keys=True, separators=(",", ":"))
-            key = (
-                event,
-                str(record.get("response_id")) if record.get("response_id") else None,
-                metadata,
-            )
+        response = str(record.get("response_id")) if record.get("response_id") else None
+        if event in segmented_tts_events:
+            segment = _tts_segment_identity(record)
+            if segment is None:
+                continue
+            key = (event, response, segment)
             counts[key] = counts.get(key, 0) + 1
+        elif event in {"tts_playback_complete", "tts_playback_completed"}:
+            key = (event, response)
+            playback_counts[key] = playback_counts.get(key, 0) + 1
     errors.extend(
-        f"duplicate_{event}" for (event, _response, _metadata), count in counts.items() if count > 1
+        f"duplicate_{event}" for (event, _response, _segment), count in counts.items() if count > 1
+    )
+    errors.extend(
+        f"duplicate_{event}" for (event, _response), count in playback_counts.items() if count > 1
     )
     for record in records:
         if "duration_ms" not in record:
@@ -286,6 +414,110 @@ def correlation_errors(records: list[dict[str, Any]]) -> list[str]:
         ):
             errors.append(f"invalid_duration:{record.get('event')}")
     return sorted(set(errors))
+
+
+def accounting_for_turn(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize call counts and provider usage without reading prompt contents."""
+
+    request_records = []
+    request_keys: set[tuple[Any, ...]] = set()
+    for record in records:
+        if record.get("event") != "gateway_llm_request_observed":
+            continue
+        metadata = record.get("metadata") or {}
+        if not isinstance(metadata, dict) or metadata.get("attempt") is None:
+            continue  # Exclude timing-point observations from older traces.
+        key = (
+            record.get("response_id"),
+            metadata.get("tool_round", 1),
+            metadata.get("attempt"),
+            metadata.get("sequence"),
+            record.get("process"),
+        )
+        if key not in request_keys:
+            request_keys.add(key)
+            request_records.append(record)
+
+    calls_by_request: dict[tuple[str, str], dict[str, Any]] = {}
+    tool_rounds: set[str] = set()
+    for record in request_records:
+        metadata = record.get("metadata") or {}
+        attempt = str(metadata.get("attempt"))
+        tool_round = str(metadata.get("tool_round", 1))
+        tool_rounds.add(tool_round)
+        calls_by_request.setdefault(
+            (tool_round, attempt),
+            {
+                "provider": metadata.get("provider"),
+                "model": metadata.get("configured_model"),
+                "usage": None,
+            },
+        )
+    usage_by_request: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        if record.get("event") == "llm_provider_usage":
+            metadata = record.get("metadata") or {}
+            if isinstance(metadata, dict) and metadata.get("attempt") is not None:
+                usage_by_request[
+                    (str(metadata.get("tool_round", 1)), str(metadata["attempt"]))
+                ].append(metadata)
+    for request_key, usage_items in usage_by_request.items():
+        if request_key in calls_by_request:
+            usage_items.sort(key=lambda item: int(item.get("sequence", -1)))
+            calls_by_request[request_key]["usage"] = usage_items[-1]
+
+    usage_complete = bool(calls_by_request) and all(
+        call["usage"] is not None
+        and isinstance(call["usage"].get("input_tokens"), int)
+        and isinstance(call["usage"].get("output_tokens"), int)
+        for call in calls_by_request.values()
+    )
+    input_tokens = (
+        sum(call["usage"]["input_tokens"] for call in calls_by_request.values())
+        if usage_complete
+        else None
+    )
+    output_tokens = (
+        sum(call["usage"]["output_tokens"] for call in calls_by_request.values())
+        if usage_complete
+        else None
+    )
+    total_values = [
+        call["usage"].get("total_tokens")
+        for call in calls_by_request.values()
+        if call["usage"] is not None
+    ]
+    total_tokens = (
+        sum(total_values)
+        if usage_complete and all(isinstance(value, int) for value in total_values)
+        else None
+    )
+    event_counts = Counter(str(record.get("event", "")) for record in records)
+    return {
+        "main_model_calls": len(request_records),
+        "model_rounds": len(tool_rounds),
+        "providers": sorted(
+            {call["provider"] for call in calls_by_request.values() if call["provider"]}
+        ),
+        "models": sorted({call["model"] for call in calls_by_request.values() if call["model"]}),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "token_usage_status": (
+            "provider_usage_reported" if usage_complete else "n/a — provider usage unavailable"
+        ),
+        "embedding_calls": event_counts["embedding_started"],
+        "vector_retrieval_calls": event_counts["vector_search_started"],
+        "fts_calls": event_counts["fts_started"],
+        "rrf_executions": event_counts["rrf_started"],
+        "reranker_calls": event_counts["rerank_started"],
+        "memory_context_pipeline_calls": event_counts["memory_context_pipeline_started"],
+        "tool_invocations": event_counts["tool_start"],
+        "write_attempts": event_counts["tool_write_attempt"],
+        "confirmation_requests": event_counts["tool_confirmation_requested"],
+        "confirmed_writes": event_counts["tool_write_committed"],
+        "duplicate_write_prevented": event_counts["tool_duplicate_write_prevented"],
+    }
 
 
 def incompatible_metric_keys(records: list[dict[str, Any]]) -> set[str]:
@@ -301,14 +533,20 @@ def incompatible_metric_keys(records: list[dict[str, Any]]) -> set[str]:
         "llm_ttft": ("llm_first_token_received", "llm_ttft_local"),
         "llm_total": ("llm_request_completed", "llm_completed"),
         "tts_ttfa": ("tts_first_audio_received",),
-        "tts_generation_total": ("tts_generation_completed",),
+        "tts_generation_total": ("tts_generation_completed", "tts_response_metrics"),
         "playback_duration": ("tts_playback_complete", "tts_playback_completed"),
     }
     incompatible = {
         key
         for key, event_names in local_metrics.items()
         if any(record.get("event") in event_names for record in records)
-        and _local_duration(records, event_names, aggregate=key == "tts_generation_total") is None
+        and (
+            _tts_generation_duration(records) is None
+            if key == "tts_generation_total"
+            else _first_tts_segment_audio_duration(records) is None
+            if key == "tts_ttfa"
+            else _local_duration(records, event_names) is None
+        )
     }
     events = _events(records)
     pairs: dict[str, tuple[tuple[str, str], ...]] = {
@@ -326,6 +564,15 @@ def incompatible_metric_keys(records: list[dict[str, Any]]) -> set[str]:
         "llm_ttft": (("llm_request_start", "llm_first_token"),),
         "llm_total": (("llm_request_start", "llm_complete"),),
         "speech_end_to_first_token": (("device_speech_end", "first_assistant_token_received"),),
+        "device_commit_to_first_text": (
+            ("native_turn_commit_sent", "first_assistant_token_received"),
+        ),
+        "device_commit_to_first_audio": (("native_turn_commit_sent", "tts_first_chunk_received"),),
+        "device_commit_to_stt_final": (("turn_commit_sent", "client_stt_final_received"),),
+        "device_commit_to_playback_complete": (
+            ("turn_commit_sent", "tts_playback_complete"),
+            ("turn_commit_sent", "tts_playback_completed"),
+        ),
         "tts_ttfa": (("tts_request_start", "tts_first_audio_chunk"),),
         "tts_generation_total": (("tts_request_start", "tts_generation_complete"),),
         "server_to_client_audio": (("tts_first_audio_chunk", "tts_first_chunk_received"),),
@@ -344,6 +591,9 @@ def incompatible_metric_keys(records: list[dict[str, Any]]) -> set[str]:
             ("device_speech_end", "tts_playback_complete"),
             ("device_speech_end", "tts_playback_completed"),
         ),
+        "backend_speech_end_to_first_text": (("speech_end", "first_assistant_text_send_started"),),
+        "backend_speech_end_to_first_audio": (("speech_end", "tts_first_audio_received"),),
+        "backend_complete_turn": (("speech_end", "turn_complete"),),
         "stt_final_to_orchestration": (("stt_final_received", "orchestration_started"),),
         "orchestration_to_request": (("orchestration_started", "llm_request_started"),),
         "stt_final_to_request": (("stt_final_received", "llm_request_started"),),
@@ -418,16 +668,26 @@ def metrics_for_turn(records: list[dict[str, Any]]) -> dict[str, float | None]:
         "speech_end_to_first_token": _delta(
             events, "device_speech_end", "first_assistant_token_received"
         ),
+        "device_commit_to_first_text": _delta(
+            events, "native_turn_commit_sent", "first_assistant_token_received"
+        ),
+        "device_commit_to_first_audio": _delta(
+            events, "native_turn_commit_sent", "tts_first_chunk_received"
+        ),
+        "device_commit_to_stt_final": _delta(
+            events, "turn_commit_sent", "client_stt_final_received"
+        ),
+        "device_commit_to_playback_complete": _delta_aliases(
+            events,
+            ("turn_commit_sent",),
+            ("tts_playback_complete", "tts_playback_completed"),
+        ),
         "tts_ttfa": _first_measured(
-            _local_duration(records, ("tts_first_audio_received",)),
+            _first_tts_segment_audio_duration(records),
             _delta(events, "tts_request_start", "tts_first_audio_chunk"),
         ),
         "tts_generation_total": _first_measured(
-            _local_duration(
-                records,
-                ("tts_generation_completed", "tts_request_completed"),
-                aggregate=True,
-            ),
+            _tts_generation_duration(records),
             _delta(events, "tts_request_start", "tts_generation_complete"),
         ),
         "server_to_client_audio": _delta(
@@ -456,6 +716,13 @@ def metrics_for_turn(records: list[dict[str, Any]]) -> dict[str, float | None]:
             ("device_speech_end",),
             ("tts_playback_complete", "tts_playback_completed"),
         ),
+        "backend_speech_end_to_first_text": _delta(
+            events, "speech_end", "first_assistant_text_send_started"
+        ),
+        "backend_speech_end_to_first_audio": _delta(
+            events, "speech_end", "tts_first_audio_received"
+        ),
+        "backend_complete_turn": _delta(events, "speech_end", "turn_complete"),
     }
     return values
 
@@ -741,6 +1008,35 @@ def print_report(records: list[dict[str, Any]]) -> None:
         )[:3]
         contributors = ", ".join(f"{label} ({value:.1f} ms)" for label, value in ranked)
         print("Largest contributors: " + contributors)
+        accounting = accounting_for_turn(turn_records)
+        print(
+            "Call accounting: "
+            f"main_model_calls={accounting['main_model_calls']} "
+            f"model_rounds={accounting['model_rounds']} "
+            f"providers={accounting['providers']} models={accounting['models']} "
+            f"input_tokens={accounting['input_tokens']} "
+            f"output_tokens={accounting['output_tokens']} "
+            f"usage={accounting['token_usage_status']}"
+        )
+        print(
+            "Retrieval/tool accounting: "
+            + ", ".join(
+                f"{key}={accounting[key]}"
+                for key in (
+                    "embedding_calls",
+                    "vector_retrieval_calls",
+                    "fts_calls",
+                    "rrf_executions",
+                    "reranker_calls",
+                    "memory_context_pipeline_calls",
+                    "tool_invocations",
+                    "write_attempts",
+                    "confirmation_requests",
+                    "confirmed_writes",
+                    "duplicate_write_prevented",
+                )
+            )
+        )
         print()
         print("STT → LLM PIPELINE BREAKDOWN")
         pipeline_rows = (

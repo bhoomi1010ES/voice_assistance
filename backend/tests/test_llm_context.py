@@ -50,6 +50,8 @@ def test_explicit_mutating_voice_intent_selects_only_create_task(prompt: str) ->
         "Explain task scheduling.",
         "Hello.",
         "How do I create a task?",
+        "Can you explain how reminders work?",
+        "How can I delete a reminder?",
     ],
 )
 def test_informational_and_ordinary_voice_intent_remains_auto(prompt: str) -> None:

@@ -1,0 +1,172 @@
+{
+  "version": "1.0.0",
+  "run_id": "20260924_auto3",
+  "outcome": "aborted",
+  "failure": "Unexpected device barge-in; current turn excluded and speech stopped.",
+  "created_at": "2026-09-24T21:09:37.716823+00:00",
+  "environment": {
+    "device": {
+      "serial": "9b0ea196",
+      "model": "CPH2527",
+      "device_line": "9b0ea196               device product:CPH2527 model:CPH2527 device:OP56E7L1 transport_id:1",
+      "reverse": "UsbFfs tcp:8000 tcp:8000\nUsbFfs tcp:8081 tcp:8081",
+      "app_pid": "7520",
+      "microphone_permission": "granted"
+    },
+    "health": {
+      "status": "ok"
+    },
+    "ready": {
+      "status": "ready",
+      "dependencies": {
+        "postgres": {
+          "status": "ok"
+        },
+        "redis": {
+          "status": "ok"
+        },
+        "llm": {
+          "enabled": true,
+          "status": "ready",
+          "provider": "openai",
+          "host": "https://api.openai.com",
+          "model": "gpt-5.6-luna",
+          "api_family": "openai_responses",
+          "live_verified": false,
+          "capabilities": {
+            "streaming": true,
+            "text_generation": true,
+            "tool_calling": true,
+            "parallel_tool_calling": false,
+            "strict_tool_schema": false,
+            "structured_text_output": false,
+            "usage_reporting": true,
+            "model_listing": false,
+            "cancellation": true
+          }
+        },
+        "memory": {
+          "enabled": true,
+          "status": "ready",
+          "providers": {
+            "embedding": {
+              "status": "ok"
+            },
+            "reranker": {
+              "status": "ok"
+            }
+          }
+        }
+      }
+    },
+    "router_mode": "off",
+    "router_cohort_percent": 0,
+    "memory_retrieval_mode": "inject",
+    "gateway_path": "legacy orchestration; router inactive",
+    "metro": "127.0.0.1:8081 reachable",
+    "speech": "Windows System.Speech installed; prompts are not cloud-generated"
+  },
+  "disposable_account_user_confirmed": true,
+  "router_mode": "off",
+  "router_cohort_percent": 0,
+  "gateway_path": "legacy orchestration",
+  "langgraph_router_calls": 0,
+  "attempted_scripted_prompts": 0,
+  "valid_completed_physical_turns": 0,
+  "turn_ids": [],
+  "model_calls": 0,
+  "model_rounds": 0,
+  "metric_statistics": {
+    "speech_end_to_stt_final": {
+      "count": 0,
+      "min_ms": null,
+      "mean_ms": null,
+      "p50_ms": null,
+      "p95_ms": null,
+      "max_ms": null
+    },
+    "stt_request_duration": {
+      "count": 0,
+      "min_ms": null,
+      "mean_ms": null,
+      "p50_ms": null,
+      "p95_ms": null,
+      "max_ms": null
+    },
+    "stt_final_to_orchestration": {
+      "count": 0,
+      "min_ms": null,
+      "mean_ms": null,
+      "p50_ms": null,
+      "p95_ms": null,
+      "max_ms": null
+    },
+    "memory_context_pipeline": {
+      "count": 0,
+      "min_ms": null,
+      "mean_ms": null,
+      "p50_ms": null,
+      "p95_ms": null,
+      "max_ms": null
+    },
+    "llm_ttft": {
+      "count": 0,
+      "min_ms": null,
+      "mean_ms": null,
+      "p50_ms": null,
+      "p95_ms": null,
+      "max_ms": null
+    },
+    "llm_total": {
+      "count": 0,
+      "min_ms": null,
+      "mean_ms": null,
+      "p50_ms": null,
+      "p95_ms": null,
+      "max_ms": null
+    },
+    "device_commit_to_first_text": {
+      "count": 0,
+      "min_ms": null,
+      "mean_ms": null,
+      "p50_ms": null,
+      "p95_ms": null,
+      "max_ms": null
+    },
+    "tts_ttfa": {
+      "count": 0,
+      "min_ms": null,
+      "mean_ms": null,
+      "p50_ms": null,
+      "p95_ms": null,
+      "max_ms": null
+    },
+    "tts_generation_total": {
+      "count": 0,
+      "min_ms": null,
+      "mean_ms": null,
+      "p50_ms": null,
+      "p95_ms": null,
+      "max_ms": null
+    },
+    "device_commit_to_first_audio": {
+      "count": 0,
+      "min_ms": null,
+      "mean_ms": null,
+      "p50_ms": null,
+      "p95_ms": null,
+      "max_ms": null
+    },
+    "device_commit_to_playback_complete": {
+      "count": 0,
+      "min_ms": null,
+      "mean_ms": null,
+      "p50_ms": null,
+      "p95_ms": null,
+      "max_ms": null
+    }
+  },
+  "route_totals": {},
+  "rows_path": "logs\\phase0_physical_baseline_rows_20260924_auto3.jsonl",
+  "event_artifact_path": "logs\\phase0_physical_baseline_20260924_auto3.jsonl"
+}

@@ -118,6 +118,13 @@ async def structured_retrieve(
             created_at=row.created_at,
             memory_type=MemoryType(row.memory_type),
             subject=row.subject,
+            predicate=row.predicate,
+            object_json=row.object_json,
+            status=MemoryStatus(row.status),
+            valid_from=row.valid_from,
+            valid_to=row.valid_to,
+            source_message_id=row.source_message_id,
+            source_kind=row.source_kind,
         )
         for index, row in enumerate(rows, start=1)
     ]
@@ -171,6 +178,13 @@ async def fts_retrieve(
             created_at=row[0].created_at,
             memory_type=MemoryType(row[0].memory_type),
             subject=row[0].subject,
+            predicate=row[0].predicate,
+            object_json=row[0].object_json,
+            status=MemoryStatus(row[0].status),
+            valid_from=row[0].valid_from,
+            valid_to=row[0].valid_to,
+            source_message_id=row[0].source_message_id,
+            source_kind=row[0].source_kind,
         )
         for index, row in enumerate(rows, start=1)
     ]
@@ -247,6 +261,13 @@ async def dense_retrieve(
             created_at=row[0].created_at,
             memory_type=MemoryType(row[0].memory_type),
             subject=row[0].subject,
+            predicate=row[0].predicate,
+            object_json=row[0].object_json,
+            status=MemoryStatus(row[0].status),
+            valid_from=row[0].valid_from,
+            valid_to=row[0].valid_to,
+            source_message_id=row[0].source_message_id,
+            source_kind=row[0].source_kind,
         )
         for index, row in enumerate(rows, start=1)
     ]
@@ -292,6 +313,14 @@ def fuse_candidates(
                 sources=tuple(sorted(item["sources"])),  # type: ignore[arg-type]
                 created_at=candidate.created_at,
                 memory_type=candidate.memory_type,
+                subject=candidate.subject,
+                predicate=candidate.predicate,
+                object_json=candidate.object_json,
+                status=candidate.status,
+                valid_from=candidate.valid_from,
+                valid_to=candidate.valid_to,
+                source_message_id=candidate.source_message_id,
+                source_kind=candidate.source_kind,
             )
         )
     return tuple(result)
@@ -375,6 +404,33 @@ class MemoryRetrievalService:
             else "not_ready"
         )
         return {"enabled": True, "status": status, "providers": providers}
+
+    async def has_multiple_current_matches(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: uuid.UUID,
+        subject: str,
+        predicate: str,
+        now: datetime,
+    ) -> bool:
+        """Fail closed on direct answers when several active rows share a fact key."""
+
+        query = (
+            select(MemoryItem.id)
+            .where(
+                MemoryItem.user_id == user_id,
+                MemoryItem.status == MemoryStatus.ACTIVE,
+                func.lower(MemoryItem.subject) == subject.casefold(),
+                func.lower(MemoryItem.predicate) == predicate.casefold(),
+                (MemoryItem.valid_from.is_(None) | (MemoryItem.valid_from <= now)),
+                (MemoryItem.valid_to.is_(None) | (MemoryItem.valid_to > now)),
+            )
+            .limit(2)
+        )
+        async with session.begin_nested():
+            matches = list((await session.scalars(query)).all())
+        return len(matches) > 1
 
     async def retrieve(
         self,

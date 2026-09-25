@@ -1,0 +1,25 @@
+{
+  "corpus_id": "phase6-memory-decision-corpus-v1",
+  "version": "1.0.0",
+  "description": "Synthetic labeled cases for deterministic memory evidence routing; no production user data.",
+  "owner_id": "00000000-0000-4000-8000-000000000001",
+  "now": "2026-09-24T12:00:00+00:00",
+  "calibration_policy": {
+    "rerank_score_is_probability": false,
+    "direct_requires_single_active_current_structured_or_lexical_fact": true,
+    "direct_score_threshold": null
+  },
+  "cases": [
+    {"id": "exact-name", "query": "What is my name?", "records": [{"id": "name", "content": "My name is Anika.", "subject": "user", "predicate": "name", "memory_type": "fact", "sources": ["structured", "fts"]}], "expected_route": "DIRECT_RAG"},
+    {"id": "conflict", "query": "Where do I work now?", "records": [{"id": "work-mumbai", "content": "I work remotely from Mumbai.", "subject": "user", "predicate": "work_location", "object_json": {"city": "Mumbai"}, "memory_type": "fact", "sources": ["fts"]}, {"id": "work-pune", "content": "I work from Pune.", "subject": "user", "predicate": "work_location", "object_json": {"city": "Pune"}, "memory_type": "fact", "sources": ["fts"]}], "expected_route": "RAG_PLUS_LLM"},
+    {"id": "synthesis", "query": "What have I told you about my work?", "records": [{"id": "work", "content": "I work remotely from Mumbai.", "memory_type": "fact", "sources": ["fts"]}], "expected_route": "RAG_PLUS_LLM"},
+    {"id": "no-result", "query": "What is my favorite spaceship?", "records": [], "expected_route": "NO_RESULT"},
+    {"id": "deleted", "query": "What is my name?", "records": [{"id": "deleted-name", "content": "My name is Anika.", "subject": "user", "predicate": "name", "memory_type": "fact", "status": "deleted", "sources": ["structured"]}], "expected_route": "NO_RESULT"},
+    {"id": "superseded", "query": "What is my name?", "records": [{"id": "superseded-name", "content": "My name is Anika.", "subject": "user", "predicate": "name", "memory_type": "fact", "status": "superseded", "sources": ["structured"]}], "expected_route": "NO_RESULT"},
+    {"id": "expired-temporal", "query": "What is my job?", "records": [{"id": "old-job", "content": "I work at Acme.", "subject": "user", "predicate": "job", "memory_type": "fact", "valid_to": "2026-09-23T12:00:00+00:00", "sources": ["structured"]}], "expected_route": "NO_RESULT"},
+    {"id": "dense-low-score", "query": "What is my name?", "records": [{"id": "weak-name", "content": "Anika is mentioned in an unrelated note.", "subject": "user", "predicate": "name", "memory_type": "fact", "sources": ["dense"], "score": 0.000001}], "expected_route": "NO_RESULT"},
+    {"id": "retrieval-disabled", "query": "What is my name?", "retrieval_status": "disabled", "records": [], "expected_route": "UNAVAILABLE"},
+    {"id": "reranker-outage", "query": "What is my name?", "retrieval_status": "degraded", "records": [], "expected_route": "UNAVAILABLE"},
+    {"id": "cross-user", "query": "What is my name?", "records": [{"id": "other-user-name", "content": "My name is Anika.", "subject": "user", "predicate": "name", "memory_type": "fact", "sources": ["structured"], "owner_id": "00000000-0000-4000-8000-000000000002"}], "expected_route": "UNAVAILABLE"}
+  ]
+}

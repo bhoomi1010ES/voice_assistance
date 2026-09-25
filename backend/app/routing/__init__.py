@@ -12,6 +12,7 @@ from app.routing.models import (
     RouterRunStatus,
     RouterRuntimeContext,
 )
+from app.routing.rules import classify_transcript
 from app.routing.service import DecisionRouterService
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "RouterRunResult",
     "RouterRunStatus",
     "RouterRuntimeContext",
+    "classify_transcript",
 ]

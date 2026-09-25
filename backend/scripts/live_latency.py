@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import json
 import queue
-import re
 import shutil
 import subprocess
 import sys
@@ -42,8 +41,19 @@ except ModuleNotFoundError:  # Direct ``python backend/scripts/live_latency.py``
 
 
 CompletionEvents = frozenset({"turn_complete", "server.turn.completed", "tts_playback_complete"})
-_ANDROID_LOGCAT_TIME = re.compile(r"\d{2}-\d{2}_\d{2}:\d{2}:\d{2}\.\d{3}")
-
+RESPONSE_LIFECYCLE_EVENTS = frozenset(
+    {
+        "response.cancelled",
+        "response_cancelled_received",
+        "response_cancel_queued",
+        "response_cancel_sent",
+        "barge_in_confirmed",
+        "barge_in_playback_stop_requested",
+        "barge_in_playback_stopped",
+        "tts.cancelled",
+        "tts_playback_stopped",
+    }
+)
 _STAGES: tuple[tuple[str, str, str], ...] = (
     ("speech", "speech_start", "speech_end"),
     ("STT", "stt_request_start", "stt_final"),
@@ -67,6 +77,18 @@ _STAGES: tuple[tuple[str, str, str], ...] = (
 def record_key(record: dict[str, Any]) -> tuple[Any, ...]:
     """Return the same identity used by the offline merge utility."""
 
+    metadata = record.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    segment = next(
+        (
+            metadata.get(name)
+            for name in ("tts_segment_id", "segment_id", "segment_index", "chunk_id")
+            if metadata.get(name) is not None
+        ),
+        None,
+    )
+    sequence = metadata.get("sequence")
+
     return (
         record.get("clock_domain"),
         record.get("event"),
@@ -76,6 +98,8 @@ def record_key(record: dict[str, Any]) -> tuple[Any, ...]:
         record.get("timestamp_ms"),
         record.get("monotonic_ms"),
         record.get("monotonic_ns"),
+        segment,
+        sequence,
     )
 
 
@@ -97,17 +121,10 @@ def build_logcat_command(adb_command: str, *, start_at_now: bool) -> list[str]:
 
     command = [adb_command, "logcat", "-b", "all"]
     if start_at_now:
-        device_time = subprocess.run(
-            [adb_command, "shell", "date", "+%m-%d_%H:%M:%S.%3N"],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        ).stdout.strip()
-        if not _ANDROID_LOGCAT_TIME.fullmatch(device_time):
-            raise RuntimeError(f"Unexpected Android date for logcat start: {device_time!r}")
-        command.extend(["-T", device_time.replace("_", " ")])
+        # Device wall clocks may differ from the host. A timestamp cutoff can
+        # replay old entries when those clocks are skewed, so start at the live
+        # end of the buffer without clearing it.
+        command.extend(["-T", "0"])
     command.extend(["-v", "threadtime"])
     return command
 
@@ -158,6 +175,7 @@ class LiveCollector:
         clear_logcat: bool,
         from_start: bool,
         once: bool,
+        verbose: bool = True,
     ) -> None:
         self.backend_tail = FileTail(backend_trace, from_end=not from_start)
         self.metro_tail = FileTail(metro_log, from_end=not from_start) if metro_log else None
@@ -167,12 +185,15 @@ class LiveCollector:
         self.adb_command = adb_command
         self.clear_logcat = clear_logcat
         self.once = once
+        self.verbose = verbose
         self.records: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.seen: set[tuple[Any, ...]] = set()
         self.printed_durations: set[tuple[str, str]] = set()
         self.completed_turns: set[str] = set()
         self.turn_response_ids: dict[str, str] = {}
         self.response_turn_ids: dict[str, str] = {}
+        self.session_response_turn_ids: dict[tuple[str, str], str] = {}
+        self.cancelled_response_ids: set[tuple[str, str]] = set()
         self.rejected_records: list[dict[str, Any]] = []
         self.logcat_process: subprocess.Popen[str] | None = None
         self.logcat_queue: queue.Queue[str] = queue.Queue()
@@ -190,7 +211,7 @@ class LiveCollector:
                 text=True,
             )
         logcat_command = build_logcat_command(self.adb_command, start_at_now=not self.clear_logcat)
-        if not self.clear_logcat:
+        if not self.clear_logcat and self.verbose:
             print(f"Android logcat capture starts at {logcat_command[5]}", flush=True)
         self.logcat_process = subprocess.Popen(
             logcat_command,
@@ -208,11 +229,12 @@ class LiveCollector:
             name="latency-logcat-reader",
             daemon=True,
         ).start()
-        print(f"LIVE LATENCY CAPTURE ACTIVE -> {self.output_path}", flush=True)
-        sources = "backend trace + Android all-buffer logcat"
-        if self.metro_tail:
-            sources += " + Metro"
-        print(f"Sources: {sources}", flush=True)
+        if self.verbose:
+            print(f"LIVE LATENCY CAPTURE ACTIVE -> {self.output_path}", flush=True)
+            sources = "backend trace + Android all-buffer logcat"
+            if self.metro_tail:
+                sources += " + Metro"
+            print(f"Sources: {sources}", flush=True)
 
     def _read_logcat(self, stream: Iterable[str]) -> None:
         for line in stream:
@@ -253,41 +275,68 @@ class LiveCollector:
         turn_id = str(turn_id)
         event = str(record.get("event"))
         response_id = record.get("response_id")
+        session_id = str(record.get("session_id") or "")
         rejection: str | None = None
-        if response_id is not None:
+        lifecycle_only = event in RESPONSE_LIFECYCLE_EVENTS or event.startswith("barge_in_")
+        if response_id is not None and not lifecycle_only:
             response_id = str(response_id)
+            if (session_id, response_id) in self.cancelled_response_ids:
+                rejection = "stale_cancelled_response"
             expected_response_id = self.turn_response_ids.get(turn_id)
-            if expected_response_id is None:
+            if rejection is None and expected_response_id is None:
                 self.turn_response_ids[turn_id] = response_id
-            elif expected_response_id != response_id:
+            elif rejection is None and expected_response_id != response_id:
                 rejection = "wrong_response_id"
-            expected_turn_id = self.response_turn_ids.get(response_id)
-            if expected_turn_id is None:
+            response_key = (session_id, response_id)
+            expected_turn_id = self.session_response_turn_ids.get(response_key)
+            if rejection is None and expected_turn_id is None:
                 self.response_turn_ids[response_id] = turn_id
-            elif expected_turn_id != turn_id:
+                self.session_response_turn_ids[response_key] = turn_id
+            elif rejection is None and expected_turn_id != turn_id:
                 rejection = "wrong_turn_id"
+        elif response_id is not None:
+            response_id = str(response_id)
+        if (
+            event
+            in {
+                "barge_in_confirmed",
+                "response.cancelled",
+                "response_cancelled_received",
+                "response_cancel_queued",
+                "response_cancel_sent",
+                "tts.cancelled",
+                "tts_playback_stopped",
+            }
+            and response_id is not None
+        ):
+            # This record belongs to the response being interrupted. It must
+            # not claim the replacement turn's response identity.
+            self.cancelled_response_ids.add((session_id, response_id))
         if rejection is not None:
             record.setdefault("metadata", {})["collector_rejection"] = rejection
         self.output.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
         self.output.flush()
         if rejection is not None:
             self.rejected_records.append(record)
-            print(
-                f"REJECTED stale event={event} turn={turn_id} "
-                f"response={response_id} reason={rejection}",
-                flush=True,
-            )
+            if self.verbose:
+                print(
+                    f"REJECTED stale event={event} turn={turn_id} "
+                    f"response={response_id} reason={rejection}",
+                    flush=True,
+                )
             return
         self.records[turn_id].append(record)
-        print(
-            f"[{record.get('timestamp', '?')}] {source} {event} "
-            f"session={record.get('session_id')} turn={turn_id} "
-            f"response={record.get('response_id')}",
-            flush=True,
-        )
-        self.print_completed_stages(turn_id)
+        if self.verbose:
+            print(
+                f"[{record.get('timestamp', '?')}] {source} {event} "
+                f"session={record.get('session_id')} turn={turn_id} "
+                f"response={record.get('response_id')}",
+                flush=True,
+            )
+            self.print_completed_stages(turn_id)
         if event in CompletionEvents:
-            self.print_turn(turn_id, completion_event=event)
+            if self.verbose:
+                self.print_turn(turn_id, completion_event=event)
             if self.once and event in {"turn_complete", "server.turn.completed"}:
                 self.stop_event.set()
 
@@ -354,7 +403,8 @@ class LiveCollector:
             except subprocess.TimeoutExpired:
                 self.logcat_process.kill()
         self.output.close()
-        print("LIVE LATENCY CAPTURE STOPPED", flush=True)
+        if self.verbose:
+            print("LIVE LATENCY CAPTURE STOPPED", flush=True)
 
 
 def main() -> None:

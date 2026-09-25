@@ -112,11 +112,12 @@ class Settings(BaseSettings):
     llm_max_retry_attempts: int = Field(default=2, ge=0, le=5)
     llm_anthropic_version: str = "2023-06-01"
 
-    # LangGraph decision router remains disconnected from the gateway until
-    # later rollout steps are accepted. `off` must preserve legacy behavior.
+    # Shadow mode is observational only and remains disabled until Phase 0
+    # acceptance. `off` must preserve legacy behavior.
     router_mode: Literal["off", "shadow", "canary", "on"] = "off"
     router_cohort_percent: int = Field(default=0, ge=0, le=100)
     router_timeout_ms: int = Field(default=250, ge=1, le=10_000)
+    router_shadow_max_concurrent: int = Field(default=4, ge=1, le=64)
 
     # Phase 6 rollout controls. Memory remains completely disabled until the
     # retrieval/write stages and their acceptance evidence are complete.

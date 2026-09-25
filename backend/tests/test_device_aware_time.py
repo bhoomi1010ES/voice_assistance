@@ -20,6 +20,8 @@ from app.llm.tool_loop import (
     create_default_tool_registry,
 )
 from app.llm.types import LLMNamedToolChoice, LLMToolCall
+from app.routing.models import RouteName
+from app.routing.rules import classify_transcript
 from app.services import device_time
 from app.services.device_time import (
     build_device_time_context,
@@ -57,6 +59,7 @@ def _resolved(*, expression: str, now: str, timezone: str) -> datetime:
 async def test_acceptance_1_current_time_is_device_local_and_read_only() -> None:
     registry = create_default_tool_registry()
     prompt = "What time is it?"
+    assert classify_transcript(prompt).target_tool == "get_current_time"
     choice = classify_voice_tool_choice(prompt, registry.definitions())
     assert isinstance(choice, LLMNamedToolChoice)
     assert choice.function.name == "get_current_time"
@@ -90,6 +93,7 @@ async def test_acceptance_1_current_time_is_device_local_and_read_only() -> None
 
 @pytest.mark.asyncio
 async def test_acceptance_2_current_date_is_device_local_and_creates_no_task() -> None:
+    assert classify_transcript("What is today's date?").target_tool == "get_current_date"
     registry = create_default_tool_registry()
     choice = classify_voice_tool_choice("What is today's date?", registry.definitions())
     assert isinstance(choice, LLMNamedToolChoice)
@@ -152,6 +156,9 @@ def test_common_clock_phrases_route_to_the_matching_read_only_tool(
     ],
 )
 def test_scheduled_item_lookups_precede_broad_clock_routing(transcript: str) -> None:
+    router_decision = classify_transcript(transcript)
+    assert router_decision.route == RouteName.STRUCTURED_READ
+    assert router_decision.target_tool in {"list_tasks", "list_reminders"}
     choice = classify_voice_tool_choice(transcript, create_default_tool_registry().definitions())
 
     assert isinstance(choice, LLMNamedToolChoice)

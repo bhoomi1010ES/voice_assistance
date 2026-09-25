@@ -43,6 +43,8 @@ atexit.register(_close_trace_handles)
 
 def _safe_value(value: Any, *, key: str = "") -> Any:
     lowered = key.casefold()
+    if lowered in {"input_tokens", "output_tokens", "total_tokens"} and isinstance(value, int):
+        return value
     if any(part in lowered for part in _SENSITIVE_PARTS):
         return "[redacted]"
     if isinstance(value, dict):
