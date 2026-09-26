@@ -727,6 +727,7 @@ export type AudioPipelineStatus = {
 
 /** Native WebSocket event data; PCM, tokens, and provider secrets are excluded. */
 export type VoiceGatewayStatus = {
+  connectionGeneration?: number;
   state: string;
   connected: boolean;
   sessionStarted: boolean;
@@ -748,6 +749,7 @@ export type VoiceGatewayStatus = {
 };
 
 export type VoiceGatewayEvent = {
+  connectionGeneration?: number;
   event: string;
   sessionId: string | null;
   turnId: string | null;

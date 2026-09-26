@@ -149,6 +149,7 @@ export type VoiceTtsPlaybackState =
   | 'failed';
 
 export type VoiceSocketSnapshot = {
+  connectionGeneration: number;
   connection: VoiceConnectionState;
   session: VoiceSessionState;
   turn: VoiceTurnState;
@@ -250,9 +251,11 @@ export type VoiceTurnStartOptions = {
   preserveMicrophone?: boolean;
   includePreRoll?: boolean;
   autoCommitOnSpeechEnd?: boolean;
+  bargeInReplacement?: boolean;
 };
 
 const INITIAL_SNAPSHOT: VoiceSocketSnapshot = {
+  connectionGeneration: 0,
   connection: 'disconnected',
   session: 'idle',
   turn: 'idle',
@@ -348,6 +351,7 @@ const TURN_SCOPED_EVENTS = new Set<VoiceServerEventType>([
 
 const KNOWN_EVENT_TYPES = new Set<string>(VOICE_SERVER_EVENT_TYPES);
 const CLIENT_CLOCK_EVENT_TYPES = new Set<VoiceServerEventType>([
+  'server.pong',
   'tts.playback.started',
   'tts.playback.completed',
   'tts.playback.stopped',
@@ -394,6 +398,7 @@ const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
 };
 
 export type NormalizedVoiceEvent = {
+  connectionGeneration?: number;
   type: VoiceServerEventType;
   eventId: string | null;
   sessionId: string | null;
@@ -458,6 +463,9 @@ export function normalizeVoiceGatewayEvent(
   const errorCode = readString(record.code ?? record.errorCode, MAX_ID_LENGTH);
   const errorMessage = readString(record.message ?? record.errorMessage, 180);
   const retryable = readBoolean(record.retryable);
+  const connectionGeneration = readNumber(
+    record.connectionGeneration ?? record.connection_generation,
+  );
   const confirmationStatus = readString(record.status, 32);
   const sampleRateHz = readNumber(record.sampleRateHz ?? record.sample_rate_hz);
   const stopReason = readString(
@@ -465,6 +473,9 @@ export function normalizeVoiceGatewayEvent(
     MAX_ID_LENGTH,
   );
   return {
+    ...(connectionGeneration !== null && connectionGeneration >= 0
+      ? { connectionGeneration }
+      : {}),
     type: rawType as VoiceServerEventType,
     eventId: readString(record.eventId ?? record.event_id, MAX_ID_LENGTH),
     sessionId: readString(record.sessionId ?? record.session_id, MAX_ID_LENGTH),
@@ -516,8 +527,10 @@ export class VoiceSocket {
   private hadConnected = false;
   private allowAutoReconnect = false;
   private sessionStartInFlight = false;
+  private sessionEpoch = 0;
   private turnStartedAtMs: number | null = null;
   private connectPromise: Promise<void> | null = null;
+  private retryPromise: Promise<void> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private autoListenTimer: ReturnType<typeof setTimeout> | null = null;
   private speechEndCommitTimer: ReturnType<typeof setTimeout> | null = null;
@@ -536,6 +549,7 @@ export class VoiceSocket {
   /** Response whose native playback stop is waiting for its confirm event. */
   private pendingNativeBargeInResponseId: string | null = null;
   private autoCommitBargeInTurn = false;
+  private bargeInReplacementTurn = false;
   private bargeInSpeechEndedPending = false;
   private bargeInCommitInFlight = false;
   private bargeInTurnId: string | null = null;
@@ -547,6 +561,7 @@ export class VoiceSocket {
   private sileroSpeechSegmentStartedAtMs: number | null = null;
   private sileroSpeechSegmentStartedDuringGuard = false;
   private autoListenSuppressed = false;
+  private lastHeartbeatSessionId: string | null = null;
 
   constructor(options: VoiceSocketOptions = {}) {
     this.adapter = options.adapter ?? nativeVoiceSocketAdapter;
@@ -596,6 +611,7 @@ export class VoiceSocket {
     this.appStateSubscription = this.appState.addEventListener(
       'change',
       nextState => {
+        this.logLifecycle('app_state_changed', { app_state: nextState });
         if (nextState === 'active') {
           this.reconcile().catch(() => undefined);
         }
@@ -657,8 +673,13 @@ export class VoiceSocket {
     // WebSocket can outlive a stale JS snapshot after a session/heartbeat
     // transition; calling connect in that state creates an avoidable
     // "already connected" failure.
+    const expectedEpoch = this.sessionEpoch;
     try {
       const nativeStatus = await this.adapter.getStatus();
+      if (expectedEpoch !== this.sessionEpoch) {
+        this.logLifecycle('stale_connect_status_ignored');
+        return;
+      }
       this.handleStatus(nativeStatus);
       // A stale CLOSING/DISCONNECTED status can make handleStatus schedule a
       // bounded automatic retry. A deliberate connect/retry owns this attempt,
@@ -676,15 +697,48 @@ export class VoiceSocket {
   }
 
   async retry(): Promise<void> {
+    if (this.retryPromise) {
+      this.logLifecycle('retry_ignored_in_flight');
+      return this.retryPromise;
+    }
     this.clearReconnectTimer();
-    this.snapshot = {
-      ...this.snapshot,
-      connection: 'connecting',
-      reconnectAttempt: 0,
-      error: null,
-    };
-    this.notify();
-    return this.connect();
+    const retryOperation = Promise.resolve().then(async () => {
+      this.logLifecycle('retry_started');
+      this.explicitStop = true;
+      this.desiredConnection = false;
+      this.desiredSession = false;
+      this.allowAutoReconnect = false;
+      // A connect awaiting the old socket's readiness must not own the fresh
+      // attempt after this explicit teardown. Its epoch checks make it stale.
+      this.connectPromise = null;
+      this.clearAutoListenTimer();
+      this.clearSpeechEndCommitTimer();
+      this.invalidateSessionState('manual_retry_cleanup', 'disconnected', null, false);
+      const cleanup: Promise<unknown>[] = [
+        this.adapter.stopMicrophone?.() ?? Promise.resolve(),
+        this.adapter.stopPlayback?.() ?? Promise.resolve(),
+        this.adapter.abortAll?.('manual_retry').catch(() => undefined) ??
+          Promise.resolve(),
+        this.adapter.disconnect(),
+      ];
+      await Promise.allSettled(cleanup);
+      this.resetToDisconnected();
+      this.explicitStop = false;
+      this.desiredConnection = true;
+      this.desiredSession = true;
+      this.allowAutoReconnect = false;
+      this.hadConnected = false;
+      await this.connect();
+      this.logLifecycle('retry_completed');
+    });
+    this.retryPromise = retryOperation;
+    try {
+      return await retryOperation;
+    } finally {
+      if (this.retryPromise === retryOperation) {
+        this.retryPromise = null;
+      }
+    }
   }
 
   async startSession(): Promise<void> {
@@ -786,8 +840,10 @@ export class VoiceSocket {
   }
 
   async startTurn(options: VoiceTurnStartOptions = {}): Promise<void> {
+    let expectedEpoch: number | null = null;
     try {
       await this.ensureReadySessionForTurn();
+      expectedEpoch = this.sessionEpoch;
       if (this.snapshot.ttsPlaybackState === 'speaking') {
         throw new Error(
           'Wait for playback-aware speech confirmation before starting a turn.',
@@ -827,6 +883,10 @@ export class VoiceSocket {
         this.autoListenSuppressed = false;
       }
       const permission = await this.adapter.requestMicrophonePermission?.();
+      if (expectedEpoch !== this.sessionEpoch) {
+        this.logLifecycle('stale_microphone_permission_result_ignored');
+        return;
+      }
       if (
         permission &&
         !['granted', 'authorized', 'limited'].includes(permission.toLowerCase())
@@ -835,7 +895,16 @@ export class VoiceSocket {
       }
       if (!options.preserveMicrophone) {
         await this.stopMicrophoneSafely();
+        if (expectedEpoch !== this.sessionEpoch) {
+          this.logLifecycle('stale_microphone_start_skipped');
+          return;
+        }
         await this.adapter.startMicrophone?.();
+        if (expectedEpoch !== this.sessionEpoch) {
+          await this.stopMicrophoneSafely();
+          this.logLifecycle('stale_microphone_start_stopped');
+          return;
+        }
       }
       this.responseServerCompleted = false;
       if (!queueFollowUp) {
@@ -846,6 +915,7 @@ export class VoiceSocket {
       this.sileroSpeechSegmentStartedAtMs = null;
       this.sileroSpeechSegmentStartedDuringGuard = false;
       this.autoCommitBargeInTurn = Boolean(options.autoCommitOnSpeechEnd);
+      this.bargeInReplacementTurn = Boolean(options.bargeInReplacement);
       this.bargeInSpeechEndedPending = false;
       this.bargeInCommitInFlight = false;
       if (!options.autoCommitOnSpeechEnd) {
@@ -870,11 +940,22 @@ export class VoiceSocket {
         followUpQueued: queueFollowUp,
         error: null,
       });
-      this.handleStatus(
-        await this.adapter.startTurn(null, Boolean(options.includePreRoll)),
+      const status = await this.adapter.startTurn(
+        null,
+        Boolean(options.includePreRoll),
       );
+      if (expectedEpoch !== this.sessionEpoch) {
+        await this.stopMicrophoneSafely();
+        this.logLifecycle('stale_turn_start_result_stopped');
+        return;
+      }
+      this.handleStatus(status);
       this.ensureTranscriptPlaceholder('listening');
     } catch (error) {
+      if (expectedEpoch !== null && expectedEpoch !== this.sessionEpoch) {
+        this.logLifecycle('stale_turn_start_error_ignored');
+        return;
+      }
       this.turnStartedAtMs = null;
       this.autoCommitBargeInTurn = false;
       this.bargeInSpeechEndedPending = false;
@@ -896,6 +977,7 @@ export class VoiceSocket {
       throw new Error('There is no active voice turn to finish.');
     }
     this.clearSpeechEndCommitTimer();
+    const expectedEpoch = this.sessionEpoch;
 
     const durationMs = Math.max(
       0,
@@ -918,12 +1000,22 @@ export class VoiceSocket {
     });
     try {
       const status = await this.adapter.commitAudio(durationMs);
+      if (expectedEpoch !== this.sessionEpoch) {
+        this.logLifecycle('stale_turn_commit_result_ignored', {
+          callback_generation: status.connectionGeneration,
+        });
+        return;
+      }
       // Keep AudioRecord alive after commit. Native AEC/NS and Silero VAD
       // continue processing speaker-aware microphone frames while the
       // assistant response is buffered or playing. The transport does not
       // upload frames once commitAudio marks the turn inactive.
       this.handleStatus(status);
     } catch (error) {
+      if (expectedEpoch !== this.sessionEpoch) {
+        this.logLifecycle('stale_turn_commit_error_ignored');
+        return;
+      }
       this.markCurrentTranscriptError(error);
       this.setSnapshot({ turn: 'failed', error: safeVoiceError(error) });
       throw new Error(
@@ -1253,8 +1345,13 @@ export class VoiceSocket {
       return;
     }
 
+    const expectedEpoch = this.sessionEpoch;
     try {
       const status = await this.adapter.getStatus();
+      if (expectedEpoch !== this.sessionEpoch) {
+        this.logLifecycle('stale_reconcile_status_ignored');
+        return;
+      }
       this.handleStatus(status);
       if (
         this.desiredConnection &&
@@ -1294,10 +1391,26 @@ export class VoiceSocket {
       // The native transport reads its bearer token from secure storage. Keep
       // that token current before every new socket so reconnects cannot loop
       // on an expired access token after the HTTP session has been refreshed.
+      const prepareEpoch = this.sessionEpoch;
       await this.prepareConnection?.();
+      if (prepareEpoch !== this.sessionEpoch) {
+        this.logLifecycle('stale_connection_preparation_ignored');
+        return;
+      }
       const status = await this.adapter.connect(this.url);
+      if (prepareEpoch !== this.sessionEpoch) {
+        this.logLifecycle('stale_connection_open_ignored', {
+          callback_generation: status.connectionGeneration,
+        });
+        return;
+      }
       this.handleStatus(status);
+      const connectedEpoch = this.sessionEpoch;
       await this.waitForConnected();
+      if (connectedEpoch !== this.sessionEpoch) {
+        this.logLifecycle('stale_session_start_after_connect_ignored');
+        return;
+      }
       if (this.desiredSession && !this.sessionStartInFlight) {
         await this.requestSessionStart(this.snapshot.sessionId);
       }
@@ -1362,8 +1475,16 @@ export class VoiceSocket {
     }
 
     this.sessionStartInFlight = true;
+    const expectedEpoch = this.sessionEpoch;
     try {
-      this.handleStatus(await this.adapter.startSession(resumeSessionId));
+      const status = await this.adapter.startSession(resumeSessionId);
+      if (expectedEpoch !== this.sessionEpoch) {
+        this.logLifecycle('stale_session_start_result_ignored', {
+          callback_generation: status.connectionGeneration,
+        });
+        return;
+      }
+      this.handleStatus(status);
       if (
         this.snapshot.session !== 'ready' &&
         this.desiredSession &&
@@ -1372,8 +1493,16 @@ export class VoiceSocket {
         this.setSnapshot({ session: 'starting', error: null });
       }
     } catch (error) {
+      if (expectedEpoch !== this.sessionEpoch) {
+        this.logLifecycle('stale_session_start_error_ignored');
+        return;
+      }
       try {
         const status = await this.adapter.getStatus();
+        if (expectedEpoch !== this.sessionEpoch) {
+          this.logLifecycle('stale_session_status_after_error_ignored');
+          return;
+        }
         const nativeState = status.state.toUpperCase();
         if (
           [
@@ -1401,6 +1530,33 @@ export class VoiceSocket {
   }
 
   private handleStatus(status: VoiceGatewayStatus): void {
+    const statusGeneration = status.connectionGeneration;
+    if (typeof statusGeneration === 'number' && Number.isFinite(statusGeneration)) {
+      if (statusGeneration < this.snapshot.connectionGeneration) {
+        this.recordDroppedEvent(false);
+        this.logLifecycle('stale_native_status_ignored', {
+          callback_generation: statusGeneration,
+        });
+        return;
+      }
+      if (statusGeneration > this.snapshot.connectionGeneration) {
+        this.invalidateSessionState('connection_generation_changed', 'connecting', null, false);
+        this.setSnapshot({ connectionGeneration: statusGeneration });
+      }
+    }
+    if (
+      status.sessionStarted &&
+      status.sessionId &&
+      this.retiredSessionIds.has(status.sessionId) &&
+      status.sessionId !== this.snapshot.sessionId
+    ) {
+      this.recordDroppedEvent(false);
+      this.logLifecycle('retired_session_status_ignored', {
+        callback_session_id: status.sessionId,
+        callback_generation: statusGeneration,
+      });
+      return;
+    }
     const nativeState = status.state.toUpperCase();
     const connected =
       status.connected ||
@@ -1423,9 +1579,15 @@ export class VoiceSocket {
       }
       this.setSnapshot({
         connection: 'connected',
-        heartbeat: this.snapshot.heartbeat === 'missed' ? 'unknown' : 'healthy',
+        heartbeat:
+          this.lastHeartbeatSessionId !== null &&
+          this.lastHeartbeatSessionId === (status.sessionId ?? this.snapshot.sessionId)
+            ? 'healthy'
+            : 'unknown',
         error: null,
-        ...(connectionBecameConnected ? { lastHeartbeatAtMs: this.now() } : {}),
+        ...(connectionBecameConnected && this.lastHeartbeatSessionId === null
+          ? { lastHeartbeatAtMs: null }
+          : {}),
         ...(sessionIsStable ? { reconnectAttempt: 0 } : {}),
         ...(status.sessionStarted
           ? { session: 'ready' as VoiceSessionState }
@@ -1441,8 +1603,17 @@ export class VoiceSocket {
         );
       }
       if (sessionIsStable) {
+        if (status.sessionId && status.sessionId !== this.snapshot.sessionId) {
+          this.lastHeartbeatSessionId = null;
+          this.setSnapshot({
+            sessionId: status.sessionId,
+            heartbeat: 'unknown',
+            lastHeartbeatAtMs: null,
+          });
+        }
         this.scheduleContinuousListen();
       }
+      this.logLifecycle('native_status', { native_state: nativeState });
       return;
     }
 
@@ -1451,12 +1622,11 @@ export class VoiceSocket {
         this.handleAuthenticationExpired();
         return;
       }
-      this.setSnapshot({
-        connection: 'failed',
-        error: safeVoiceError(status.lastError),
-        heartbeat: 'missed',
-      });
-      this.suppressAudioForTransportFailure('native_transport_error');
+      this.invalidateSessionState(
+        'native_transport_error',
+        'failed',
+        safeVoiceError(status.lastError),
+      );
       if (
         this.allowAutoReconnect &&
         this.desiredConnection &&
@@ -1479,14 +1649,15 @@ export class VoiceSocket {
         return;
       }
       if (this.hadConnected || this.allowAutoReconnect) {
-        this.suppressAudioForTransportFailure('transport_closed');
+        this.invalidateSessionState('transport_closed', 'reconnecting');
         this.scheduleReconnect('transport-close');
         return;
       }
-      this.setSnapshot({
-        connection: 'failed',
-        error: 'Voice connection closed.',
-      });
+      this.invalidateSessionState(
+        'transport_closed_before_ready',
+        'failed',
+        'Voice connection closed.',
+      );
     }
   }
 
@@ -1497,6 +1668,18 @@ export class VoiceSocket {
     const event = normalizeVoiceGatewayEvent(input);
     if (!event) {
       this.recordDroppedEvent(true);
+      return;
+    }
+
+    if (
+      event.connectionGeneration !== undefined &&
+      event.connectionGeneration !== this.snapshot.connectionGeneration
+    ) {
+      this.recordDroppedEvent(false);
+      this.logLifecycle('stale_native_event_ignored', {
+        event_type: event.type,
+        callback_generation: event.connectionGeneration,
+      });
       return;
     }
 
@@ -1527,6 +1710,20 @@ export class VoiceSocket {
     if (this.isStaleEvent(event)) {
       this.recordDroppedEvent(false);
       return;
+    }
+    if (event.type === 'server.pong') {
+      if (
+        !event.sessionId ||
+        !this.snapshot.sessionId ||
+        event.sessionId !== this.snapshot.sessionId ||
+        this.snapshot.session !== 'ready'
+      ) {
+        this.recordDroppedEvent(false);
+        this.logLifecycle('heartbeat_without_current_session_ignored', {
+          heartbeat_session_id: event.sessionId,
+        });
+        return;
+      }
     }
     if (event.transcript && !this.canAcceptTranscript(event.transcript)) {
       this.recordDroppedEvent(false);
@@ -1583,6 +1780,7 @@ export class VoiceSocket {
     }
 
     if (event.type === 'server.pong') {
+      this.lastHeartbeatSessionId = event.sessionId;
       this.setSnapshot({
         connection: 'connected',
         heartbeat: 'healthy',
@@ -1590,6 +1788,8 @@ export class VoiceSocket {
         reconnectAttempt: 0,
         error: null,
       });
+      this.logLifecycle('session_heartbeat', { heartbeat_session_id: event.sessionId });
+      this.scheduleContinuousListen();
       return;
     }
 
@@ -1597,8 +1797,17 @@ export class VoiceSocket {
       case 'voice.connection.opened':
         this.hadConnected = true;
         this.setSnapshot({ connection: 'connected', error: null });
+        this.logLifecycle('websocket_opened');
         break;
       case 'server.session.ready':
+        if (!event.sessionId) {
+          this.recordDroppedEvent(false);
+          this.logLifecycle('session_ready_without_id_ignored');
+          break;
+        }
+        if (this.snapshot.sessionId && this.snapshot.sessionId !== event.sessionId) {
+          this.invalidateSessionState('session_id_replaced', 'connecting');
+        }
         this.sessionStartInFlight = false;
         if (this.snapshot.turn !== 'failed') {
           this.autoListenSuppressed = false;
@@ -1617,11 +1826,17 @@ export class VoiceSocket {
         this.setSnapshot({
           connection: 'connected',
           session: 'ready',
-          heartbeat: 'healthy',
-          lastHeartbeatAtMs: receivedAtMs,
+          sessionId: event.sessionId,
+          heartbeat:
+            this.lastHeartbeatSessionId === event.sessionId ? 'healthy' : 'unknown',
+          lastHeartbeatAtMs:
+            this.lastHeartbeatSessionId === event.sessionId
+              ? this.snapshot.lastHeartbeatAtMs
+              : receivedAtMs,
           reconnectAttempt: 0,
           error: null,
         });
+        this.logLifecycle('session_ready', { ready_session_id: event.sessionId });
         this.scheduleContinuousListen();
         break;
       case 'server.conversation.reset':
@@ -1715,29 +1930,50 @@ export class VoiceSocket {
         this.ensureTranscriptPlaceholder('listening');
         break;
       case 'server.turn.ready':
+        if (
+          !event.sessionId ||
+          event.sessionId !== this.snapshot.sessionId ||
+          !event.turnId ||
+          !event.responseId
+        ) {
+          this.recordDroppedEvent(false);
+          this.logLifecycle('invalid_turn_ready_ignored', {
+            ready_session_id: event.sessionId,
+            ready_turn_id: event.turnId,
+            ready_response_id: event.responseId,
+          });
+          break;
+        }
         this.setSnapshot({
           connection: 'connected',
-          turn: 'recording',
+          turn:
+            this.snapshot.turn === 'committing' ? 'committing' : 'recording',
           speechDetected: false,
           followUpQueued: false,
           waitPhrase: null,
         });
-        this.ensureTranscriptPlaceholder('listening');
+        this.logLifecycle('turn_ready');
+        if (this.snapshot.turn !== 'committing') {
+          this.ensureTranscriptPlaceholder('listening');
+        }
         if (this.autoCommitBargeInTurn) {
           this.bargeInTurnId = event.turnId;
-          emitLatencyTrace({
-            sessionId: event.sessionId,
-            turnId: event.turnId,
-            responseId: event.responseId,
-            component: 'client',
-            event: 'barge_in_replacement_turn_ready',
-            metadata: { source: 'server.turn.ready' },
-          });
-          console.info('BARGE_IN_NEW_TURN_CREATED', {
-            turnId: event.turnId,
-            responseId: event.responseId,
-            timestampMs: this.now(),
-          });
+          if (this.bargeInReplacementTurn) {
+            emitLatencyTrace({
+              sessionId: event.sessionId,
+              turnId: event.turnId,
+              responseId: event.responseId,
+              component: 'client',
+              event: 'barge_in_replacement_turn_ready',
+              metadata: { source: 'server.turn.ready' },
+            });
+            console.info('BARGE_IN_NEW_TURN_CREATED', {
+              turnId: event.turnId,
+              responseId: event.responseId,
+              timestampMs: this.now(),
+            });
+            this.bargeInReplacementTurn = false;
+          }
           if (this.bargeInSpeechEndedPending && !this.bargeInCommitInFlight) {
             this.bargeInSpeechEndedPending = false;
             this.scheduleSpeechEndCommit();
@@ -2029,19 +2265,16 @@ export class VoiceSocket {
         if (event.turnId || this.snapshot.turnId) {
           this.markCurrentTranscriptError(event.errorCode);
         }
-        this.setSnapshot({
-          connection: 'failed',
-          heartbeat: 'missed',
-          transcriptError: event.errorCode?.toLowerCase().startsWith('stt_')
-            ? serverError
-            : this.snapshot.transcriptError,
-          error: event.errorCode?.toLowerCase().startsWith('stt_')
+        this.invalidateSessionState(
+          `server_error:${event.errorCode ?? 'unknown'}`,
+          'failed',
+          event.errorCode?.toLowerCase().startsWith('stt_')
             ? serverError.message
             : 'The voice session reported an error. Try again.',
-        });
-        this.suppressAudioForTransportFailure(
-          `server_error:${event.errorCode ?? 'unknown'}`,
         );
+        if (event.errorCode?.toLowerCase().startsWith('stt_')) {
+          this.setSnapshot({ transcriptError: serverError });
+        }
         if (this.allowAutoReconnect && this.desiredConnection) {
           this.scheduleReconnect('server-error');
         }
@@ -2575,9 +2808,11 @@ export class VoiceSocket {
         preserveMicrophone: true,
         includePreRoll: true,
         autoCommitOnSpeechEnd: true,
+        bargeInReplacement: true,
       });
     } catch (error) {
       this.autoCommitBargeInTurn = false;
+      this.bargeInReplacementTurn = false;
       this.bargeInSpeechEndedPending = false;
       this.setSnapshot({
         turn: 'failed',
@@ -3394,6 +3629,7 @@ export class VoiceSocket {
     this.sileroSpeechSegmentStartedDuringGuard = false;
     this.bargeInSpeechEndedPending = false;
     this.autoCommitBargeInTurn = false;
+    this.bargeInReplacementTurn = false;
     console.info('TRANSPORT_UNHEALTHY_AUDIO_SUPPRESSED', {
       reason,
       sessionId: this.snapshot.sessionId,
@@ -3419,23 +3655,119 @@ export class VoiceSocket {
     }
   }
 
+  private invalidateSessionState(
+    reason: string,
+    connection: VoiceConnectionState,
+    error: string | null = null,
+    abortServerResponse = true,
+  ): void {
+    this.sessionEpoch += 1;
+    const sessionId = this.snapshot.sessionId;
+    const turnId = this.snapshot.turnId;
+    const responseId = this.snapshot.responseId;
+    this.retireCorrelation(sessionId, turnId, responseId);
+    this.clearAutoListenTimer();
+    this.clearSpeechEndCommitTimer();
+    this.sessionStartInFlight = false;
+    this.turnStartedAtMs = null;
+    this.speechEndedAtMs = null;
+    this.responseServerCompleted = false;
+    this.ttsPlaybackTerminal = true;
+    this.bargeInInFlight = false;
+    this.pendingNativeBargeInResponseId = null;
+    this.autoCommitBargeInTurn = false;
+    this.bargeInReplacementTurn = false;
+    this.bargeInSpeechEndedPending = false;
+    this.bargeInCommitInFlight = false;
+    this.bargeInTurnId = null;
+    this.confirmationAwaitingVoice = false;
+    this.confirmationPromptPlaybackCompleted = false;
+    this.confirmationTurnStartInFlight = false;
+    this.lastHeartbeatSessionId = null;
+    if (this.conversationFlushTimer) {
+      clearTimeout(this.conversationFlushTimer);
+      this.conversationFlushTimer = null;
+    }
+    this.pendingConversationEvents = [];
+    this.conversationState = clearConversation();
+    this.suppressAudioForTransportFailure(reason);
+    if (abortServerResponse) {
+      this.adapter.abortAll?.(reason).catch(() => undefined);
+    }
+    this.logLifecycle('session_invalidated', { reason });
+    this.setSnapshot({
+      connection,
+      session: 'idle',
+      turn: 'idle',
+      heartbeat: connection === 'failed' ? 'missed' : 'unknown',
+      sessionId: null,
+      turnId: null,
+      responseId: null,
+      ttsPlaybackState: 'idle',
+      ttsResponseId: null,
+      ttsError: null,
+      waitPhrase: null,
+      followUpQueued: false,
+      confirmationAwaitingVoice: false,
+      speechDetected: false,
+      transcriptMessages: [],
+      conversationMessages: [],
+      transcriptError: null,
+      firstTextAtMs: null,
+      conversationRenderCompletedAtMs: null,
+      lastHeartbeatAtMs: null,
+      error,
+    });
+  }
+
+  private logLifecycle(
+    phase: string,
+    metadata: Record<string, string | number | null | undefined> = {},
+  ): void {
+    const current = this.snapshot;
+    const values = {
+      phase,
+      connection_generation: current.connectionGeneration,
+      connection_state: current.connection,
+      session_state: current.session,
+      turn_state: current.turn,
+      heartbeat_state: current.heartbeat,
+      session_id: current.sessionId,
+      turn_id: current.turnId,
+      response_id: current.responseId,
+      timestamp_ms: this.now(),
+      ...metadata,
+    };
+    console.info('VOICE_LIFECYCLE', values);
+    emitLatencyTrace({
+      sessionId: current.sessionId,
+      turnId: current.turnId,
+      responseId: current.responseId,
+      component: 'client',
+      event: `voice_lifecycle_${phase}`,
+      metadata: values,
+    });
+  }
+
   private checkHeartbeat(): void {
     if (!['connected', 'degraded'].includes(this.snapshot.connection)) {
       return;
     }
-    const lastHeartbeatAtMs = this.snapshot.lastHeartbeatAtMs ?? this.now();
+    const lastHeartbeatAtMs = this.snapshot.lastHeartbeatAtMs;
+    if (lastHeartbeatAtMs === null) {
+      return;
+    }
     if (this.now() - lastHeartbeatAtMs < this.heartbeatTimeoutMs) {
       return;
     }
     if (this.snapshot.heartbeat === 'missed') {
       return;
     }
-    this.setSnapshot({
-      connection: 'degraded',
-      heartbeat: 'missed',
-      error: 'Voice connection heartbeat was missed. Reconnecting…',
-    });
-    this.suppressAudioForTransportFailure('heartbeat_missed');
+    this.invalidateSessionState(
+      'heartbeat_missed',
+      'degraded',
+      'Voice connection heartbeat was missed. Reconnecting…',
+    );
     if (this.desiredConnection && !this.explicitStop) {
       this.scheduleReconnect('heartbeat');
       this.closeTransportForReconnect().catch(() => undefined);
@@ -3509,6 +3841,7 @@ export class VoiceSocket {
   }
 
   private resetToDisconnected(): void {
+    this.sessionEpoch += 1;
     this.clearAutoListenTimer();
     this.clearSpeechEndCommitTimer();
     this.clearConversationState();
@@ -3527,6 +3860,7 @@ export class VoiceSocket {
     this.confirmationAwaitingVoice = false;
     this.confirmationPromptPlaybackCompleted = false;
     this.confirmationTurnStartInFlight = false;
+    this.lastHeartbeatSessionId = null;
     this.setSnapshot({
       connection: 'disconnected',
       session: 'idle',

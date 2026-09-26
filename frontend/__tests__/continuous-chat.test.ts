@@ -113,6 +113,20 @@ class ContinuousChatAdapter implements VoiceSocketAdapter {
   }
 
   async getStatus() {
+    if (this.status.sessionStarted && this.status.sessionId) {
+      this.statusListeners.forEach(listener => listener(this.status));
+      this.eventListeners.forEach(listener =>
+        listener({
+          event: 'server.pong',
+          sessionId: this.status.sessionId,
+          turnId: null,
+          responseId: null,
+          eventId: `native-status-pong-${this.status.sessionId}`,
+          timestampMs: 1,
+          connectionGeneration: this.status.connectionGeneration,
+        }),
+      );
+    }
     return this.status;
   }
 
@@ -165,6 +179,19 @@ class ContinuousChatAdapter implements VoiceSocketAdapter {
       });
     }
     this.eventListeners.forEach(listener => listener(event));
+    if (event.event === 'server.session.ready' && event.sessionId) {
+      this.eventListeners.forEach(listener =>
+        listener({
+          event: 'server.pong',
+          sessionId: event.sessionId,
+          turnId: null,
+          responseId: null,
+          eventId: `pong-${event.eventId ?? event.sessionId}`,
+          timestampMs: (event.timestampMs ?? 0) + 1,
+          connectionGeneration: event.connectionGeneration,
+        }),
+      );
+    }
   }
 }
 
@@ -172,6 +199,7 @@ const activeSockets: VoiceSocket[] = [];
 
 afterEach(async () => {
   await Promise.all(activeSockets.splice(0).map(socket => socket.dispose()));
+  jest.restoreAllMocks();
   jest.useRealTimers();
 });
 
@@ -297,6 +325,7 @@ test('failed response suppresses auto-listening until an explicit retry turn', a
 
 test('starts listening after session ready and keeps capture for the next turn', async () => {
   jest.useFakeTimers();
+  const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => undefined);
   const adapter = new ContinuousChatAdapter();
   adapter.status = status({ state: 'CONNECTED', connected: true });
   const socket = new VoiceSocket({ adapter });
@@ -336,6 +365,44 @@ test('starts listening after session ready and keeps capture for the next turn',
   expect(adapter.startTurnCalls).toBe(2);
   expect(adapter.stopMicrophoneCalls).toBe(1);
   expect(socket.getSnapshot().continuousListening).toBe(true);
+  expect(
+    infoSpy.mock.calls.some(call =>
+      String(call[0]).includes('barge_in_replacement_turn_ready'),
+    ),
+  ).toBe(false);
+});
+
+test('emits replacement telemetry only for a real barge-in replacement turn', async () => {
+  const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+  const adapter = new ContinuousChatAdapter();
+  adapter.status = status({
+    state: 'SESSION_READY',
+    connected: true,
+    sessionStarted: true,
+    sessionId: SESSION_ID,
+  });
+  const socket = new VoiceSocket({ adapter, autoStartSession: false });
+  activeSockets.push(socket);
+
+  await socket.connect();
+  await socket.startTurn({
+    autoCommitOnSpeechEnd: true,
+    bargeInReplacement: true,
+  });
+  adapter.emit({
+    event: 'server.turn.ready',
+    sessionId: SESSION_ID,
+    turnId: 'turn-barge-1',
+    responseId: 'response-barge-1',
+    eventId: 'barge-turn-ready-1',
+    timestampMs: 2,
+  });
+
+  expect(
+    infoSpy.mock.calls.some(call =>
+      String(call[0]).includes('barge_in_replacement_turn_ready'),
+    ),
+  ).toBe(true);
 });
 
 test('shows the server wait phrase and clears it when real answer text arrives', async () => {

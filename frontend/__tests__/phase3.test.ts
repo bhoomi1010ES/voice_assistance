@@ -139,6 +139,18 @@ class FakeVoiceAdapter implements VoiceSocketAdapter {
   }
 
   async getStatus() {
+    if (this.status.sessionStarted && this.status.sessionId) {
+      this.statusListeners.forEach(listener => listener(this.status));
+      this.emitEvent({
+        event: 'server.pong',
+        sessionId: this.status.sessionId,
+        turnId: null,
+        responseId: null,
+        eventId: `native-status-pong-${this.status.sessionId}-${this.status.connectionGeneration ?? 0}`,
+        timestampMs: 1,
+        connectionGeneration: this.status.connectionGeneration,
+      });
+    }
     return this.status;
   }
 
@@ -189,6 +201,19 @@ class FakeVoiceAdapter implements VoiceSocketAdapter {
       });
     }
     this.eventListeners.forEach(listener => listener(event));
+    if (event.event === 'server.session.ready' && event.sessionId) {
+      this.eventListeners.forEach(listener =>
+        listener({
+          event: 'server.pong',
+          sessionId: event.sessionId,
+          turnId: null,
+          responseId: null,
+          eventId: `pong-${event.eventId ?? event.sessionId}`,
+          timestampMs: (event.timestampMs ?? 0) + 1,
+          connectionGeneration: event.connectionGeneration,
+        }),
+      );
+    }
   }
 }
 
@@ -265,8 +290,130 @@ test('connects once and exposes the authenticated gateway state', async () => {
   expect(adapter.connectCalls).toBe(1);
   expect(socket.getSnapshot()).toMatchObject<Partial<VoiceSocketSnapshot>>({
     connection: 'connected',
-    heartbeat: 'healthy',
+    heartbeat: 'unknown',
   });
+});
+
+test('transport failure clears active turn state and retry starts a fresh session', async () => {
+  const { socket, adapter } = createSocket(new FakeVoiceAdapter(), {
+    continuousListening: false,
+  });
+  await prepareSession(socket, adapter);
+  await socket.startTurn();
+  adapter.emitEvent({
+    event: 'server.turn.ready',
+    sessionId: SESSION_ID,
+    turnId: 'turn-1',
+    responseId: 'response-1',
+    eventId: 'turn-ready-1',
+    timestampMs: 2,
+  });
+  expect(socket.getSnapshot()).toMatchObject({
+    session: 'ready',
+    turn: 'recording',
+    sessionId: SESSION_ID,
+    turnId: 'turn-1',
+    responseId: 'response-1',
+  });
+
+  adapter.emitStatus(
+    gatewayStatus({
+      state: 'ERROR',
+      connected: false,
+      sessionStarted: false,
+      turnActive: false,
+      sessionId: null,
+      turnId: null,
+      responseId: null,
+      lastError: 'transport failed',
+    }),
+  );
+  expect(socket.getSnapshot()).toMatchObject({
+    connection: 'failed',
+    session: 'idle',
+    turn: 'idle',
+    sessionId: null,
+    turnId: null,
+    responseId: null,
+    heartbeat: 'missed',
+  });
+
+  await socket.retry();
+  expect(adapter.disconnectCalls).toBe(1);
+  expect(adapter.startSessionResumeIds).toEqual([null, null]);
+  expect(socket.getSnapshot()).toMatchObject({
+    connection: 'connected',
+    session: 'starting',
+    turn: 'idle',
+    sessionId: null,
+    turnId: null,
+    responseId: null,
+  });
+});
+
+test('drops callbacks from an earlier native connection generation', async () => {
+  const { socket, adapter } = createSocket(new FakeVoiceAdapter(), {
+    continuousListening: false,
+  });
+  await prepareSession(socket, adapter);
+  adapter.emitStatus(
+    gatewayStatus({
+      connectionGeneration: 2,
+      state: 'SESSION_READY',
+      connected: true,
+      sessionStarted: true,
+      sessionId: 'session-2',
+    }),
+  );
+
+  adapter.emitEvent({
+    event: 'server.pong',
+    sessionId: 'session-2',
+    turnId: null,
+    responseId: null,
+    eventId: 'stale-generation-pong',
+    timestampMs: 4,
+    connectionGeneration: 1,
+  });
+
+  expect(socket.getSnapshot()).toMatchObject({
+    connectionGeneration: 2,
+    session: 'ready',
+    sessionId: 'session-2',
+    heartbeat: 'unknown',
+    lastHeartbeatAtMs: null,
+  });
+});
+
+test('serializes repeated retry taps into one fresh transport attempt', async () => {
+  const { socket, adapter } = createSocket(new FakeVoiceAdapter(), {
+    continuousListening: false,
+  });
+  await prepareSession(socket, adapter);
+  let releaseDisconnect: (() => void) | undefined;
+  const originalDisconnect = adapter.disconnect.bind(adapter);
+  adapter.disconnect = () => {
+    adapter.disconnectCalls += 1;
+    return new Promise(resolve => {
+      releaseDisconnect = () => {
+        adapter.status = gatewayStatus();
+        resolve(adapter.status);
+      };
+    });
+  };
+
+  const retryOne = socket.retry();
+  const retryTwo = socket.retry();
+  await Promise.resolve();
+  expect(adapter.disconnectCalls).toBe(1);
+  const release = releaseDisconnect as (() => void) | undefined;
+  expect(release).toBeDefined();
+  release?.();
+  await Promise.all([retryOne, retryTwo]);
+  adapter.disconnect = originalDisconnect;
+
+  expect(adapter.connectCalls).toBe(2);
+  expect(adapter.startSessionResumeIds).toEqual([null, null]);
 });
 
 test('waits for a session-ready event when start turn is pressed during startup', async () => {
@@ -278,7 +425,7 @@ test('waits for a session-ready event when start turn is pressed during startup'
   expect(socket.getSnapshot()).toMatchObject({
     connection: 'connected',
     session: 'starting',
-    heartbeat: 'healthy',
+    heartbeat: 'unknown',
   });
 
   const startTurnPromise = socket.startTurn();
@@ -520,7 +667,7 @@ test('reconciles foreground state without creating a duplicate session', async (
   expect(socket.getSnapshot().session).toBe('ready');
 });
 
-test('retires an unavailable resumed session and reconnects without replaying it', async () => {
+test('retires unavailable sessions and ignores heartbeats outside the new session', async () => {
   jest.useFakeTimers();
   const appState = new FakeAppState();
   const { socket, adapter } = createSocket(new FakeVoiceAdapter(), {
@@ -539,7 +686,7 @@ test('retires an unavailable resumed session and reconnects without replaying it
   await Promise.resolve();
 
   expect(adapter.connectCalls).toBe(2);
-  expect(adapter.startSessionResumeIds).toEqual([null, SESSION_ID]);
+  expect(adapter.startSessionResumeIds).toEqual([null, null]);
 
   // Native status is delivered before the correlated server event on Android.
   adapter.emitStatus(
@@ -573,7 +720,7 @@ test('retires an unavailable resumed session and reconnects without replaying it
   await Promise.resolve();
 
   expect(adapter.connectCalls).toBe(3);
-  expect(adapter.startSessionResumeIds).toEqual([null, SESSION_ID]);
+  expect(adapter.startSessionResumeIds).toEqual([null, null]);
   expect(socket.getSnapshot()).toMatchObject({
     connection: 'connected',
     session: 'idle',
@@ -588,7 +735,8 @@ test('retires an unavailable resumed session and reconnects without replaying it
     eventId: 'stable-pong-1',
     timestampMs: 3,
   });
-  expect(socket.getSnapshot().reconnectAttempt).toBe(0);
+  expect(socket.getSnapshot().reconnectAttempt).toBe(2);
+  expect(socket.getSnapshot().heartbeat).toBe('unknown');
 });
 
 test('refreshes expired authentication and starts a fresh voice session', async () => {
@@ -759,7 +907,8 @@ test('stop then connect ignores a delayed teardown close', async () => {
   expect(socket.getSnapshot().error ?? '').not.toMatch(/connection lost/i);
 
   expect(releaseConnect).not.toBeNull();
-  releaseConnect?.();
+  const releasePendingConnect = releaseConnect as (() => void) | null;
+  releasePendingConnect?.();
   await connectPromise;
 
   expect(socket.getSnapshot().connection).toBe('connected');

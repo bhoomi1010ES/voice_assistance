@@ -6,6 +6,10 @@ import { AuthProvider } from '../auth/AuthProvider';
 import { BootstrapDependency } from './bootstrap';
 import { VoiceSocketProvider } from '../voice/VoiceSocketProvider';
 
+const APP_VOICE_OPTIONS = {
+  continuousListening: false,
+};
+
 export function AppProviders({
   children,
   authController,
@@ -19,7 +23,9 @@ export function AppProviders({
     <SafeAreaProvider>
       <ThemeProvider>
         <AuthProvider controller={authController} bootstrap={bootstrap}>
-          <VoiceSocketProvider>{children}</VoiceSocketProvider>
+          <VoiceSocketProvider options={APP_VOICE_OPTIONS}>
+            {children}
+          </VoiceSocketProvider>
         </AuthProvider>
       </ThemeProvider>
     </SafeAreaProvider>

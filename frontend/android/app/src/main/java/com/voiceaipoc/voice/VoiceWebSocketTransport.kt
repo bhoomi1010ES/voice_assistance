@@ -19,9 +19,17 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.IdentityHashMap
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicBoolean
+
+internal fun acceptsVoiceTransportCallback(
+    activeSocket: Any?,
+    callbackSocket: Any,
+    activeGeneration: Long,
+    callbackGeneration: Long,
+): Boolean = activeSocket === callbackSocket && activeGeneration == callbackGeneration
 
 /**
  * Native Phase 3 voice gateway transport.
@@ -49,7 +57,7 @@ class VoiceWebSocketTransport(
     private val ttsFrameExecutor: ExecutorService = Executors.newSingleThreadExecutor {
         Thread(it, "VoiceAI-TtsFrameIngress")
     },
-    private val onTransportFailure: () -> Unit = {},
+    private val onTransportFailure: (Long) -> Unit = {},
     private val diagnosticSession: DiagnosticSessionContext = DiagnosticSessionContext(),
 ) {
     enum class State {
@@ -65,6 +73,7 @@ class VoiceWebSocketTransport(
     }
 
     data class Status(
+        val connectionGeneration: Long = 0L,
         val state: State = State.DISCONNECTED,
         val connected: Boolean = false,
         val sessionStarted: Boolean = false,
@@ -148,9 +157,24 @@ class VoiceWebSocketTransport(
         ) {
             onServerEvent(eventType, sessionId, turnId, responseId, eventId, timestampMs)
         }
+
+        fun onServerEvent(
+            eventType: String,
+            sessionId: String?,
+            turnId: String?,
+            responseId: String?,
+            eventId: String?,
+            timestampMs: Long?,
+            payload: ServerEventPayload?,
+            connectionGeneration: Long,
+        ) {
+            onServerEvent(eventType, sessionId, turnId, responseId, eventId, timestampMs, payload)
+        }
+
     }
 
     private val stateLock = Any()
+    private val socketGenerations = IdentityHashMap<WebSocket, Long>()
     private val drainScheduled = AtomicBoolean(false)
     private var firstAssistantTextResponseId: String? = null
     private var webSocket: WebSocket? = null
@@ -159,6 +183,7 @@ class VoiceWebSocketTransport(
     private var turnFrameCount = 0L
     private var turnByteCount = 0L
     private var turnGeneration = 0L
+    private var connectionPcmLogged = false
     private var awaitingTurnReadyGeneration: Long? = null
     private var pendingCommitDurationMs: Int? = null
     private var cancelledBargeInResponseId: String? = null
@@ -340,6 +365,7 @@ class VoiceWebSocketTransport(
         }
 
         val socketToCancel: WebSocket?
+        val attemptGeneration: Long
         synchronized(stateLock) {
             if (status.state in setOf(
                     State.CONNECTING,
@@ -354,9 +380,12 @@ class VoiceWebSocketTransport(
             }
             socketToCancel = webSocket
             webSocket = null
+            socketGenerations.clear()
+            attemptGeneration = status.connectionGeneration + 1L
             localCloseRequested = false
             localCloseReason = null
             status = status.copy(
+                connectionGeneration = attemptGeneration,
                 state = State.CONNECTING,
                 connected = false,
                 sessionStarted = false,
@@ -366,11 +395,13 @@ class VoiceWebSocketTransport(
                 responseId = null,
                 lastError = null,
             )
+            connectionPcmLogged = false
         }
         socketToCancel?.cancel()
         Log.i(
             TAG,
-            "VOICE connect requested wallMs=${System.currentTimeMillis()} " +
+            "VOICE connect requested connection_generation=$attemptGeneration " +
+                "wallMs=${System.currentTimeMillis()} " +
                 "elapsedMs=${SystemClock.elapsedRealtime()}",
         )
         notifyStatus()
@@ -382,8 +413,11 @@ class VoiceWebSocketTransport(
                 .build()
             val candidate = client.newWebSocket(request, socketListener)
             val accepted = synchronized(stateLock) {
-                if (status.state == State.CONNECTING && webSocket == null) {
+                if (status.connectionGeneration == attemptGeneration &&
+                    status.state == State.CONNECTING && webSocket == null
+                ) {
                     webSocket = candidate
+                    socketGenerations[candidate] = attemptGeneration
                     true
                 } else {
                     false
@@ -404,7 +438,15 @@ class VoiceWebSocketTransport(
             socketToClose = webSocket
             localCloseRequested = true
             localCloseReason = "client_disconnect"
-            status = status.copy(state = State.CLOSING, connected = false, turnActive = false)
+            status = status.copy(
+                state = State.CLOSING,
+                connected = false,
+                sessionStarted = false,
+                turnActive = false,
+                sessionId = null,
+                turnId = null,
+                responseId = null,
+            )
         }
         sendQueue.clear()
         sendQueue.clearPreRoll()
@@ -558,6 +600,23 @@ class VoiceWebSocketTransport(
             sendQueue.offerForTurn(buffer, samplesRead, timestampMs, generation)
         }
         if (accepted && turnId != null) {
+            val logFirstFrame = synchronized(stateLock) {
+                if (!connectionPcmLogged) {
+                    connectionPcmLogged = true
+                    true
+                } else {
+                    false
+                }
+            }
+            if (logFirstFrame) {
+                val current = synchronized(stateLock) { status }
+                Log.i(
+                    TAG,
+                    "VOICE_PCM_FIRST_FRAME connection_generation=${current.connectionGeneration} " +
+                        "session_id=${current.sessionId ?: "NONE"} turn_id=$turnId " +
+                        "frames_sent=${current.framesSent} elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
+            }
             synchronized(stateLock) {
                 if (bargeInTurn && bargeInState == BargeInState.NEW_TURN_READY) {
                     transitionBargeInStateLocked(BargeInState.NEW_TURN_RECORDING)
@@ -621,7 +680,7 @@ class VoiceWebSocketTransport(
         networkExecutor.execute {
             drainQueue()
             val committed = synchronized(stateLock) {
-                Triple(turnFrameCount, turnByteCount, maxOf(0L, turnFrameCount - 1))
+                Triple(turnFrameCount, turnByteCount, turnFrameCount - 1)
             }
             sendControlNow(
                 JSONObject()
@@ -967,35 +1026,66 @@ class VoiceWebSocketTransport(
                 webSocket.cancel()
                 return
             }
+            val generation = callbackGeneration(webSocket) ?: return
             Log.i(
                 TAG,
-                "WS_CONNECTED http_code=${response.code} wallMs=${System.currentTimeMillis()} " +
+                "WS_CONNECTED connection_generation=$generation http_code=${response.code} " +
+                    "wallMs=${System.currentTimeMillis()} " +
                     "elapsedMs=${SystemClock.elapsedRealtime()}",
             )
             synchronized(stateLock) {
+                if (!acceptsVoiceTransportCallback(
+                        this@VoiceWebSocketTransport.webSocket,
+                        webSocket,
+                        status.connectionGeneration,
+                        generation,
+                    )
+                ) return
                 status = status.copy(state = State.CONNECTED, connected = true, lastError = null)
             }
-            scheduleHeartbeat(DEFAULT_HEARTBEAT_INTERVAL_SECONDS)
+            scheduleHeartbeat(DEFAULT_HEARTBEAT_INTERVAL_SECONDS, generation)
             notifyStatus()
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (!isCurrentSocket(webSocket)) return
-            handleServerEvent(text)
+            val generation = callbackGeneration(webSocket) ?: return
+            handleServerEvent(text, generation)
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
             if (!isCurrentSocket(webSocket)) return
-            handleTtsAudio(bytes.toByteArray())
+            val generation = callbackGeneration(webSocket) ?: return
+            handleTtsAudio(bytes.toByteArray(), generation)
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-            if (!isCurrentSocket(webSocket)) return
-            val current = synchronized(stateLock) { status }
+            val generation = callbackGeneration(webSocket) ?: return
+            val current = synchronized(stateLock) {
+                if (!acceptsVoiceTransportCallback(
+                        this@VoiceWebSocketTransport.webSocket,
+                        webSocket,
+                        status.connectionGeneration,
+                        generation,
+                    )
+                ) return
+                val before = status
+                status = status.copy(
+                    state = State.CLOSING,
+                    connected = false,
+                    sessionStarted = false,
+                    turnActive = false,
+                    sessionId = null,
+                    turnId = null,
+                    responseId = null,
+                )
+                before
+            }
             val initiator = if (localCloseRequested) "local" else "remote"
             Log.i(
                 TAG,
-                "WS_CLOSING code=$code reason=${reason.take(120)} initiator=$initiator " +
+                "WS_CLOSING connection_generation=$generation code=$code " +
+                    "reason=${reason.take(120)} initiator=$initiator " +
                     "session_id=${current.sessionId ?: "NONE"} turn_id=${current.turnId ?: "NONE"} " +
                     "response_id=${current.responseId ?: "NONE"} tts_active=${activeTtsResponseId != null} " +
                     "last_tts_seq=${lastTtsFrameSequence ?: -1} " +
@@ -1010,30 +1100,49 @@ class VoiceWebSocketTransport(
             awaitingTurnReadyGeneration = null
             pendingCommitDurationMs = null
             bargeInState = BargeInState.IDLE
-            synchronized(stateLock) {
-                status = status.copy(state = State.CLOSING, connected = false, turnActive = false)
+            if (initiator != "local") {
+                runCatching { onTransportFailure(generation) }
+                    .onFailure { Log.w(TAG, "Unexpected transport-closing cleanup could not stop capture", it) }
             }
             notifyStatus()
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            if (!isCurrentSocket(webSocket)) return
-            val current = synchronized(stateLock) { status }
+            val generation = callbackGeneration(webSocket) ?: return
+            val current = synchronized(stateLock) {
+                if (!acceptsVoiceTransportCallback(
+                        this@VoiceWebSocketTransport.webSocket,
+                        webSocket,
+                        status.connectionGeneration,
+                        generation,
+                    )
+                ) return
+                val before = status
+                this@VoiceWebSocketTransport.webSocket = null
+                socketGenerations.remove(webSocket)
+                status = status.copy(
+                    state = State.DISCONNECTED,
+                    connected = false,
+                    sessionStarted = false,
+                    turnActive = false,
+                    sessionId = null,
+                    turnId = null,
+                    responseId = null,
+                )
+                before
+            }
             val initiator = if (localCloseRequested) "local" else "remote"
             val unexpectedClose = !localCloseRequested
             Log.i(
                 TAG,
-                "WS_CLOSED code=$code reason=${reason.take(120)} initiator=$initiator " +
+                "WS_CLOSED connection_generation=$generation code=$code " +
+                    "reason=${reason.take(120)} initiator=$initiator " +
                     "session_id=${current.sessionId ?: "NONE"} turn_id=${current.turnId ?: "NONE"} " +
                     "response_id=${current.responseId ?: "NONE"} tts_active=${activeTtsResponseId != null} " +
                     "last_tts_seq=${lastTtsFrameSequence ?: -1} " +
                     "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
             )
             stopHeartbeat()
-            synchronized(stateLock) {
-                this@VoiceWebSocketTransport.webSocket = null
-                status = status.copy(state = State.DISCONNECTED, connected = false, turnActive = false)
-            }
             sendQueue.clear()
             sendQueue.clearPreRoll()
             bargeInTurn = false
@@ -1043,7 +1152,7 @@ class VoiceWebSocketTransport(
             bargeInState = BargeInState.IDLE
             ttsAudioPlayer.cancel()
             if (unexpectedClose) {
-                runCatching { onTransportFailure() }
+                runCatching { onTransportFailure(generation) }
                     .onFailure { Log.w(TAG, "Unexpected transport-close cleanup could not stop capture", it) }
             }
             farEndReferenceBuffer.reset()
@@ -1051,12 +1160,41 @@ class VoiceWebSocketTransport(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            if (!isCurrentSocket(webSocket)) return
-            val current = synchronized(stateLock) { status }
+            val generation = callbackGeneration(webSocket) ?: return
+            val current = synchronized(stateLock) {
+                if (!acceptsVoiceTransportCallback(
+                        this@VoiceWebSocketTransport.webSocket,
+                        webSocket,
+                        status.connectionGeneration,
+                        generation,
+                    )
+                ) return
+                val before = status
+                this@VoiceWebSocketTransport.webSocket = null
+                socketGenerations.remove(webSocket)
+                status = status.copy(
+                    state = if (localCloseRequested) State.DISCONNECTED else State.ERROR,
+                    connected = false,
+                    sessionStarted = false,
+                    turnActive = false,
+                    sessionId = null,
+                    turnId = null,
+                    responseId = null,
+                    websocketErrorCount = if (localCloseRequested) {
+                        status.websocketErrorCount
+                    } else {
+                        status.websocketErrorCount + 1
+                    },
+                    lastError = if (localCloseRequested) null else {
+                        "E_VOICE_WEBSOCKET: Voice gateway connection failed."
+                    },
+                )
+                before
+            }
             val initiator = if (localCloseRequested) "local" else "unknown"
             Log.e(
                 TAG,
-                "WS_FAILURE exception=${t::class.java.simpleName} " +
+                "WS_FAILURE connection_generation=$generation exception=${t::class.java.simpleName} " +
                     "message=${(t.message ?: "").take(240)} " +
                     "http_code=${response?.code ?: -1} " +
                     "session_id=${current.sessionId ?: "NONE"} turn_id=${current.turnId ?: "NONE"} " +
@@ -1072,8 +1210,6 @@ class VoiceWebSocketTransport(
             Log.e(TAG, "WS_FAILURE stacktrace", t)
             stopHeartbeat()
             ttsAudioPlayer.cancel()
-            runCatching { onTransportFailure() }
-                .onFailure { Log.w(TAG, "Transport-failure cleanup could not stop capture", it) }
             farEndReferenceBuffer.reset()
             sendQueue.clear()
             sendQueue.clearPreRoll()
@@ -1082,30 +1218,28 @@ class VoiceWebSocketTransport(
             pendingCommitDurationMs = null
             cancelledBargeInResponseId = null
             bargeInState = BargeInState.IDLE
-            synchronized(stateLock) {
-                if (this@VoiceWebSocketTransport.webSocket === webSocket) {
-                    this@VoiceWebSocketTransport.webSocket = null
-                }
-            }
             if (!localCloseRequested) {
-                recordError("E_VOICE_WEBSOCKET", "Voice gateway connection failed.")
-            } else {
-                synchronized(stateLock) {
-                    status = status.copy(
-                        state = State.DISCONNECTED,
-                        connected = false,
-                        turnActive = false,
-                        lastError = null,
-                    )
-                }
-                notifyStatus()
+                runCatching { onTransportFailure(generation) }
+                    .onFailure { Log.w(TAG, "Transport-failure cleanup could not stop capture", it) }
             }
+            notifyStatus()
         }
     }
 
-    private fun isCurrentSocket(candidate: WebSocket): Boolean = synchronized(stateLock) {
-        webSocket === candidate
+    private fun callbackGeneration(candidate: WebSocket): Long? = synchronized(stateLock) {
+        val generation = socketGenerations[candidate] ?: return@synchronized null
+        generation.takeIf {
+            acceptsVoiceTransportCallback(
+                webSocket,
+                candidate,
+                status.connectionGeneration,
+                it,
+            )
+        }
     }
+
+    private fun isCurrentSocket(candidate: WebSocket): Boolean =
+        callbackGeneration(candidate) != null
 
     private fun postControl(message: JSONObject) {
         networkExecutor.execute { sendControlNow(message) }
@@ -1240,7 +1374,7 @@ class VoiceWebSocketTransport(
             }
         } ?: return
         val committed = synchronized(stateLock) {
-            Triple(turnFrameCount, turnByteCount, maxOf(0L, turnFrameCount - 1))
+            Triple(turnFrameCount, turnByteCount, turnFrameCount - 1)
         }
         sendControlNow(
             JSONObject()
@@ -1264,7 +1398,11 @@ class VoiceWebSocketTransport(
         }
     }
 
-    private fun handleServerEvent(raw: String) {
+    private fun handleServerEvent(raw: String, connectionGeneration: Long) {
+        if (synchronized(stateLock) { status.connectionGeneration } != connectionGeneration) {
+            Log.w(TAG, "STALE_SERVER_EVENT_IGNORED connection_generation=$connectionGeneration")
+            return
+        }
         if (raw.toByteArray(Charsets.UTF_8).size > MAX_SERVER_EVENT_BYTES) {
             recordError("E_VOICE_PROTOCOL", "Voice gateway event is too large.")
             return
@@ -1323,7 +1461,8 @@ class VoiceWebSocketTransport(
             isRecoverableServerError(payload?.errorCode)
         Log.i(
             TAG,
-            "VOICE server event type=$eventType sessionId=${sessionId ?: "NONE"} " +
+            "VOICE server event type=$eventType connection_generation=$connectionGeneration " +
+                "sessionId=${sessionId ?: "NONE"} " +
                 "turnId=${turnId ?: "NONE"} responseId=${responseId ?: "NONE"} " +
                 "wallMs=${System.currentTimeMillis()} " +
                 "elapsedMs=${SystemClock.elapsedRealtime()}",
@@ -1331,6 +1470,7 @@ class VoiceWebSocketTransport(
         if (eventType == "server.session.ready") {
             scheduleHeartbeat(
                 json.optLong("heartbeat_interval_seconds", DEFAULT_HEARTBEAT_INTERVAL_SECONDS),
+                connectionGeneration,
             )
         }
         if (terminalSessionEvent) {
@@ -1366,6 +1506,10 @@ class VoiceWebSocketTransport(
                 awaitingTurnReadyGeneration != null || status.turnId != null
             }
         synchronized(stateLock) {
+            if (status.connectionGeneration != connectionGeneration) {
+                Log.w(TAG, "STALE_SERVER_EVENT_STATE_IGNORED connection_generation=$connectionGeneration")
+                return
+            }
             status = if (delayedOldBargeInCancellation || recoverableServerError) {
                 status.copy(
                     lastServerEvent = eventType,
@@ -1461,6 +1605,10 @@ class VoiceWebSocketTransport(
                     "wallMs=${System.currentTimeMillis()} elapsedMs=${SystemClock.elapsedRealtime()}",
             )
         }
+        if (synchronized(stateLock) { status.connectionGeneration } != connectionGeneration) {
+            Log.w(TAG, "STALE_SERVER_EVENT_DELIVERY_IGNORED connection_generation=$connectionGeneration")
+            return
+        }
         notifyStatus()
         listener.onServerEvent(
             eventType,
@@ -1470,10 +1618,15 @@ class VoiceWebSocketTransport(
             eventId,
             timestampMs,
             payload,
+            connectionGeneration,
         )
     }
 
-    private fun handleTtsAudio(bytes: ByteArray) {
+    private fun handleTtsAudio(bytes: ByteArray, connectionGeneration: Long) {
+        if (synchronized(stateLock) { status.connectionGeneration } != connectionGeneration) {
+            Log.w(TAG, "STALE_TTS_FRAME_IGNORED connection_generation=$connectionGeneration")
+            return
+        }
         val frame = TtsAudioFrame.parse(bytes)
         if (frame == null) {
             recordError("E_VOICE_PROTOCOL", "Voice gateway sent malformed audio.")
@@ -1818,15 +1971,24 @@ class VoiceWebSocketTransport(
                 "elapsedMs=${SystemClock.elapsedRealtime()}",
         )
         stopHeartbeat()
-        synchronized(stateLock) {
+        val failedGeneration = synchronized(stateLock) {
             status = status.copy(
                 state = State.ERROR,
                 connected = false,
+                sessionStarted = false,
                 turnActive = false,
+                sessionId = null,
+                turnId = null,
+                responseId = null,
                 websocketErrorCount = status.websocketErrorCount + 1,
                 lastError = "$code: $message",
             )
+            status.connectionGeneration
         }
+        runCatching { onTransportFailure(failedGeneration) }
+            .onFailure { Log.w(TAG, "Voice error cleanup could not stop capture", it) }
+        ttsAudioPlayer.cancel()
+        farEndReferenceBuffer.reset()
         sendQueue.clear()
         sendQueue.clearPreRoll()
         bargeInTurn = false
@@ -1867,14 +2029,20 @@ class VoiceWebSocketTransport(
      * PCM queue. The session-ready event supplies the backend interval; the
      * connection-level default covers the handshake period.
      */
-    private fun scheduleHeartbeat(intervalSeconds: Long) {
+    private fun scheduleHeartbeat(
+        intervalSeconds: Long,
+        expectedGeneration: Long? = null,
+    ) {
         val intervalMs = intervalSeconds.coerceIn(1L, MAX_HEARTBEAT_INTERVAL_SECONDS) * 1000L
         synchronized(stateLock) {
-            if (!status.connected) return
+            val generation = expectedGeneration ?: status.connectionGeneration
+            if (!status.connected ||
+                status.connectionGeneration != generation
+            ) return
             heartbeatTask?.cancel(false)
             heartbeatTask = heartbeatScheduler.scheduleAtFixedRate(
-                { sendHeartbeat() },
-                intervalMs,
+                { sendHeartbeat(generation) },
+                0L,
                 intervalMs,
                 TimeUnit.MILLISECONDS,
             )
@@ -1888,20 +2056,27 @@ class VoiceWebSocketTransport(
         }
     }
 
-    private fun sendHeartbeat() {
+    private fun sendHeartbeat(expectedGeneration: Long) {
         val socket = synchronized(stateLock) {
-            webSocket.takeIf { status.connected && status.state != State.CLOSING }
+            webSocket.takeIf {
+                status.connected && status.state != State.CLOSING &&
+                    status.connectionGeneration == expectedGeneration
+            }
         } ?: return
         val message = JSONObject()
             .put("type", "client.ping")
             .put("client_timestamp_ms", System.currentTimeMillis())
         Log.i(
             TAG,
-            "VOICE heartbeat sent wallMs=${System.currentTimeMillis()} " +
+            "VOICE heartbeat sent connection_generation=$expectedGeneration " +
+                "session_id=${synchronized(stateLock) { status.sessionId ?: "NONE" }} " +
+                "wallMs=${System.currentTimeMillis()} " +
                 "elapsedMs=${SystemClock.elapsedRealtime()}",
         )
         if (!socket.send(message.toString())) {
-            recordError("E_VOICE_HEARTBEAT", "Voice gateway heartbeat could not be sent.")
+            if (synchronized(stateLock) { status.connectionGeneration } == expectedGeneration) {
+                recordError("E_VOICE_HEARTBEAT", "Voice gateway heartbeat could not be sent.")
+            }
         }
     }
 

@@ -417,9 +417,30 @@ async def test_full_frozen_acceptance_corpus_passes_without_side_effects() -> No
 
     corpus, results = await evaluate_corpus()
 
-    assert corpus["version"] == "1.0.0"
+    assert corpus["version"] == "1.1.0"
     assert corpus["status"] == "frozen"
-    assert len(results) >= 50
+    assert len(results) == 85
+    assert sum(row["critical"] for row in results) == 81
     assert all(row["passed"] for row in results)
     assert all(row["write_attempted"] is False for row in results)
     assert sum(row["critical"] and not row["passed"] for row in results) == 0
+
+
+def test_prompt_injection_acceptance_cases_are_non_executable() -> None:
+    import json
+    from pathlib import Path
+
+    corpus_path = (
+        Path(__file__).resolve().parents[2] / "docs" / "phase0_router_acceptance_corpus_v1.json"
+    )
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    cases = [case for case in corpus["cases"] if "prompt_injection_stt" in case["source"]]
+
+    assert len(cases) == 10
+    for case in cases[:9]:
+        assert case["expected_route"] == "MIXED_AMBIGUOUS"
+        assert case["requires_clarification"] is True
+        assert case["expected_target_tool"] is None
+        assert case["expected_action_domain"] is None
+        assert case["write_execution_permitted"] is False
+    assert cases[9]["expected_route"] == "GENERAL_LLM"

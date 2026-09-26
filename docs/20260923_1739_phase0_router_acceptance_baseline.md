@@ -296,3 +296,20 @@ No write tool was recorded, so the run has no observed write to validate and can
 Latency budgets cannot be checked without valid paired, route-labeled P50/P95 baselines. The numeric guardrails remain provisional, not measured acceptance limits. Keep `ROUTER_MODE=off`; do not activate/run shadow or enable canary/on based on this capture. Guarded offline implementation work does not pass the Phase 0 gate.
 
 **Updated Phase 0 gate: NOT PASSED.** A device capture now exists, but it fails the gate's reproducibility/acceptance requirements because route labels and call counts are missing, TTS response correlation is unreliable, the required speech-end-to-first-text/audio and complete-turn percentiles are unavailable, and approved write safety was not exercised on a known test account.
+
+## 2026-09-25 automated physical baseline retries
+
+**Outcome: both runs safely aborted before any scripted prompt; no baseline turns were captured. Phase 0 remains NOT PASSED.** The user-requested laptop-to-phone physical capture was retried after TTS readiness was restored and the app was stopped/relaunched. The new harness pre-speech guard remained in place; neither attempt reached prompt playback or a write.
+
+| Run ID | Outcome | Prompts attempted | Valid turns | Router calls | Reason |
+|---|---|---:|---:|---:|---|
+| `phase0-legacy-20260925-111839-ffd6c641` | Aborted | 0 | 0 | 0 | Phone had no accessible ready-for-input turn control. |
+| `phase0-legacy-20260925-120214-9ab3e6f1` | Aborted | 0 | 0 | 0 | Phone had no accessible ready-for-input turn control. |
+
+The second run's machine evidence reports `/health` and `/ready` ready, including PostgreSQL, Redis, LLM, Kokoro TTS, embedding, and reranker; Metro was reachable; ADB reported device `9b0ea196` / `CPH2527`, microphone permission granted, and USB reverse mappings for ports 8000 and 8081; router mode/cohort were `off`/`0`. The collector saw a healthy backend event-stream heartbeat, but that did **not** establish a usable app session: an Android accessibility dump showed the app's primary `voice-control` label as `Retry connection` while a secondary `Finish turn` control remained visible from a stale listening state. ADB force-stop/relaunch did not clear that inconsistent UI state, and tapping its Retry control did not change the observed labels. The driver therefore stopped before speech.
+
+Artifacts are `logs/phase0_physical_baseline_summary_phase0-legacy-20260925-111839-ffd6c641.json`, `logs/phase0_physical_baseline_summary_phase0-legacy-20260925-120214-9ab3e6f1.json`, their corresponding event/row JSONL files, and the per-run Markdown summaries under `docs/`. Both have zero rows and zero attempted prompts. No model, retrieval, tool, or latency aggregates can be computed from these attempts. Do not treat the earlier silent UI smoke turn as a baseline turn.
+
+The implementation adds a pre-speech same-session PCM guard to the physical driver and arranges the 16 read-only cases before confirmed write/cleanup cases. Its focused regression suite passed (48 tests); Ruff check/format and `git diff --check` passed. The guard's live behavior remains unproven because the phone failed earlier at turn-control acquisition. Required physical route counts, valid paired clock-domain latency statistics/P50/P95, and live write/cleanup safety are still missing. Keep `ROUTER_MODE=off`, cohort `0`; do not enable Phase 3 for comparison based on these attempts.
+
+**Current physical blocker:** reconnect the Android app's own WebSocket and restore an unambiguous ready turn control with same-session PCM before retrying the driver. Backend readiness and the collector's event-stream heartbeat alone are insufficient.

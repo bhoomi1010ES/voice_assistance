@@ -115,6 +115,20 @@ _UNFINISHED_WRITE = re.compile(
 )
 _SHORT_REMINDER_ACTION = re.compile(r"^remind me to(?:\s+\w+){1,3}[.!?]*$", re.I)
 _MALFORMED_STT = re.compile(r"\[(?:unintelligible|noise|unknown|hallucinated)[^\]]*\]", re.I)
+# STT text is untrusted input. These narrow markers identify attempts to
+# impersonate router/system authority or bypass confirmation/ownership; they
+# do not treat ordinary mentions of tools or memory as executable intent.
+_UNTRUSTED_AUTHORITY = re.compile(
+    r"\b(?:system\s+message|developer\s+instruction|router\s+"
+    r"(?:output|decision)|confirmation\s+store\s+says\s+approved|"
+    r"authorized\s+as\s+admin|search\s+all\s+users|"
+    r"ignore\s+(?:(?:all|the|your|my)\s+)?previous\b|"
+    r"ignore\s+(?:(?:all|the|your|my)\s+)?(?:normal|prior|"
+    r"safety|security)\s+(?:rules|instructions)|"
+    r"skip\s+(?:the\s+)?(?:confirmation|ownership\s+checks?))\b|"
+    r"[\"']route[\"']\s*:",
+    re.I,
+)
 _MEMORY_POLICY_CHANGE = re.compile(
     r"\b(?:don't|do not)\s+(?:use|save|store).{0,80}\bmemory\b",
     re.I,
@@ -145,6 +159,11 @@ def classify_transcript(transcript: str) -> RouteDecision:
     if _CONTROL.fullmatch(text):
         return _decision(RouteName.CONTROL)
     if re.match(r"^(?:stop|cancel)\b", text):
+        return _decision(RouteName.MIXED_AMBIGUOUS)
+
+    # Never honor authority claims or tool-routing directives spoken in a
+    # transcript. Clarify the request without exposing a target/action domain.
+    if _UNTRUSTED_AUTHORITY.search(text):
         return _decision(RouteName.MIXED_AMBIGUOUS)
 
     if _UNSUPPORTED_LANGUAGE.search(text):

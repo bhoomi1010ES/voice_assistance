@@ -13,6 +13,7 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.module.annotations.ReactModule
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.voiceaipoc.BuildConfig
 import com.voiceaipoc.audio.AudioConfig
 import com.voiceaipoc.audio.AudioEngine
 import com.voiceaipoc.audio.AudioEffectsManager
@@ -83,12 +84,20 @@ class VoiceModule(
     private val audioRouteController = AudioRouteController(
         reactContext.applicationContext,
         AudioRouteController.Config(
-            devicePreference = audioConfig.communicationDevicePreference,
+            // Debug builds use the earpiece for physical baseline capture so
+            // phone playback cannot feed the loudspeaker back into the mic.
+            devicePreference = if (BuildConfig.DEBUG) {
+                AudioRouteController.DevicePreference.EARPIECE
+            } else {
+                audioConfig.communicationDevicePreference
+            },
             communicationRouteEnabled = rolloutConfig.duplexCommunicationRouteEnabled,
         ),
     )
     @Volatile
     private var audioEngineReference: AudioEngine? = null
+    @Volatile
+    private var lastConnectionGeneration: Long = 0L
     private val bargeInDetector = PlaybackAwareBargeInDetector(audioConfig.bargeInConfig)
 
     private val voiceGateway = VoiceWebSocketTransport(
@@ -96,13 +105,26 @@ class VoiceModule(
         isTtsOutputEnabled = { voiceOutputEnabled },
         farEndReferenceBuffer = farEndReferenceBuffer,
         audioRouteController = audioRouteController,
-        onTransportFailure = {
-            bargeInDetector.reset("transport_teardown")
-            audioEngineReference?.stopRecording()
+        onTransportFailure = { failedGeneration: Long ->
+            stopCaptureForTransportFailure(failedGeneration)
         },
         diagnosticSession = diagnosticSession,
         listener = object : VoiceWebSocketTransport.Listener {
             override fun onStatus(status: VoiceWebSocketTransport.Status) {
+                lastConnectionGeneration = status.connectionGeneration
+                val microphone = audioEngineReference?.getStatus()
+                Log.i(
+                    TAG,
+                    "VOICE_LIFECYCLE connection_generation=${status.connectionGeneration} " +
+                        "connection_state=${status.state} connected=${status.connected} " +
+                        "session_id=${status.sessionId ?: "NONE"} session_started=${status.sessionStarted} " +
+                        "turn_id=${status.turnId ?: "NONE"} turn_active=${status.turnActive} " +
+                        "response_id=${status.responseId ?: "NONE"} " +
+                        "mic_state=${microphone?.state ?: "unavailable"} " +
+                        "mic_frames=${microphone?.pcmFramesCaptured ?: 0L} " +
+                        "frames_sent=${status.framesSent} last_server_event=${status.lastServerEvent ?: "NONE"} " +
+                        "wallMs=${System.currentTimeMillis()}",
+                )
                 emitVoiceGatewayStatus(status)
             }
 
@@ -129,6 +151,7 @@ class VoiceModule(
                     null,
                     timestampMs,
                     VoiceWebSocketTransport.ServerEventPayload(stopReason = stopReason),
+                    lastConnectionGeneration,
                 )
             }
 
@@ -164,6 +187,7 @@ class VoiceModule(
                     eventId,
                     timestampMs,
                     null,
+                    lastConnectionGeneration,
                 )
             }
 
@@ -191,10 +215,56 @@ class VoiceModule(
                     eventId,
                     timestampMs,
                     payload,
+                    lastConnectionGeneration,
+                )
+            }
+
+            override fun onServerEvent(
+                eventType: String,
+                sessionId: String?,
+                turnId: String?,
+                responseId: String?,
+                eventId: String?,
+                timestampMs: Long?,
+                payload: VoiceWebSocketTransport.ServerEventPayload?,
+                connectionGeneration: Long,
+            ) {
+                resetBargeInForServerEvent(eventType)
+                emitVoiceGatewayEvent(
+                    eventType,
+                    sessionId,
+                    turnId,
+                    responseId,
+                    eventId,
+                    timestampMs,
+                    payload,
+                    connectionGeneration,
                 )
             }
         },
     )
+
+    private fun stopCaptureForTransportFailure(failedGeneration: Long) {
+        val currentGeneration = voiceGateway.getStatus().connectionGeneration
+        if (currentGeneration != failedGeneration) {
+            Log.i(
+                TAG,
+                "STALE_TRANSPORT_CLEANUP_IGNORED connection_generation=$failedGeneration " +
+                    "current_generation=$currentGeneration",
+            )
+            return
+        }
+        bargeInDetector.reset("transport_teardown")
+        val result = audioEngineReference?.stopRecording()
+        val microphone = audioEngineReference?.getStatus()
+        Log.i(
+            TAG,
+            "VOICE_MIC_TRANSPORT_FAILURE connection_generation=$failedGeneration " +
+                "capture_state=${microphone?.state ?: "unavailable"} " +
+                "pcm_frames=${microphone?.pcmFramesCaptured ?: 0L} " +
+                "stop_succeeded=${result?.succeeded == true}",
+        )
+    }
 
     private val audioEngine = AudioEngine(
         context = reactContext.applicationContext,
@@ -512,6 +582,14 @@ class VoiceModule(
         diagnosticSession.ensureActive()
         bargeInDetector.reset("microphone_restart")
         val result = audioEngine.startRecording()
+        val gateway = voiceGateway.getStatus()
+        Log.i(
+            TAG,
+            "VOICE_MIC_START connection_generation=${gateway.connectionGeneration} " +
+                "session_id=${gateway.sessionId ?: "NONE"} turn_id=${gateway.turnId ?: "NONE"} " +
+                "capture_state=${audioEngine.getStatus().state} " +
+                "pcm_frames=${audioEngine.getStatus().pcmFramesCaptured} succeeded=${result.succeeded}",
+        )
         if (result.succeeded) {
             promise.resolve(toWritableMap(audioEngine.getStatus()))
         } else {
@@ -523,6 +601,14 @@ class VoiceModule(
     fun stopMicrophone(promise: Promise) {
         bargeInDetector.reset("microphone_stopped")
         val result = audioEngine.stopRecording()
+        val gateway = voiceGateway.getStatus()
+        Log.i(
+            TAG,
+            "VOICE_MIC_STOP connection_generation=${gateway.connectionGeneration} " +
+                "session_id=${gateway.sessionId ?: "NONE"} turn_id=${gateway.turnId ?: "NONE"} " +
+                "capture_state=${audioEngine.getStatus().state} " +
+                "pcm_frames=${audioEngine.getStatus().pcmFramesCaptured} succeeded=${result.succeeded}",
+        )
         if (result.succeeded) {
             promise.resolve(toWritableMap(audioEngine.getStatus()))
         } else {
@@ -882,6 +968,7 @@ class VoiceModule(
         eventId: String?,
         timestampMs: Long?,
         eventPayload: VoiceWebSocketTransport.ServerEventPayload?,
+        connectionGeneration: Long,
     ) {
         if (!reactApplicationContext.hasActiveReactInstance()) {
             return
@@ -907,6 +994,7 @@ class VoiceModule(
         val metrics = eventPayload?.metrics
         val usage = eventPayload?.usage
         val payload = Arguments.createMap().apply {
+            putDouble("connectionGeneration", connectionGeneration.toDouble())
             putString("event", eventType)
             if (sessionId == null) putNull("sessionId") else putString("sessionId", sessionId)
             if (turnId == null) putNull("turnId") else putString("turnId", turnId)
@@ -1386,6 +1474,7 @@ class VoiceModule(
     private fun toWritableVoiceGatewayMap(
         status: VoiceWebSocketTransport.Status,
     ): WritableMap = Arguments.createMap().apply {
+        putDouble("connectionGeneration", status.connectionGeneration.toDouble())
         putString("state", status.state.name)
         putBoolean("connected", status.connected)
         putBoolean("sessionStarted", status.sessionStarted)

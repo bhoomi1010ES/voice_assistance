@@ -72,9 +72,9 @@ class TurnStartMessage(ControlMessage):
 
 class AudioCommitMessage(ControlMessage):
     type: Literal["client.audio.commit"]
-    last_sequence_no: int = Field(ge=0)
-    frame_count: int = Field(gt=0)
-    byte_count: int = Field(gt=0)
+    last_sequence_no: int = Field(ge=-1)
+    frame_count: int = Field(ge=0)
+    byte_count: int = Field(ge=0)
     duration_ms: int = Field(ge=0)
 
 
