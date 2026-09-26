@@ -210,6 +210,37 @@ def test_barge_in_lifecycle_does_not_claim_replacement_response(tmp_path: Path) 
         collector.close()
 
 
+def test_completed_playback_barge_in_marker_does_not_cancel_response(tmp_path: Path) -> None:
+    collector = _collector(tmp_path)
+    try:
+        collector.accept(
+            {
+                "event": "barge_in_confirmed",
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "response_id": "response-1",
+                "metadata": {"playback_active": False, "playback_state": "COMPLETED"},
+            },
+            source="android",
+        )
+        collector.accept(
+            {
+                "event": "tool_write_committed",
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "response_id": "response-1",
+                "metadata": {"tool_name": "create_task"},
+            },
+            source="backend",
+        )
+
+        assert collector.rejected_records == []
+        assert collector.records["turn-1"][-1]["event"] == "tool_write_committed"
+        assert ("session-1", "response-1") not in collector.cancelled_response_ids
+    finally:
+        collector.close()
+
+
 def test_stale_cancelled_tts_and_unrelated_response_are_rejected(tmp_path: Path) -> None:
     collector = _collector(tmp_path)
     try:

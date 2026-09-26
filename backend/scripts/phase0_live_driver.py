@@ -25,7 +25,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 try:
@@ -73,12 +73,22 @@ def normalize_text(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
 
 
+def normalized_phrase_contains(value: str, expected: str) -> bool:
+    normalized_value = normalize_text(value)
+    normalized_expected = normalize_text(expected)
+    if normalized_expected in normalized_value:
+        return True
+    if "cleanup" in normalized_expected:
+        return normalized_expected.replace("cleanup", "clean up") in normalized_value
+    return False
+
+
 def transcript_match(prompt: str, transcript: str, must_contain: list[str]) -> tuple[bool, float]:
     normalized_prompt = normalize_text(prompt)
     normalized_transcript = normalize_text(transcript)
     ratio = SequenceMatcher(None, normalized_prompt, normalized_transcript).ratio()
     words = set(normalized_transcript.split())
-    required = all(normalize_text(term) in normalized_transcript for term in must_contain)
+    required = all(normalized_phrase_contains(normalized_transcript, term) for term in must_contain)
     if normalize_text(prompt) == "yes":
         required = bool(words & {"yes", "yeah", "yep", "confirm", "confirmed"})
     return ratio >= 0.58 and required, round(ratio, 3)
@@ -93,25 +103,96 @@ def voice_control_from_xml(xml_text: str) -> tuple[str, tuple[int, int]] | None:
         if node.attrib.get("resource-id") != "voice-control":
             continue
         match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.attrib.get("bounds", ""))
-        label = node.attrib.get("content-desc", "")
+        label = re.sub(r"[\s.\u2026\ufffd]+$", "", node.attrib.get("content-desc", ""))
         if match and label:
             left, top, right, bottom = map(int, match.groups())
             return label, ((left + right) // 2, (top + bottom) // 2)
     return None
 
 
+def scrollable_view_bounds_from_xml(xml_text: str) -> tuple[int, int, int, int] | None:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+    for node in root.iter("node"):
+        if (
+            node.attrib.get("class") != "android.widget.ScrollView"
+            or node.attrib.get("scrollable") != "true"
+        ):
+            continue
+        match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.attrib.get("bounds", ""))
+        if not match:
+            continue
+        left, top, right, bottom = map(int, match.groups())
+        if right > left and bottom > top:
+            return left, top, right, bottom
+    return None
+
+
+def session_pcm_observed(records: list[dict[str, Any]], session_id: str) -> bool:
+    return any(
+        record.get("event") == "first_pcm_received" and str(record.get("session_id")) == session_id
+        for record in records
+    )
+
+
+def turn_pcm_observed(
+    records: list[dict[str, Any]], session_id: str, turn_id: str
+) -> bool:
+    """Correlate microphone evidence to one session and turn.
+
+    ``first_pcm_received`` is the strongest marker, but a collector can read
+    that marker after the terminal response event.  The gateway's
+    ``turn_commit_received`` marker carries the authoritative frame count, so
+    a positive count is safe corroborating evidence for the same turn.
+    """
+
+    for record in records:
+        if str(record.get("session_id") or "") != session_id:
+            continue
+        if str(record.get("turn_id") or "") != turn_id:
+            continue
+        event = record.get("event")
+        if event == "first_pcm_received":
+            return True
+        if event != "turn_commit_received":
+            continue
+        metadata = event_metadata(record)
+        frame_count = metadata.get("frame_count", record.get("frame_count"))
+        if (
+            isinstance(frame_count, (int, float))
+            and not isinstance(frame_count, bool)
+            and frame_count > 0
+        ):
+            return True
+    return False
+
+
+def is_known_acoustic_path_defect(record: dict[str, Any]) -> bool:
+    return (
+        record.get("event") == "barge_in_degraded"
+        and event_metadata(record).get("reason") == "no_safe_acoustic_path"
+    )
+
+
 def is_active_barge_event(record: dict[str, Any]) -> bool:
+    if is_known_acoustic_path_defect(record):
+        return False
     event = str(record.get("event", ""))
-    if not event.startswith("barge_in_"):
-        return False
     metadata = event_metadata(record)
-    if event in {"barge_in_playback_stop_requested", "barge_in_playback_stopped"} and (
-        metadata.get("reason") == "response_not_active" or metadata.get("playback_active") is False
-    ):
+    if event == "barge_in_replacement_turn_ready":
         return False
-    if event == "barge_in_degraded" and metadata.get("playback_active") is False:
-        return False
-    return True
+    if event == "barge_in_confirmed":
+        return metadata.get("playback_active") is True
+    if event in {"barge_in_playback_stop_requested", "barge_in_playback_stopped"}:
+        return (
+            metadata.get("playback_active") is True
+            and metadata.get("reason") != "response_not_active"
+        )
+    if event == "barge_in_degraded":
+        return metadata.get("playback_active") is True
+    return False
 
 
 class EvidenceDatabase:
@@ -203,10 +284,16 @@ class EvidenceDatabase:
         if owner is None:
             return []
         user_id, _device_id = owner
+        patterns = [f"%{marker}%"]
+        if "cleanup" in marker.casefold():
+            patterns.append(f"%{marker.replace('cleanup', 'clean up')}%")
         async with self.sessions() as db:
             rows = await db.execute(
                 select(Task.id, Task.title, Task.status)
-                .where(Task.user_id == user_id, Task.title.ilike(f"%{marker}%"))
+                .where(
+                    Task.user_id == user_id,
+                    or_(*(Task.title.ilike(pattern) for pattern in patterns)),
+                )
                 .order_by(Task.created_at.asc())
             )
             return list(rows.all())
@@ -308,15 +395,32 @@ def check_tcp(host: str, port: int) -> bool:
         return connection.connect_ex((host, port)) == 0
 
 
-def check_device(serial: str, model: str) -> dict[str, str]:
+def check_device(serial: str, model: str, *, launch_app: bool = True) -> dict[str, str]:
     if os.name == "nt":
         profile_path = ctypes.create_unicode_buffer(260)
         result = ctypes.windll.shell32.SHGetFolderPathW(None, 40, None, 0, profile_path)
-        if result != 0 or not profile_path.value:
+        profile = Path(profile_path.value) if result == 0 and profile_path.value else None
+        if profile is None:
+            fallback = os.environ.get("HOME") or os.environ.get("USERPROFILE")
+            profile = Path(fallback) if fallback else None
+        if profile is None or not profile.is_dir():
             raise BaselineAbort(
-                "Windows cannot resolve the user profile with SHGetFolderPath; "
+                "Windows cannot resolve a valid user profile; "
                 "ADB cannot initialize its .android directory."
             )
+        android_user_home = Path(os.environ.get("ANDROID_USER_HOME") or profile / ".android")
+        try:
+            android_user_home.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise BaselineAbort(
+                "ADB's .android directory is not writable; set HOME to a writable Windows profile."
+            ) from error
+        if not os.access(android_user_home, os.W_OK):
+            raise BaselineAbort(
+                "ADB's .android directory is not writable; set HOME to a writable Windows profile."
+            )
+        os.environ["HOME"] = str(profile)
+        os.environ["ANDROID_USER_HOME"] = str(android_user_home)
     adb = shutil.which("adb")
     if adb is None:
         raise BaselineAbort("adb is not available on PATH.")
@@ -348,22 +452,99 @@ def check_device(serial: str, model: str) -> dict[str, str]:
     )
     if permission is None or permission.group(1).casefold() != "true":
         raise BaselineAbort("Microphone permission is not granted to the voice app.")
-    pid = run_command([adb, "shell", "pidof", APP_PACKAGE])
-    if not pid:
+    try:
+        pid = run_command([adb, "shell", "pidof", APP_PACKAGE])
+    except subprocess.CalledProcessError as error:
+        if error.returncode != 1:
+            raise
+        pid = str(error.stdout or "").strip()
+    if not pid and launch_app:
         run_command([adb, "shell", "monkey", "-p", APP_PACKAGE, "1"])
     return {
         "serial": serial,
         "model": model,
         "device_line": device,
         "reverse": reverses,
-        "app_pid": pid or "launched by monkey",
+        "app_pid": pid
+        or ("launched by monkey" if launch_app else "will launch after collector starts"),
         "microphone_permission": "granted",
     }
+
+
+def check_acoustic_output_route(serial: str) -> str:
+    adb = shutil.which("adb")
+    if adb is None:
+        raise BaselineAbort("adb is not available while verifying the phone audio route.")
+    audio_state = run_command([adb, "-s", serial, "shell", "dumpsys", "audio"], timeout=20)
+    match = re.search(
+        r"Active communication device:[^\r\n]*?\btype:([a-z0-9_]+)",
+        audio_state,
+        re.IGNORECASE,
+    )
+    route = match.group(1).casefold() if match else "unknown"
+    if route not in {"earpiece", "wired_headset", "wired_headphones"}:
+        raise BaselineAbort(
+            "Phone output is not routed through the required earpiece/wired headphones; "
+            f"detected {route}. No prompt was spoken."
+        )
+    return route
 
 
 def event_metadata(record: dict[str, Any]) -> dict[str, Any]:
     value = record.get("metadata")
     return value if isinstance(value, dict) else {}
+
+
+def is_session_ready_event(record: dict[str, Any]) -> bool:
+    return record.get("event") in {
+        "server.session.ready",
+        "voice_lifecycle_session_ready",
+    } and bool(record.get("session_id"))
+
+
+def is_native_session_ready_event(record: dict[str, Any]) -> bool:
+    metadata = event_metadata(record)
+    session_id = str(record.get("session_id") or "")
+    metadata_session_id = str(metadata.get("session_id") or "")
+    generation = metadata.get("connection_generation")
+    return (
+        record.get("event") == "voice_lifecycle_native_status"
+        and bool(session_id)
+        and (not metadata_session_id or metadata_session_id == session_id)
+        and isinstance(generation, int)
+        and not isinstance(generation, bool)
+        and metadata.get("connection_state") == "connected"
+        and metadata.get("session_state") == "ready"
+    )
+
+
+def is_pre_prompt_speech_activity(record: dict[str, Any], session_id: str) -> bool:
+    return (
+        record.get("event") in {"microphone_speech_start", "speech_start"}
+        and str(record.get("session_id") or "") == session_id
+    )
+
+
+def is_current_session_heartbeat(
+    record: dict[str, Any], session_id: str, connection_generation: int | None
+) -> bool:
+    metadata = event_metadata(record)
+    event_generation = metadata.get("connection_generation")
+    native_heartbeat = (
+        is_native_session_ready_event(record) and metadata.get("heartbeat_state") == "healthy"
+    )
+    return (
+        (
+            record.get("event") in {"server.pong", "voice_lifecycle_session_heartbeat"}
+            or native_heartbeat
+        )
+        and str(record.get("session_id") or "") == session_id
+        and (
+            event_generation is None
+            or connection_generation is None
+            or event_generation == connection_generation
+        )
+    )
 
 
 def accepted_turn_records(collector: LiveCollector, turn_id: str) -> list[dict[str, Any]]:
@@ -515,6 +696,8 @@ class PhysicalBaseline:
         self.tail: FileTail | None = None
         self.records: list[dict[str, Any]] = []
         self.session_id: str | None = None
+        self.session_generation: int | None = None
+        self.session_ready_seen = False
         self.last_pong_at: float | None = None
         self.health_checked_at = 0.0
         self.playback_active: set[str] = set()
@@ -534,7 +717,14 @@ class PhysicalBaseline:
         await self.db.close()
 
     def preflight(self) -> None:
-        self.environment["device"] = check_device(self.args.device_serial, self.args.device_model)
+        self.environment["device"] = check_device(
+            self.args.device_serial,
+            self.args.device_model,
+            launch_app=False,
+        )
+        self.environment["acoustic_output_route"] = check_acoustic_output_route(
+            self.args.device_serial
+        )
         if not check_tcp("127.0.0.1", 8081):
             raise BaselineAbort("Metro is not reachable on local port 8081.")
         health = check_local_health("http://127.0.0.1:8000/health", "ok")
@@ -557,15 +747,21 @@ class PhysicalBaseline:
             raise BaselineAbort("Embedding or reranker is not ready.")
         if not self.settings.tts_api_url:
             raise BaselineAbort("The configured TTS provider URL is missing.")
-        check_speech_synthesizer()
+        if self.args.manual_prompts:
+            self.environment["speech"] = (
+                "manual user-spoken prompts; local prompt synthesizer not required"
+            )
+        else:
+            check_speech_synthesizer()
         self.environment["router_mode"] = self.settings.router_mode
         self.environment["router_cohort_percent"] = self.settings.router_cohort_percent
         self.environment["memory_retrieval_mode"] = self.settings.memory_retrieval_mode
         self.environment["gateway_path"] = "legacy orchestration; router inactive"
         self.environment["metro"] = "127.0.0.1:8081 reachable"
-        self.environment["speech"] = (
-            "Windows System.Speech installed; prompts are not cloud-generated"
-        )
+        if not self.args.manual_prompts:
+            self.environment["speech"] = (
+                "Windows System.Speech installed; prompts are not cloud-generated"
+            )
 
     def start_capture(self) -> None:
         self.collector.start()
@@ -578,21 +774,56 @@ class PhysicalBaseline:
         )
         self.collector_thread.start()
 
+    def restart_phone_app_for_fresh_session(self) -> None:
+        adb = shutil.which(self.collector.adb_command)
+        if adb is None:
+            raise BaselineAbort("adb is not available to open a fresh test session.")
+        run_command([adb, "-s", self.args.device_serial, "shell", "am", "force-stop", APP_PACKAGE])
+        run_command([adb, "-s", self.args.device_serial, "shell", "monkey", "-p", APP_PACKAGE, "1"])
+
     def collect_new(self) -> list[dict[str, Any]]:
         assert self.tail is not None
         new_records = self.tail.poll()
         for record in new_records:
-            self.records.append(record)
-            if record.get("event") == "server.pong" and record.get("session_id"):
-                self.last_pong_at = time.monotonic()
-                if self.session_id is None:
-                    self.session_id = str(record["session_id"])
-            if (
-                record.get("session_id")
-                and self.session_id is None
-                and record.get("event") == "server.session.ready"
+            event = record.get("event")
+            event_session_id = str(record.get("session_id") or "")
+            metadata = event_metadata(record)
+            event_generation = metadata.get("connection_generation")
+            if isinstance(event_generation, bool) or not isinstance(event_generation, int):
+                event_generation = None
+            if is_session_ready_event(record) or is_native_session_ready_event(record):
+                if (
+                    self.session_id != event_session_id
+                    or self.session_generation != event_generation
+                ):
+                    self.last_pong_at = None
+                self.session_id = event_session_id
+                self.session_generation = event_generation
+                self.session_ready_seen = True
+                if (
+                    is_current_session_heartbeat(record, self.session_id, self.session_generation)
+                    and self.session_ready_seen
+                ):
+                    self.last_pong_at = time.monotonic()
+            elif event in {
+                "server.session.ended",
+                "server.session.closed",
+                "voice_lifecycle_session_invalidated",
+            } and (not event_session_id or event_session_id == self.session_id):
+                self.session_ready_seen = False
+                self.last_pong_at = None
+                self.session_id = None
+                self.session_generation = None
+            elif (
+                is_current_session_heartbeat(
+                    record,
+                    self.session_id or "",
+                    self.session_generation,
+                )
+                and self.session_ready_seen
             ):
-                self.session_id = str(record["session_id"])
+                self.last_pong_at = time.monotonic()
+            self.records.append(record)
             if not self.session_id or str(record.get("session_id")) != self.session_id:
                 continue
             event = str(record.get("event", ""))
@@ -611,7 +842,15 @@ class PhysicalBaseline:
             self.health_checked_at = now
         if self.session_id is None:
             return
+        if self.session_generation is None:
+            raise BaselineAbort(
+                "Phone session readiness is not tied to a current connection generation."
+            )
         timeout = self.settings.voice_heartbeat_timeout_seconds
+        if not self.session_ready_seen:
+            raise BaselineAbort(
+                "The current phone session is no longer ready; laptop speech stopped."
+            )
         if self.last_pong_at is None or now - self.last_pong_at > timeout:
             raise BaselineAbort("Voice-session heartbeat was lost; laptop speech stopped.")
 
@@ -619,10 +858,19 @@ class PhysicalBaseline:
         deadline = time.monotonic() + max(50, self.settings.voice_heartbeat_timeout_seconds)
         started_session = False
         while time.monotonic() < deadline:
-            self.collect_new()
-            if self.session_id is not None and self.last_pong_at is not None:
+            new_records = self.collect_new()
+            self._guard_events(new_records, None)
+            self._guard_pre_prompt_speech(new_records)
+            if (
+                self.session_id is not None
+                and self.session_ready_seen
+                and self.last_pong_at is not None
+            ):
                 self.environment["voice_websocket"] = "connected"
                 self.environment["heartbeat"] = "healthy"
+                self.environment["session_id"] = self.session_id
+                self.environment["connection_generation"] = self.session_generation
+                self.environment["phone_voice_control"] = "lifecycle ready"
                 return
             if not started_session:
                 control = self.read_voice_control()
@@ -632,16 +880,98 @@ class PhysicalBaseline:
             time.sleep(0.1)
         raise BaselineAbort("No healthy WebSocket session/heartbeat appeared after capture start.")
 
+    async def verify_microphone_before_speech(self) -> None:
+        """Prepare a recording turn; validate PCM on the correlated scripted turn."""
+
+        await self.ensure_input_turn()
+        new_records = self.collect_new()
+        self._guard_events(new_records, None)
+        self._guard_pre_prompt_speech(new_records)
+        self._check_run_health()
+        self.environment["microphone_pcm"] = (
+            "must be observed on the first completed scripted prompt before continuing"
+        )
+
+    def _guard_pre_prompt_speech(self, records: list[dict[str, Any]]) -> None:
+        if not self.session_id:
+            return
+        if any(is_pre_prompt_speech_activity(record, self.session_id) for record in records):
+            raise BaselineAbort(
+                "Unexpected speech was detected before the first scripted prompt; "
+                "no prompt was spoken."
+            )
+
     def read_voice_control(self) -> tuple[str, tuple[int, int]] | None:
         adb = shutil.which(self.collector.adb_command)
         if adb is None:
             raise BaselineAbort("adb is not available on PATH.")
-        # The assistant screen auto-scrolls to diagnostics after a response.
-        # Bring its primary voice button into view before reading its label.
-        run_command([adb, "shell", "input", "swipe", "540", "500", "540", "1900", "250"])
-        run_command([adb, "shell", "uiautomator", "dump", "/sdcard/phase0_window.xml"])
-        xml_text = run_command([adb, "shell", "cat", "/sdcard/phase0_window.xml"])
+        # Waking the display does not dismiss or bypass a device credential.
+        run_command([adb, "-s", self.args.device_serial, "shell", "input", "keyevent", "224"])
+        # The assistant screen can be scrolled to old conversation history.
+        # Read the actual viewport rather than assuming a device resolution.
+        bounds = None
+        for attempt in range(10):
+            xml_text = self.read_fresh_accessibility_tree(adb)
+            bounds = scrollable_view_bounds_from_xml(xml_text)
+            if bounds is not None:
+                break
+            if attempt < 9:
+                time.sleep(0.5)
+        if bounds is None:
+            raise BaselineAbort("Could not find the assistant scroll view; no prompt was spoken.")
+        left, top, right, bottom = bounds
+        viewport_width = right - left
+        viewport_height = bottom - top
+        x = right - max(16, round(viewport_width * 0.03))
+        start_y = top + round(viewport_height * 0.15)
+        end_y = bottom - round(viewport_height * 0.15)
+        run_command(
+            [
+                adb,
+                "-s",
+                self.args.device_serial,
+                "shell",
+                "input",
+                "swipe",
+                str(x),
+                str(start_y),
+                str(x),
+                str(end_y),
+                "250",
+            ]
+        )
+        xml_text = self.read_fresh_accessibility_tree(adb)
         return voice_control_from_xml(xml_text)
+
+    def read_fresh_accessibility_tree(self, adb: str) -> str:
+        # Native-driven orb animation can keep UIAutomator's idle wait from
+        # completing. Compressed dumps work during animation; use a unique
+        # path so a failed dump can never make us trust stale accessibility XML.
+        remote_xml = f"/sdcard/phase0_window_{uuid.uuid4().hex}.xml"
+        try:
+            run_command(
+                [
+                    adb,
+                    "-s",
+                    self.args.device_serial,
+                    "shell",
+                    "uiautomator",
+                    "dump",
+                    "--compressed",
+                    remote_xml,
+                ]
+            )
+            xml_text = run_command([adb, "-s", self.args.device_serial, "shell", "cat", remote_xml])
+        except (subprocess.SubprocessError, OSError) as error:
+            raise BaselineAbort(
+                "Could not capture a fresh phone accessibility tree; no prompt was spoken."
+            ) from error
+        finally:
+            try:
+                run_command([adb, "-s", self.args.device_serial, "shell", "rm", "-f", remote_xml])
+            except (subprocess.SubprocessError, OSError):
+                pass
+        return xml_text
 
     def tap_voice_control(self, control: tuple[str, tuple[int, int]]) -> None:
         label, (x, y) = control
@@ -673,6 +1003,8 @@ class PhysicalBaseline:
             return
 
         control = self.read_voice_control()
+        if self.args.manual_prompts and control and control[0] in {"Listening", "Interrupt"}:
+            return
         if control is None or control[0] != "Start turn":
             label = control[0] if control else "unavailable"
             raise BaselineAbort(
@@ -733,6 +1065,16 @@ class PhysicalBaseline:
                 continue
             if event.startswith("barge_in_"):
                 metadata = event_metadata(record)
+                if is_known_acoustic_path_defect(record):
+                    self.lifecycle_diagnostics.append(
+                        {
+                            "event": event,
+                            "reason": "no_safe_acoustic_path",
+                            "turn_id": record.get("turn_id"),
+                            "disposition": "known_baseline_defect_nonblocking",
+                        }
+                    )
+                    continue
                 if not is_active_barge_event(record):
                     self.lifecycle_diagnostics.append(
                         {
@@ -791,10 +1133,7 @@ class PhysicalBaseline:
             if turn_id is not None:
                 pcm_observed = (
                     pcm_observed
-                    or self._find_event(
-                        self.records[start:], {"first_pcm_received"}, turn_id=turn_id
-                    )
-                    is not None
+                    or turn_pcm_observed(self.records, self.session_id or "", turn_id)
                 )
                 if transcript is None:
                     transcript = await self.db.transcript_for_turn(turn_id, self.session_id or "")
@@ -857,13 +1196,38 @@ class PhysicalBaseline:
         print(f"Speaking {case['case_id']} ({case['category']})", flush=True)
         self.attempted_prompt_count += 1
         try:
-            speak(case["text"])
-            return await self.await_turn(start, expected_prompt=case)
+            if self.args.manual_prompts:
+                await self.wait_for_manual_prompt(case)
+            else:
+                speak(case["text"])
+            completed = await self.await_turn(start, expected_prompt=case)
+            if self.args.manual_prompts and completed.get("pcm_observed"):
+                self.environment["microphone_pcm"] = "verified by first completed manual prompt"
+            return completed
         except BaselineAbort as error:
             self.collect_new()
             self.append_anomaly_rows()
             self.append_incomplete_case(case, self.records[start:], str(error))
             raise
+
+    async def wait_for_manual_prompt(self, case: dict[str, Any]) -> None:
+        """Wait for the operator to speak the printed prompt into the phone."""
+        print(
+            f"\nMANUAL PROMPT {case['case_id']} ({case['category']}): {case['text']}",
+            flush=True,
+        )
+        print(
+            "Speak this once to the phone. After the phone finishes its reply, "
+            "send `done` here.",
+            flush=True,
+        )
+        loop = asyncio.get_running_loop()
+        entered = loop.run_in_executor(None, input, "Waiting for your `done` (press Enter): ")
+        while not entered.done():
+            self.collect_new()
+            self._check_run_health()
+            await asyncio.sleep(0.1)
+        await entered
 
     def append_incomplete_case(
         self, case: dict[str, Any], records: list[dict[str, Any]], reason: str
@@ -1045,8 +1409,9 @@ class PhysicalBaseline:
                 if expected_title_marker is not None:
                     valid = (
                         valid
-                        and expected_title_marker.casefold()
-                        in str(arguments.get("title", "")).casefold()
+                        and normalized_phrase_contains(
+                            str(arguments.get("title", "")), expected_title_marker
+                        )
                     )
                 if expected_reminder_id is not None:
                     valid = valid and str(arguments.get("reminder_id")) == expected_reminder_id
@@ -1077,9 +1442,7 @@ class PhysicalBaseline:
             "text": "No",
             "must_contain": ["no"],
         }
-        start = len(self.records)
-        speak("No")
-        await self.await_turn(start, expected_prompt=rejection)
+        await self.speak_case(rejection)
 
     async def run_confirmation_case(self, case: dict[str, Any]) -> None:
         request_started_at = len(self.records)
@@ -1389,6 +1752,10 @@ class PhysicalBaseline:
                 str(row.get("completion_status", "")).startswith("excluded_") for row in rows
             ),
             "lifecycle_diagnostic_count": len(self.lifecycle_diagnostics),
+            "known_acoustic_path_defect_count": sum(
+                item.get("disposition") == "known_baseline_defect_nonblocking"
+                for item in self.lifecycle_diagnostics
+            ),
             "lifecycle_anomaly_count": sum(
                 1
                 for row in self.rows
@@ -1438,6 +1805,10 @@ class PhysicalBaseline:
             f"- Router: `{self.settings.router_mode}`; "
             f"cohort `{self.settings.router_cohort_percent}`.",
             "- Gateway: legacy orchestration; LangGraph router calls = 0 required.",
+            "- Phone output route: "
+            + summary["environment"].get("acoustic_output_route", "not verified"),
+            "- Known acoustic-path defects recorded separately (non-blocking): "
+            + str(summary.get("known_acoustic_path_defect_count", 0)),
             "- Laptop speech: "
             + summary["environment"].get("speech", "not verified; no prompts were spoken."),
             "- Voice WebSocket: "
@@ -1617,7 +1988,13 @@ async def async_main(args: argparse.Namespace) -> int:
         baseline.preflight()
         await baseline.db.ping()
         baseline.start_capture()
+        baseline.restart_phone_app_for_fresh_session()
         baseline.wait_for_session()
+        await baseline.verify_microphone_before_speech()
+        if args.verify_only:
+            outcome = "physical_preflight_verified_no_prompt"
+            return_code = 0
+            return 0
         await baseline.run_cases()
         outcome = "complete"
         return_code = 0
@@ -1658,6 +2035,18 @@ def main() -> None:
     parser.add_argument("--device-model", default="CPH2527")
     parser.add_argument("--run-id")
     parser.add_argument("--disposable-account-confirmed", action="store_true")
+    parser.add_argument(
+        "--manual-prompts",
+        action="store_true",
+        help=(
+            "Print one corpus prompt at a time and wait for an operator to speak it into the phone."
+        ),
+    )
+    parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="Verify a fresh phone session, matching heartbeat, and PCM without speaking prompts.",
+    )
     args = parser.parse_args()
     if not args.manifest.is_absolute():
         args.manifest = (ROOT / args.manifest).resolve()

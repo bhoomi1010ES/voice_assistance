@@ -309,9 +309,18 @@ class LiveCollector:
             }
             and response_id is not None
         ):
+            # A normal speech marker can arrive after playback has already
+            # completed on loudspeaker devices. It is diagnostic in that case,
+            # not evidence that the response was cancelled. Keep the response
+            # available for later tool/confirmation records.
+            metadata = record.get("metadata")
+            metadata = metadata if isinstance(metadata, dict) else {}
+            if event == "barge_in_confirmed" and metadata.get("playback_active") is False:
+                event = "barge_in_confirmed_diagnostic"
             # This record belongs to the response being interrupted. It must
             # not claim the replacement turn's response identity.
-            self.cancelled_response_ids.add((session_id, response_id))
+            if event != "barge_in_confirmed_diagnostic":
+                self.cancelled_response_ids.add((session_id, response_id))
         if rejection is not None:
             record.setdefault("metadata", {})["collector_rejection"] = rejection
         self.output.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")

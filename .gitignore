@@ -30,6 +30,7 @@ build/
 .idea
 .gradle
 /frontend/android/.gradle-cache/
+/frontend/.gradle-user-home/
 local.properties
 *.iml
 *.hprof
@@ -127,6 +128,7 @@ backend/htmlcov/
 /scratch/pytest_temp/
 /scratch/phase4_stt_diagnostics/
 # Physical-test captures are local evidence, not commit artifacts.
+/logs/
 /scratch/*.log
 /scratch/*.err
 /scratch/*.png
