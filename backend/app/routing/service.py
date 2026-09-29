@@ -111,7 +111,10 @@ class DecisionRouterService:
             )
             return result
 
-        if decision.route == RouteName.MEMORY_QUERY and not memory_route_allowed:
+        if (
+            decision.route in {RouteName.MEMORY_QUERY, RouteName.MEMORY_ACTION}
+            and not memory_route_allowed
+        ):
             result = RouterRunResult(
                 status=RouterRunStatus.SKIPPED_MEMORY_POLICY,
                 decision=decision,
@@ -123,7 +126,11 @@ class DecisionRouterService:
                 candidate_decision=decision,
                 legacy_route=legacy_route,
                 latency_ms=(time.perf_counter_ns() - started_ns) / 1_000_000,
-                fallback_reason="memory_retrieval_disabled_or_opted_out",
+                fallback_reason=(
+                    "memory_retrieval_disabled_or_opted_out"
+                    if decision.route == RouteName.MEMORY_QUERY
+                    else "memory_action_disabled_by_policy"
+                ),
             )
             return result
 

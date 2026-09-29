@@ -71,7 +71,7 @@ _MEMORY_QUERY = re.compile(
     r"what\s+\w+\s+did\s+i\s+say\s+(?:i\s+)?like|"
     r"what\s+(?:time\s+)?did\s+i\s+say\s+i\s+|what\s+have\s+i\s+told\s+you|"
     r"what\s+(?:happened|did\s+i\s+do)\s+(?:today|yesterday|last\s+week)|"
-    r"what\s+do\s+you\s+remember\s+about\s+(?:me|my\s+.{1,40}))\b",
+    r"what\s+do\s+you\s+remember(?:\s+about\s+(?:me|my\s+.{1,40}))?)\b",
     re.I,
 )
 _MEMORY_SAVE = re.compile(

@@ -52,6 +52,7 @@ from app.routing.service import DecisionRouterService
         ("What's my dog's name?", RouteName.MEMORY_QUERY, None),
         ("Where do I work now?", RouteName.MEMORY_QUERY, None),
         ("What happened yesterday?", RouteName.MEMORY_QUERY, None),
+        ("What do you remember?", RouteName.MEMORY_QUERY, None),
         ("What do you remember about me?", RouteName.MEMORY_QUERY, None),
         ("What did I tell you about my preferred coffee?", RouteName.MEMORY_QUERY, None),
         ("What time did I say I take my medicine?", RouteName.MEMORY_QUERY, None),
@@ -417,10 +418,10 @@ async def test_full_frozen_acceptance_corpus_passes_without_side_effects() -> No
 
     corpus, results = await evaluate_corpus()
 
-    assert corpus["version"] == "1.1.0"
+    assert corpus["version"] == "1.2.0"
     assert corpus["status"] == "frozen"
-    assert len(results) == 85
-    assert sum(row["critical"] for row in results) == 81
+    assert len(results) == 86
+    assert sum(row["critical"] for row in results) == 82
     assert all(row["passed"] for row in results)
     assert all(row["write_attempted"] is False for row in results)
     assert sum(row["critical"] and not row["passed"] for row in results) == 0

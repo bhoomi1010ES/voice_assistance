@@ -1,8 +1,8 @@
 # Phase 2 deterministic router acceptance report
 
-- Corpus: `voice-router-acceptance-v1` version `1.1.0`
-- Corpus cases: 85; passed: 85; failed: 0
-- Safety-critical cases: 81; critical failures: 0
+- Corpus: `voice-router-acceptance-v1` version `1.2.0`
+- Corpus cases: 86; passed: 86; failed: 0
+- Safety-critical cases: 82; critical failures: 0
 - Result: **PASS**
 - Execution: deterministic fixtures only; no gateway dispatch, model, retrieval, tool 
   executor, database write, or TTS call.
@@ -39,7 +39,7 @@
 - `GENERAL_LLM → GENERAL_LLM`: 9
 - `INVALID_DECISION_REJECTED → INVALID_DECISION_REJECTED`: 4
 - `MEMORY_ACTION → MEMORY_ACTION`: 4
-- `MEMORY_QUERY → MEMORY_QUERY`: 7
+- `MEMORY_QUERY → MEMORY_QUERY`: 8
 - `MIXED_AMBIGUOUS → MIXED_AMBIGUOUS`: 29
 - `STRUCTURED_READ → STRUCTURED_READ`: 9
 - `TASK_ACTION → TASK_ACTION`: 5
@@ -69,6 +69,7 @@ Policy permits write | Write attempted by harness | Result | Source / reason |
 | `memory-006` | What did I tell you about my preferred coffee? | `MEMORY_QUERY` | `MEMORY_QUERY` | `—` | False/False | False | False | PASS | safety: Personal recall should use memory evidence. |
 | `memory-007` | What is my favorite restaurant? | `MEMORY_QUERY` | `MEMORY_QUERY` | `—` | False/False | False | False | PASS | proposal:p9, proposal:p13: No-result handling must not fabricate a preference. |
 | `memory-008` | What food did I say I like? | `MEMORY_QUERY` | `MEMORY_QUERY` | `—` | False/False | False | False | PASS | proposal:p13, safety: Personal statement recall uses retrieval. |
+| `memory-009` | What do you remember? | `MEMORY_QUERY` | `MEMORY_QUERY` | `—` | False/False | False | False | PASS | live_shadow_regression, safety: A live memory-disabled shadow turn disagreed with the legacy MEMORY_QUERY route after STT shortened a personal-memory question. This abbreviated form must not silently route to GENERAL_LLM. |
 | `memory-save-001` | Remember that I prefer Phoenix Mall. | `MEMORY_ACTION` | `MEMORY_ACTION` | `memory_save` | False/False | False | False | PASS | safety: Classify only the domain; the existing memory tool/store and confirmation boundary remain authoritative. |
 | `memory-save-002` | Save that my preferred coffee is cappuccino. | `MEMORY_ACTION` | `MEMORY_ACTION` | `memory_save` | False/False | False | False | PASS | safety: The router must not return memory content as executable arguments. |
 | `memory-forget-001` | Forget that I prefer Phoenix Mall. | `MEMORY_ACTION` | `MEMORY_ACTION` | `memory_forget` | False/False | False | False | PASS | safety: Classify domain only and retain existing confirmation and ownership enforcement. |

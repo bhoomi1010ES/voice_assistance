@@ -316,6 +316,35 @@ async def test_shadow_memory_query_is_skipped_when_retrieval_is_disabled_or_opte
 
 
 @pytest.mark.asyncio
+async def test_shadow_memory_action_is_skipped_when_memory_is_disabled(caplog) -> None:
+    caplog.set_level(logging.INFO, logger="voice-assistance-backend")
+    graph = _DecisionEchoGraph()
+    service = DecisionRouterService(
+        Settings(_env_file=None, router_mode="shadow", router_cohort_percent=100),
+        graph=graph,
+    )
+
+    result = await service.observe_shadow_transcript(
+        "Remember that my temporary test marker is violet ember seventeen.",
+        context=_context(),
+        legacy_route=RouteName.GENERAL_LLM,
+        memory_route_allowed=False,
+    )
+
+    assert result.status == RouterRunStatus.SKIPPED_MEMORY_POLICY
+    assert result.decision is not None and result.decision.route == RouteName.MEMORY_ACTION
+    assert result.use_legacy_orchestrator is True
+    assert graph.calls == 0
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "router.shadow.observation"
+    )
+    assert record.fallback_reason == "memory_action_disabled_by_policy"
+    assert record.disagreement is None
+
+
+@pytest.mark.asyncio
 async def test_shadow_observation_stays_off_by_default() -> None:
     graph = _DecisionEchoGraph()
     service = DecisionRouterService(Settings(_env_file=None), graph=graph)

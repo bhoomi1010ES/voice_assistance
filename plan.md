@@ -1,6 +1,6 @@
 ﻿# LangGraph decision-router integration plan
 
-**Status:** Phase 0 is **PASS (Manual Owner Override)** for project progression (`automated_gate_passed=false`, `manual_verification_passed=true`, `owner_override=true`, `effective_gate_status=pass`). Phases 1, 2, 4, 5, 6, and 7 passed their implementation gates. Phase 3 remains **NOT PASSED**: device TTS is now physically audible and the muted-playback lifecycle fix is installed, but route disagreements, cold latency, and physical safety/category cases remain open. Router rollout remains unauthorized; repository configuration is `off`/`0`.
+**Status (2026-09-28 final Phase 3 review):** Phase 0 is **PASS (Manual Owner Override)** for project progression (`automated_gate_passed=false`, `manual_verification_passed=true`, `owner_override=true`, `effective_gate_status=pass`). Phases 1, 2, 4, 5, 6, and 7 passed their implementation gates. Phase 3 remains **NOT PASSED**: 36 live shadow observations were captured and the cold-start work was moved to startup warm-up, but route disagreements remain (including a write-capable reminder/read mismatch), and physical prompt-injection, multilingual, reconnect/replay, commit-race, post-commit cancellation, and complete side-effect evidence remain incomplete. Router rollout remains unauthorized; repository configuration is `off`/`0`. See [Phase 3 final acceptance](docs/20260928_1844_phase3_final_acceptance.md).
 **Plan reconciliation:** 2026-09-24 against `docs/pre_langgraph_architecture_audit.md` and the review comments supplied with this plan. The recorded repository snapshot below is audit-time evidence; re-check HEAD, working tree, configuration, tests, and service health immediately before implementation.
 **Scope:** route a **final STT transcript** to existing backend services. Do not move microphone capture, wake word, VAD, STT streaming, WebSocket ownership, TTS playback, or barge-in into LangGraph. This is an addendum to `implementation.md`, not a replacement for its unfinished acceptance gates.
 
@@ -226,7 +226,7 @@ disagreement also remains unresolved. The temporary shadow backend was stopped;
 - [ ] Parse and Pydantic-validate the classifier's proposed route independently of provider-native structured-output support; allow-list targets and fall back safely on malformed, timed-out, or low-confidence output.
 - [ ] Benchmark classification accuracy and incremental latency against the frozen corpus and the current provider/model, including adversarial prompt-injection text from STT.
 
-**Phase 8 decision (re-measured 2026-09-28): NOT TRIGGERED / deferred; CLOSED for the initial router release.** The post-Phase-7 reproducible assessment contains 76 classification cases: 76/76 expected route/target/clarification matches, 28 ambiguous abstentions, and zero false executable deterministic routes. The offline named-tool selector chooses a tool on 30 cases, with 15 route disagreements; the remaining 46 `auto` choices are unresolved. Those are offline selector comparisons, not live legacy-vs-shadow evidence and not false executable deterministic routes. The assessment made zero model calls, retrieval calls, or writes, and no live classifier was added. No measured deterministic-accuracy gap justifies a semantic classifier. Keep Step 8 closed for the initial router release; reconsider only if valid shadow evidence or new labeled cases establish a persistent gap. Details and command: [Phase 8 classifier assessment](docs/20260924_2310_phase8_classifier_assessment.md) and [Phase 7 memory-forget wiring](docs/20260928_103011_phase7_memory_forget_wiring.md).
+**Phase 8 decision (re-measured 2026-09-28): NOT TRIGGERED / deferred; CLOSED for the initial router release.** The current reproducible assessment contains 77 classification cases: 77/77 expected route/target/clarification matches, 28 ambiguous abstentions, and zero false executable deterministic routes. The offline named-tool selector chooses a tool on 31 cases, with 16 route disagreements; the remaining 46 `auto` choices are unresolved. Those are offline selector comparisons, not live legacy-vs-shadow evidence and not false executable deterministic routes. The assessment made zero model calls, retrieval calls, or writes, and no live classifier was added. No measured deterministic-accuracy gap justifies a semantic classifier. Keep Step 8 closed for the initial router release; reconsider only if valid shadow evidence or new labeled cases establish a persistent gap. Details and command: [Phase 8 classifier assessment](docs/20260924_2310_phase8_classifier_assessment.md) and [Phase 7 memory-forget wiring](docs/20260928_103011_phase7_memory_forget_wiring.md).
 
 **Gate:** closed/deferred while no classifier is warranted. If later triggered, require a separate flag, bounded input/tokens/deadline, skipping obvious clock and pending Yes/No turns, independent Pydantic validation, allow-listed targets, fail-closed behavior, frozen-corpus/provider/adversarial-STT benchmarking, and an explicit guarantee that classifier output can never authorize a write.
 
@@ -266,3 +266,19 @@ disagreement also remains unresolved. The temporary shadow backend was stopped;
 - Supplied proposal: `C:\Users\lenovo\Downloads\LangGraph_Router_Integration_Proposal_Voice_Assistant.pdf`, pages 2â€“13.
 - Project baseline: [`implementation.md`](implementation.md), especially Phases 5â€“9; current source paths above and the 2026-09-23 work notes in `docs/`.
 - Official LangGraph documentation: [Graph API and conditional edges](https://docs.langchain.com/oss/python/langgraph/graph-api), [interrupts and resume](https://docs.langchain.com/oss/python/langgraph/interrupts), [persistence and thread IDs](https://docs.langchain.com/oss/python/langgraph/persistence). The documentation notes that checkpointed nodes can re-execute after resume, so side effects must remain idempotent.
+
+## Phase 3 final acceptance update (2026-09-28)
+
+Phase 3 remains **NOT PASSED**. The final controlled run verified the phone and
+backend, captured 36 privacy-safe shadow observations, physically exercised a
+memory-disabled save refusal and cancel-before-commit with no matching stored
+test records, and measured warm deterministic routing well below 250 ms. It
+also closed the abbreviated personal-memory-query regression and skipped
+shadow memory actions when the memory policy is disabled. Remaining blockers:
+unresolved route disagreements (including `STRUCTURED_READ → TASK_ACTION` for
+reminder), no valid multilingual STT route sample, incomplete live
+prompt-injection evidence, incomplete physical reconnect/replay/commit-race and
+post-commit-cancel tests, and a not-yet-complete cross-sample zero-side-effect
+audit. Router config is restored to `off` / cohort `0`; no Phase 9 rollout state
+was changed. Full evidence and commands are in [the Phase 3 final acceptance
+report](docs/20260928_1844_phase3_final_acceptance.md).
