@@ -28,10 +28,38 @@ from app.websocket.protocol import ResponseCancelMessage
 class _FakePersistence:
     def __init__(self) -> None:
         self.metadata: list[dict] = []
+        self.messages: list[dict] = []
+        self._message_keys: set[tuple[uuid.UUID, str]] = set()
 
     async def merge_turn_metadata(self, db, principal, *, turn_id, metadata):
         self.metadata.append({"turn_id": turn_id, **metadata})
         return None
+
+    async def persist_final_message(
+        self,
+        db,
+        principal,
+        *,
+        turn_id,
+        role,
+        content,
+        content_json=None,
+        model=None,
+    ):
+        key = (turn_id, role)
+        created = key not in self._message_keys
+        if created:
+            self._message_keys.add(key)
+            self.messages.append(
+                {
+                    "turn_id": turn_id,
+                    "role": role,
+                    "content": content,
+                    "content_json": content_json,
+                    "model": model,
+                }
+            )
+        return SimpleNamespace(content=content), created
 
 
 class _FakeDatabase:
@@ -230,6 +258,11 @@ async def test_approval_executes_once_and_replay_cannot_mutate_again() -> None:
         outbound[4]["text"],
         outbound[6]["text"],
     ]
+    assistant_message = next(
+        message for message in gateway.persistence.messages if message["role"] == "assistant"
+    )
+    assert assistant_message["content"] == outbound[4]["text"]
+    assert assistant_message["model"] == "confirmation-resolver"
 
 
 @pytest.mark.asyncio
@@ -237,7 +270,7 @@ async def test_ambiguous_and_rejected_confirmation_never_execute() -> None:
     for spoken, expected_status in (("maybe", "PENDING"), ("No", "REJECTED")):
         principal = _principal()
         pending = _pending(principal, uuid.uuid4())
-        gateway, store, _outbound, response_id, count = await _gateway(pending=pending)
+        gateway, store, outbound, response_id, count = await _gateway(pending=pending)
         await gateway._resolve_pending_confirmation(
             session_id=pending.session_id,
             turn_id=uuid.uuid4(),
@@ -249,6 +282,7 @@ async def test_ambiguous_and_rejected_confirmation_never_execute() -> None:
         )
         assert stored is not None and stored.status == expected_status
         assert count() == 0
+        assert gateway.persistence.messages[-1]["content"] == outbound[-1]["text"]
 
 
 @pytest.mark.asyncio
@@ -726,3 +760,104 @@ async def test_confirmation_prompt_is_spoken_with_the_same_text_shown_to_the_use
     ]
     assert outbound[-1]["type"] == "assistant.text.final"
     assert outbound[-1]["text"] == gateway._spoken_texts[0]
+    assert gateway.persistence.messages == [
+        {
+            "turn_id": gateway._response_turn_id,
+            "role": "assistant",
+            "content": gateway._spoken_texts[0],
+            "content_json": {
+                "response_id": str(response_id),
+                "confirmation_id": outbound[0]["confirmation_id"],
+                "status": "PENDING",
+                "tool_name": "create_task",
+            },
+            "model": "confirmation-request",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_memory_read_cannot_persist_a_memory_save_confirmation() -> None:
+    from app.memory.tool_tools import MemorySaveArguments
+
+    gateway, store, outbound, response_id, _count = await _gateway()
+    gateway._response_turn_id = uuid.uuid4()
+    gateway._last_response_id = response_id
+
+    result = await gateway._persist_confirmation_request(
+        SimpleNamespace(tool_call_id="invented-memory-save", name="memory_save"),
+        MemorySaveArguments(content="User asked about a preferred shopping mall"),
+        SimpleNamespace(name="memory_save"),
+        source_transcript="Do you remember my preferred shopping mall?",
+    )
+
+    assert result is False
+    assert (
+        await store.get(
+            (gateway.principal.user_id, gateway.principal.device_id, gateway.voice_session.id)
+        )
+        is None
+    )
+    assert gateway.persistence.messages == []
+    assert outbound == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_memory_save_persists_exact_confirmation_prompt() -> None:
+    from app.memory.tool_tools import MemorySaveArguments
+
+    gateway, _store, outbound, response_id, _count = await _gateway()
+    gateway._response_turn_id = uuid.uuid4()
+    gateway._last_response_id = response_id
+
+    result = await gateway._persist_confirmation_request(
+        SimpleNamespace(tool_call_id="explicit-memory-save", name="memory_save"),
+        MemorySaveArguments(content="I use FastAPI"),
+        SimpleNamespace(name="memory_save"),
+        source_transcript="Remember that I use FastAPI.",
+    )
+
+    assert result is True
+    expected = "I can memory save. Say yes to approve, or no to reject."
+    assert gateway._spoken_texts == [expected]
+    assert outbound[-1]["text"] == expected
+    assert gateway.persistence.messages == [
+        {
+            "turn_id": gateway._response_turn_id,
+            "role": "assistant",
+            "content": expected,
+            "content_json": {
+                "response_id": str(response_id),
+                "confirmation_id": outbound[0]["confirmation_id"],
+                "status": "PENDING",
+                "tool_name": "memory_save",
+            },
+            "model": "confirmation-request",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_confirmation_prompt_reconnect_and_replay_keep_one_canonical_message() -> None:
+    gateway, _store, outbound, response_id, _count = await _gateway()
+    gateway._response_turn_id = uuid.uuid4()
+    gateway._last_response_id = response_id
+    call = SimpleNamespace(tool_call_id="replayed-proposal", name="create_task")
+    tool = SimpleNamespace(name="create_task")
+
+    first = await gateway._persist_confirmation_request(
+        call,
+        CreateTaskArguments(title="Call Rahul"),
+        tool,
+    )
+    gateway.voice_session = SimpleNamespace(id=uuid.uuid4())
+    gateway._session_id = gateway.voice_session.id
+    second = await gateway._persist_confirmation_request(
+        call,
+        CreateTaskArguments(title="Call Rahul"),
+        tool,
+    )
+
+    assert first is True and second is True
+    assert len(gateway.persistence.messages) == 1
+    assert gateway.persistence.messages[0]["content"] == outbound[-1]["text"]

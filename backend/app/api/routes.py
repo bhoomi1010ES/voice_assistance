@@ -56,5 +56,12 @@ async def ready(request: Request) -> JSONResponse:
             result["dependencies"]["memory"] = memory_status
             if memory_status["status"] != "ready":
                 result["status"] = "not_ready"
+    router_service = getattr(request.app.state, "router_decision_service", None)
+    if router_service is not None:
+        router_status = await router_service.readiness()
+        if router_status["enabled"]:
+            result["dependencies"]["router"] = router_status
+            if router_status["status"] != "ready":
+                result["status"] = "not_ready"
     status_code = 200 if result["status"] == "ready" else 503
     return JSONResponse(status_code=status_code, content=result)

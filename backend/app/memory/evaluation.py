@@ -41,7 +41,12 @@ _STOP_WORDS = frozenset(
 )
 _EXACT_QUESTION = re.compile(
     r"^(?:what\s+(?:is|are|do)\s+my\b|who\s+(?:is|are)\s+my\b|"
-    r"where\s+do\s+i\b|when\s+did\s+i\b|do\s+i\b|did\s+i\b)",
+    r"what\s+.+\s+does\s+my\s+.+\s+(?:use|run|have)\b|"
+    r"(?:which|what)\s+.+\s+(?:does\s+)?my\s+.+\s+(?:uses?|runs?|has)\b|"
+    r"what\s+.+\s+did\s+i\s+say\s+my\s+.+\b|"
+    r"which\s+.+\s+do\s+i\s+prefer\b|which\s+.+\s+did\s+i\s+say\b|"
+    r"do\s+you\s+remember\b|where\s+do\s+i\b|when\s+did\s+i\b|"
+    r"do\s+i\b|did\s+i\b)",
     re.IGNORECASE,
 )
 _SYNTHESIS_MARKERS = re.compile(

@@ -33,18 +33,19 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configure_logging(app_settings.log_level)
-        if app_settings.router_mode == "shadow" and app_settings.router_cohort_percent > 0:
-            router_service = DecisionRouterService(
-                app_settings,
-                shadow_semaphore=asyncio.Semaphore(app_settings.router_shadow_max_concurrent),
-            )
+        router_service = DecisionRouterService(
+            app_settings,
+            shadow_semaphore=asyncio.Semaphore(app_settings.router_shadow_max_concurrent),
+        )
+        app.state.router_decision_service = router_service
+        if router_service.is_active():
             warm_started = time.perf_counter()
-            warmed = router_service.warm_shadow_graph()
-            app.state.router_decision_service = router_service
+            warmed = router_service.warm_graph()
             logging.getLogger("voice-assistance-backend").info(
-                "Router shadow graph startup warmup completed",
+                "Router graph startup warmup completed",
                 extra={
-                    "event": "router.shadow.warmup",
+                    "event": "router.warmup",
+                    "router_mode": app_settings.router_mode,
                     "ready": warmed,
                     "duration_ms": round((time.perf_counter() - warm_started) * 1000, 3),
                 },

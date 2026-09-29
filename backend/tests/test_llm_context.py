@@ -32,6 +32,9 @@ def _settings() -> Settings:
         "Remind me to call Rahul tomorrow at 9 AM.",
         "Remind me to drink water at 10 AM tomorrow.",
         "Create a task to submit my report Friday.",
+        "Create a task to submit the report tomorrow.",
+        "Create task to submit report on 13th September.",
+        "Create a task to submit the report on 2nd October.",
         "Please remind me to call the doctor tomorrow morning.",
     ],
 )

@@ -1526,6 +1526,7 @@ class VoiceGateway:
         tool_execution_started_at: float | None = None
         tool_execution_finished_at: float | None = None
         confirmation_required = False
+        task_date_clarification_required = False
         tts_queue: asyncio.Queue[str | None] | None = None
         tts_task: asyncio.Task[None] | None = None
         tts_segmenter: SentenceSegmenter | None = None
@@ -1645,11 +1646,26 @@ class VoiceGateway:
             memory_write_allowed = (
                 self.settings.memory_write_enabled and memory_user_enabled and not memory_excluded
             )
+            with latency_span(
+                self._trace_latency,
+                component="tool_routing",
+                event="explicit_memory_routing",
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                metadata={"memory_write_allowed": memory_write_allowed},
+            ):
+                explicit_memory_call = (
+                    build_explicit_memory_save_call(transcript, turn_id=turn_id)
+                    if memory_write_allowed
+                    else None
+                )
             allowed_tools = (
                 tuple(
                     tool
                     for tool in tool_registry.definitions()
                     if memory_write_allowed or tool.name not in {"memory_save", "memory_forget"}
+                    if tool.name != "memory_save" or explicit_memory_call is not None
                     if not (skip_legacy_memory_retrieval and tool.name == "memory_search")
                 )
                 if tool_registry
@@ -1664,6 +1680,15 @@ class VoiceGateway:
             self._active_timezone_source = timezone_source
             self._active_timezone = effective_timezone
             effective_time_context = self._time_context_for_timezone(effective_timezone)
+
+            async def persist_confirmation(call, arguments, tool) -> bool:
+                return await self._persist_confirmation_request(
+                    call,
+                    arguments,
+                    tool,
+                    source_transcript=transcript,
+                )
+
             context = (
                 ToolExecutionContext(
                     user_id=self.principal.user_id,
@@ -1693,7 +1718,7 @@ class VoiceGateway:
                     source_transcript=transcript,
                     cancellation_check=lambda: not self.cancel_guard.can_emit(response_id),
                     authorization_check=self._tool_authorized_now,
-                    confirmation_requested=self._persist_confirmation_request,
+                    confirmation_requested=persist_confirmation,
                     tool_execution_started=on_tool_execution_started,
                     tool_execution_finished=on_tool_execution_finished,
                     tool_execution_audit=on_tool_execution_audit,
@@ -1703,21 +1728,6 @@ class VoiceGateway:
                 if tool_registry is not None
                 else None
             )
-            with latency_span(
-                self._trace_latency,
-                component="tool_routing",
-                event="explicit_memory_routing",
-                session_id=session_id,
-                turn_id=turn_id,
-                response_id=response_id,
-                metadata={"memory_write_allowed": memory_write_allowed},
-            ):
-                explicit_memory_call = (
-                    build_explicit_memory_save_call(transcript, turn_id=turn_id)
-                    if memory_write_allowed
-                    else None
-                )
-
             wait_status = classify_wait_status(
                 transcript,
                 memory_retrieval_will_run=(
@@ -2004,6 +2014,21 @@ class VoiceGateway:
                             status=status,
                             error_code=event.error_code,
                         )
+                        if (
+                            event.event_type == "tool_execution_failed"
+                            and event.tool_call.name == "create_task"
+                            and event.error_code == "llm_tool_temporal_resolution_failed"
+                        ):
+                            task_date_clarification_required = True
+                            self._trace_latency(
+                                session_id=session_id,
+                                turn_id=turn_id,
+                                response_id=response_id,
+                                component="task",
+                                event="task_date_resolution_failed",
+                                metadata={"error_code": event.error_code},
+                            )
+                            break
                         if failure_code is not None:
                             break
                     continue
@@ -2099,6 +2124,22 @@ class VoiceGateway:
             # terminal state for this turn, not an LLM failure.
             return {
                 "status": "confirmation_required",
+                "proposed_tool_names": sorted(proposed_tool_names),
+                "executed_tool_names": sorted(executed_tool_names),
+                "memory_route_allowed": memory_route_allowed,
+            }
+
+        if task_date_clarification_required:
+            text = "I couldn't resolve that task date or time. What date and time should I use?"
+            await self._emit_routed_final_text(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+                route=RouteName.TASK_ACTION,
+            )
+            return {
+                "status": "clarification_required",
                 "proposed_tool_names": sorted(proposed_tool_names),
                 "executed_tool_names": sorted(executed_tool_names),
                 "memory_route_allowed": memory_route_allowed,
@@ -2372,6 +2413,26 @@ class VoiceGateway:
             return None
         route_result = await self.router_service.decide(decision, context=runtime_context)
         if (
+            decision.route == RouteName.TASK_ACTION
+            and route_result.status.value == "decided"
+            and route_result.outcome is not None
+            and route_result.outcome.route == RouteName.TASK_ACTION
+        ):
+            self._trace_latency(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                component="router",
+                event="router_task_route_selected",
+                metadata={
+                    "route": decision.route.value,
+                    "decision_source": decision.decision_source.value,
+                    "confidence": decision.confidence,
+                    "action_domain": decision.action_domain.value,
+                    "router_mode": mode.value,
+                },
+            )
+        if (
             route_result.status.value != "decided"
             or route_result.outcome is None
             or route_result.outcome.route != decision.route
@@ -2641,6 +2702,22 @@ class VoiceGateway:
                 transcript=transcript,
             )
 
+        if decision.route == RouteName.GENERAL_LLM:
+            self._trace_latency(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                component="router",
+                event="router_read_route_selected",
+                metadata={
+                    "route": decision.route.value,
+                    "decision_source": decision.decision_source.value,
+                    "confidence": decision.confidence,
+                    "router_mode": mode.value,
+                },
+            )
+            return {"status": "continue_without_memory_retrieval"}
+
         if decision.route not in {RouteName.DIRECT_TOOL, RouteName.STRUCTURED_READ}:
             return {"status": "continue_without_memory_retrieval"}
 
@@ -2726,7 +2803,13 @@ class VoiceGateway:
             response_id=response_id,
             component="router",
             event="router_read_route_selected",
-            metadata={"route": decision.route.value, "target_tool": target_tool},
+            metadata={
+                "route": decision.route.value,
+                "target_tool": target_tool,
+                "decision_source": decision.decision_source.value,
+                "confidence": decision.confidence,
+                "router_mode": mode.value,
+            },
         )
         result = await self.tool_loop.executor.execute(call, context=context)
         if not self.cancel_guard.can_emit(response_id):
@@ -2834,13 +2917,35 @@ class VoiceGateway:
         if not self.cancel_guard.can_emit(response_id):
             return {"status": "cancelled"}
 
+        websocket_app = getattr(getattr(self, "websocket", None), "app", None)
+        memory_service = getattr(getattr(websocket_app, "state", None), "memory_service", None)
+
+        def trace_memory_stage(stage: str, duration_ms: float, metadata: dict[str, Any]) -> None:
+            safe_metadata = {
+                key: value
+                for key, value in metadata.items()
+                if key in {"count", "started_monotonic_ns"} and isinstance(value, int | float)
+            }
+            self._trace_latency(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                component="rag",
+                event=f"memory_forget_{stage}_completed",
+                duration_ms=duration_ms,
+                metadata=safe_metadata,
+            )
+
         try:
             resolution = await resolve_forget_target(
                 self.db,
                 user_id=self.principal.user_id,
                 transcript=transcript,
+                memory_service=memory_service,
+                now=self._now_datetime(),
+                trace=trace_memory_stage,
             )
-        except SQLAlchemyError:
+        except (MemoryProviderError, SQLAlchemyError):
             return await finish("I couldn't check which saved memory to forget right now.")
         if not self.cancel_guard.can_emit(response_id):
             return {"status": "cancelled"}
@@ -3163,6 +3268,8 @@ class VoiceGateway:
         call,
         validated_arguments: BaseModel,
         tool,
+        *,
+        source_transcript: str | None = None,
     ) -> bool:
         """Persist a validated mutation before the tool loop can execute it."""
 
@@ -3182,6 +3289,27 @@ class VoiceGateway:
             return False
         original_turn_id = self._response_turn_id
         if original_turn_id is None:
+            return False
+        if tool.name == "memory_save" and (
+            not source_transcript
+            or build_explicit_memory_save_call(source_transcript, turn_id=original_turn_id) is None
+        ):
+            self._trace_latency(
+                session_id=session.id,
+                turn_id=original_turn_id,
+                response_id=self._last_response_id,
+                component="confirmation",
+                event="memory_save_proposal_suppressed",
+                metadata={"tool_name": tool.name, "reason": "source_not_explicit_memory_save"},
+            )
+            LOGGER.warning(
+                "Suppressed non-explicit memory-save proposal",
+                extra={
+                    "event": "voice.confirmation.memory_save.suppressed",
+                    "tool_call_id": call.tool_call_id,
+                    "original_turn_id": str(original_turn_id),
+                },
+            )
             return False
         active_timezone = getattr(self, "_active_timezone", None) or self._user_timezone()
         pending = PendingConfirmation.new(
@@ -3229,6 +3357,7 @@ class VoiceGateway:
                 "status": stored.status,
             },
         )
+        confirmation_prompt = self._confirmation_prompt_text(stored)
         try:
             await self.persistence.merge_turn_metadata(
                 self.db,
@@ -3243,6 +3372,18 @@ class VoiceGateway:
                         "expires_at": stored.expires_at.isoformat(),
                     }
                 },
+            )
+            await self._persist_final_message_if_supported(
+                turn_id=original_turn_id,
+                role="assistant",
+                content=confirmation_prompt,
+                content_json={
+                    "response_id": str(stored.original_response_id),
+                    "confirmation_id": str(stored.confirmation_id),
+                    "status": stored.status,
+                    "tool_name": stored.tool_name,
+                },
+                model="confirmation-request",
             )
             await self.db.commit()
         except Exception:  # noqa: BLE001 - Redis pending state remains terminal
@@ -3277,7 +3418,6 @@ class VoiceGateway:
                     "confirmation_id": str(stored.confirmation_id),
                 },
             )
-        confirmation_prompt = self._confirmation_prompt_text(stored)
         await self._send(
             server_event(
                 "assistant.response.started",

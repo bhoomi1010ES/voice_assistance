@@ -7,7 +7,7 @@ import { BootstrapDependency } from './bootstrap';
 import { VoiceSocketProvider } from '../voice/VoiceSocketProvider';
 
 const APP_VOICE_OPTIONS = {
-  continuousListening: false,
+  continuousListening: true,
 };
 
 export function AppProviders({

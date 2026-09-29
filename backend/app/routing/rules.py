@@ -61,12 +61,20 @@ _REMINDER_MANAGEMENT = re.compile(
 )
 _MEMORY_QUERY = re.compile(
     r"\b(?:which\s+.{1,50}\s+do\s+i\s+prefer|which\s+.{1,50}\s+did\s+i\s+tell\s+you|"
+    r"which\s+.{1,50}\s+did\s+i\s+say\s+i\s+|"
     r"what\s+.{1,50}\s+do\s+i\s+prefer|what\s+(?:is|was)\s+my\s+"
     r"(?:(?:name|timezone|home|job|workplace)\b|(?:favorite|favourite|preferred)\s+\w+)|"
     r"what(?:\s+is|'s)\s+my\s+.{1,40}\b(?:name|favorite|favourite|preferred|timezone|workplace)\b|"
+    r"(?:which|what)\s+.{1,60}\s+(?:does\s+)?my\s+.{1,60}\s+(?:uses?|runs?|has)|"
+    r"what\s+.{1,50}\s+does\s+my\s+.{1,50}\s+(?:uses?|runs?|has)|"
+    r"what\s+.{1,50}\s+did\s+i\s+tell\s+you\s+(?:my\s+)?(?:project|backend|work|job)\b|"
+    r"what\s+did\s+i\s+say\s+my\s+.{1,60}\s+(?:uses?|runs?|has)\b|"
+    r"what\s+.{1,50}\s+backend\s+framework\s+do\s+i\s+use|"
     r"where\s+(?:do|did)\s+i\s+(?:work|live|usually\s+stay)|"
     r"do\s+i\s+(?:like|prefer|own|use)\b|who\s+is\s+my\s+"
     r"(?:friend|colleague|manager|partner|doctor|neighbor)\b|"
+    r"do\s+you\s+remember(?:\s+(?:me|my\s+.{1,60}|what\s+i\s+.{1,40}))?|"
+    r"did\s+i\s+tell\s+you(?:\s+about)?\b|"
     r"what\s+did\s+i\s+(?:tell|say)\s+you?\s+about|"
     r"what\s+\w+\s+did\s+i\s+say\s+(?:i\s+)?like|"
     r"what\s+(?:time\s+)?did\s+i\s+say\s+i\s+|what\s+have\s+i\s+told\s+you|"
@@ -75,7 +83,9 @@ _MEMORY_QUERY = re.compile(
     re.I,
 )
 _MEMORY_SAVE = re.compile(
-    r"^(?:remember\s+(?:that\s+)?\S.+|save\s+(?:(?:that|this)\s+)?\S.+)$",
+    r"^(?:(?:please\s+)?remember\s+(?:that\s+)?\S.+|"
+    r"(?:please\s+)?save\s+(?:(?:that|this)\s+)?\S.+|"
+    r"(?:please\s+)?keep\s+in\s+memory\s+(?:that\s+)?\S.+)$",
     re.I,
 )
 _MEMORY_FORGET = re.compile(

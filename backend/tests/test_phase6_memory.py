@@ -108,6 +108,14 @@ def test_explicit_memory_call_rejects_sensitive_or_implicit_content() -> None:
     assert build_explicit_memory_save_call("I like tea.", turn_id=turn_id) is None
     assert (
         build_explicit_memory_save_call(
+            "Do you remember my preferred shopping mall?",
+            turn_id=turn_id,
+        )
+        is None
+    )
+    assert build_explicit_memory_save_call("What is my favorite color?", turn_id=turn_id) is None
+    assert (
+        build_explicit_memory_save_call(
             "Remember that my password=do-not-store-this",
             turn_id=turn_id,
         )

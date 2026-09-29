@@ -230,7 +230,7 @@ export function AssistantScreen() {
     if (
       ['starting', 'recording', 'speech_detected'].includes(socketState.turn)
     ) {
-      return socket.commitTurn();
+      return socket.commitTurn({ suppressAutoListen: true });
     }
     if (['committing', 'waiting'].includes(socketState.turn)) {
       if (
@@ -419,7 +419,9 @@ export function AssistantScreen() {
               <ActionButton
                 disabled={busy}
                 label={strings.assistant.endTurn}
-                onPress={() => execute(() => socket.commitTurn())}
+                onPress={() =>
+                  execute(() => socket.commitTurn({ suppressAutoListen: true }))
+                }
                 testID="voice-finish-turn"
               />
             </View>

@@ -39,6 +39,9 @@ from app.routing.service import DecisionRouterService
         ("How does recurring scheduling work?", RouteName.GENERAL_LLM, None),
         ("How can I delete a reminder?", RouteName.GENERAL_LLM, None),
         ("Create a task to call Rahul tomorrow at 9 AM.", RouteName.TASK_ACTION, None),
+        ("Create a task to submit the report tomorrow.", RouteName.TASK_ACTION, None),
+        ("Create task to submit report on 13th September.", RouteName.TASK_ACTION, None),
+        ("Create a task to submit report on 2nd October.", RouteName.TASK_ACTION, None),
         ("Remind me to call Rahul tomorrow at 9 AM.", RouteName.TASK_ACTION, None),
         ("Delete my Rahul reminder.", RouteName.TASK_ACTION, None),
         ("Change my medicine reminder to 2 PM.", RouteName.TASK_ACTION, None),
@@ -109,6 +112,58 @@ def test_narrow_rules_and_known_false_positives(
         assert decision.read_arguments is None
         assert "title" not in decision.model_dump()
         assert "content" not in decision.model_dump()
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "Which shopping mall do I prefer?",
+        "What framework does my project use?",
+        "What did I tell you about my project?",
+        "Do you remember my preferred shopping mall?",
+        "What is my favorite color?",
+        "Which company did I say I work for?",
+        "What do you remember about my project?",
+    ],
+)
+def test_personal_saved_fact_questions_are_memory_queries(transcript: str) -> None:
+    assert classify_transcript(transcript).route == RouteName.MEMORY_QUERY
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "Which framework does my project use?",
+        "which framework my project uses",
+        "What framework does my project backend use?",
+        "What backend framework do I use?",
+        "Which database does my project use?",
+        "What technology did I tell you my backend uses?",
+        "What language does my project use?",
+        "What did I say my project uses?",
+        "what framework my project uses!",
+    ],
+)
+def test_project_and_personal_history_framework_questions_are_memory_queries(
+    transcript: str,
+) -> None:
+    assert classify_transcript(transcript).route == RouteName.MEMORY_QUERY
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "What is quantum computing?",
+        "What is FastAPI?",
+        "Explain machine learning.",
+        "Which shopping mall is the largest in India?",
+        "Which backend framework is best?",
+        "What frameworks can Python use?",
+        "Explain backend frameworks.",
+    ],
+)
+def test_general_knowledge_questions_do_not_become_memory_queries(transcript: str) -> None:
+    assert classify_transcript(transcript).route == RouteName.GENERAL_LLM
 
 
 def test_structured_reads_have_only_bounded_schema_arguments() -> None:

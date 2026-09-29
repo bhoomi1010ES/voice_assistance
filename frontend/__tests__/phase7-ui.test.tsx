@@ -461,7 +461,9 @@ test('shows finish turn while recording and pressing it commits the turn', async
   await act(async () => {
     finishButton.props.onPress();
   });
-  expect(socket.commitTurn).toHaveBeenCalled();
+  expect(socket.commitTurn).toHaveBeenCalledWith({
+    suppressAutoListen: true,
+  });
   expect(socket.stop).not.toHaveBeenCalledWith('user_stopped');
   await act(async () => renderer!.unmount());
 });

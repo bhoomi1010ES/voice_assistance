@@ -5,10 +5,22 @@ import re
 from .policy import ExtractionCandidate, validate_candidate
 from .types import MemoryType
 
-_EXPLICIT = re.compile(r"^(?:please\s+)?remember(?:\s+that)?\s+(.+)$", re.IGNORECASE)
+_EXPLICIT = re.compile(
+    r"^(?:please\s+)?(?:remember(?:\s+that)?|keep\s+in\s+memory(?:\s+that)?)\s+(.+)$",
+    re.IGNORECASE,
+)
 _EXPLICIT_SAVE = re.compile(
-    r"^(?:please\s+)?(?:save|store)\s+(?:this|that)\s+"
-    r"(?:in|to)\s+(?:my\s+)?memory\s*[:,-]?\s*(.+)$",
+    r"^(?:please\s+)?(?:save|store)\s+(?:"
+    r"(?:this|that)(?:\s+(?:in|to)\s+(?:my\s+)?memory)?\s*[:,-]\s*|"
+    r"(?:this|that)\s+|"
+    r"(?:in|to)\s+(?:my\s+)?memory\s*[:,-]?\s*)"
+    r"(.+)$",
+    re.IGNORECASE,
+)
+_MEMORY_READ_QUESTION = re.compile(
+    r"^(?:do\s+you\s+remember|what\s+do\s+you\s+remember|"
+    r"what\s+did\s+i\s+(?:tell|say)\s+you|which\b.+\bdo\s+i\s+prefer|"
+    r"what(?:\s+is|'s)\s+my\b|did\s+i\s+tell\s+you)\b",
     re.IGNORECASE,
 )
 _PREFERENCE = re.compile(
@@ -106,6 +118,8 @@ def extract_explicit_tool_candidate(text: str) -> ExtractionCandidate | None:
     """Build a grounded candidate only for an explicit remember/save command."""
 
     normalized = " ".join(text.split())
+    if _MEMORY_READ_QUESTION.search(normalized):
+        return None
     explicit_match = _EXPLICIT.match(normalized) or _EXPLICIT_SAVE.match(normalized)
     if explicit_match is None:
         return None

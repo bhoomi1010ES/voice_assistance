@@ -145,6 +145,87 @@ def test_ready_returns_503_when_redis_is_unavailable() -> None:
     assert response.json() == readiness
 
 
+def test_ready_warms_and_probes_router_when_mode_is_on(monkeypatch) -> None:
+    from app.routing import graph as routing_graph
+
+    readiness = {
+        "status": "ready",
+        "dependencies": {
+            "postgres": {"status": "ok"},
+            "redis": {"status": "ok"},
+        },
+    }
+    original_build_router_graph = routing_graph.build_router_graph
+    compile_calls = 0
+
+    def tracked_build_router_graph():
+        nonlocal compile_calls
+        compile_calls += 1
+        return original_build_router_graph()
+
+    monkeypatch.setattr(routing_graph, "build_router_graph", tracked_build_router_graph)
+    app = create_app(
+        settings=Settings(_env_file=None, router_mode="on"),
+        infrastructure=StubInfrastructure(readiness),
+        stt_service=NoopSTTService(),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert compile_calls == 1
+    assert response.json()["dependencies"]["router"] == {
+        "enabled": True,
+        "status": "ready",
+        "mode": "on",
+        "graph_compiled": True,
+        "route_handlers": {
+            "status": "ready",
+            "registered": 8,
+            "expected": 8,
+        },
+        "decision_probe": {
+            "status": "ready",
+            "route": "GENERAL_LLM",
+        },
+    }
+
+
+def test_ready_returns_503_when_on_router_cannot_compile(monkeypatch) -> None:
+    from app.routing import graph as routing_graph
+
+    readiness = {
+        "status": "ready",
+        "dependencies": {
+            "postgres": {"status": "ok"},
+            "redis": {"status": "ok"},
+        },
+    }
+
+    def fail_build_router_graph():
+        raise ImportError("langgraph unavailable")
+
+    monkeypatch.setattr(routing_graph, "build_router_graph", fail_build_router_graph)
+    app = create_app(
+        settings=Settings(_env_file=None, router_mode="on"),
+        infrastructure=StubInfrastructure(readiness),
+        stt_service=NoopSTTService(),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["dependencies"]["router"] == {
+        "enabled": True,
+        "status": "not_ready",
+        "mode": "on",
+        "graph_compiled": False,
+        "error": "ROUTER_GRAPH_NOT_COMPILED",
+    }
+
+
 @pytest.mark.parametrize("router_mode", ["off", "shadow", "canary", "on"])
 def test_ready_reports_initialized_tts_without_changing_other_dependencies_or_exposing_secrets(
     router_mode: str,

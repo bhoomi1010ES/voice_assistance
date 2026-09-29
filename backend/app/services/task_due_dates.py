@@ -56,11 +56,20 @@ _TIME_ONLY_PATTERN = re.compile(
 )
 _MONTH_DATE_PATTERN = re.compile(
     r"\b(?P<month>january|february|march|april|may|june|july|august|september|"
-    r"october|november|december)\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?"
+    r"october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
+    r"\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?"
     r"(?:,?\s+(?P<year>\d{4}))?\b",
     re.IGNORECASE,
 )
+_DAY_MONTH_DATE_PATTERN = re.compile(
+    r"\b(?P<day>\d{1,2})(?:st|nd|rd|th)?\s+"
+    r"(?P<month>january|february|march|april|may|june|july|august|september|"
+    r"october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
+    r"(?:\s+(?P<year>\d{4}))?\b",
+    re.IGNORECASE,
+)
 _ISO_DATE_PATTERN = re.compile(r"\b(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})\b")
+_AMBIGUOUS_NUMERIC_DATE_PATTERN = re.compile(r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b")
 _WEEKDAY_PATTERN = re.compile(
     r"\b(?P<next>next\s+)?(?P<weekday>monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
     re.IGNORECASE,
@@ -83,6 +92,11 @@ def has_temporal_expression(value: str) -> bool:
     if _RELATIVE_DURATION_PATTERN.search(normalized):
         return True
     if _MONTH_DATE_PATTERN.search(normalized) or _ISO_DATE_PATTERN.search(normalized):
+        return True
+    if (
+        _AMBIGUOUS_NUMERIC_DATE_PATTERN.search(normalized)
+        and not _ISO_DATE_PATTERN.search(normalized)
+    ):
         return True
     if _WEEKDAY_PATTERN.search(normalized):
         return True
@@ -154,6 +168,11 @@ def normalize_absolute_due_at(
 
 def _parse_expression(expression: str, now_utc: datetime, timezone_name: str) -> datetime:
     normalized = _normalize(expression)
+    if (
+        _AMBIGUOUS_NUMERIC_DATE_PATTERN.search(normalized)
+        and not _ISO_DATE_PATTERN.search(normalized)
+    ):
+        raise TaskDueDateResolutionError("task due date is ambiguous")
     zone = _load_timezone(timezone_name)
     local_now = now_utc.astimezone(zone)
 
@@ -200,9 +219,10 @@ def _parse_expression(expression: str, now_utc: datetime, timezone_name: str) ->
     if local_date is None:
         raise TaskDueDateResolutionError("task due date expression is not supported")
     if local_time is None:
-        raise TaskDueDateResolutionError(
-            "a clock time is required for a calendar-relative task due date"
-        )
+        # A date-only task request denotes a deadline on that local calendar
+        # day. End-of-day is deterministic and avoids making the task overdue
+        # at the start of the requested date.
+        local_time = time(23, 59)
     return _localize_strict(datetime.combine(local_date, local_time), zone, label="task due date")
 
 
@@ -214,6 +234,8 @@ def _resolve_calendar_date(
     now_utc: datetime | None = None,
     zone: ZoneInfo | None = None,
 ) -> date | None:
+    if re.search(r"\bday\s+after\s+tomorrow\b", value):
+        return local_today + timedelta(days=2)
     if re.search(r"\btomorrow\b", value):
         return local_today + timedelta(days=1)
     if re.search(r"\b(?:today|tonight|this\s+(?:morning|afternoon|evening))\b", value):
@@ -242,12 +264,16 @@ def _resolve_calendar_date(
                     days_ahead = 7
         return local_today + timedelta(days=days_ahead)
 
-    month_match = _MONTH_DATE_PATTERN.search(value)
+    month_match = _MONTH_DATE_PATTERN.search(value) or _DAY_MONTH_DATE_PATTERN.search(value)
     if month_match:
         year = int(month_match.group("year") or local_today.year)
+        month_name = month_match.group("month").casefold()
+        month = MONTHS.get(month_name)
+        if month is None:
+            month = MONTHS[next(name for name in MONTHS if name.startswith(month_name[:3]))]
         return _validated_date(
             year,
-            MONTHS[month_match.group("month").casefold()],
+            month,
             int(month_match.group("day")),
         )
 

@@ -254,6 +254,10 @@ export type VoiceTurnStartOptions = {
   bargeInReplacement?: boolean;
 };
 
+export type VoiceTurnCommitOptions = {
+  suppressAutoListen?: boolean;
+};
+
 const INITIAL_SNAPSHOT: VoiceSocketSnapshot = {
   connectionGeneration: 0,
   connection: 'disconnected',
@@ -844,6 +848,11 @@ export class VoiceSocket {
     try {
       await this.ensureReadySessionForTurn();
       expectedEpoch = this.sessionEpoch;
+      options = {
+        ...options,
+        autoCommitOnSpeechEnd:
+          options.autoCommitOnSpeechEnd ?? this.continuousListening,
+      };
       if (this.snapshot.ttsPlaybackState === 'speaking') {
         throw new Error(
           'Wait for playback-aware speech confirmation before starting a turn.',
@@ -970,11 +979,15 @@ export class VoiceSocket {
     }
   }
 
-  async commitTurn(): Promise<void> {
+  async commitTurn(options: VoiceTurnCommitOptions = {}): Promise<void> {
     if (
       !['starting', 'recording', 'speech_detected'].includes(this.snapshot.turn)
     ) {
       throw new Error('There is no active voice turn to finish.');
+    }
+    if (options.suppressAutoListen) {
+      this.clearAutoListenTimer();
+      this.autoListenSuppressed = true;
     }
     this.clearSpeechEndCommitTimer();
     const expectedEpoch = this.sessionEpoch;
@@ -2486,6 +2499,7 @@ export class VoiceSocket {
 
   private maybeStartVoiceConfirmationTurn(): void {
     if (
+      this.autoListenSuppressed ||
       !this.confirmationAwaitingVoice ||
       this.confirmationTurnStartInFlight ||
       this.snapshot.connection !== 'connected' ||

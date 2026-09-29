@@ -1080,6 +1080,154 @@ async def test_non_memory_route_skips_legacy_retrieval_in_router_canary_path() -
 
 
 @pytest.mark.asyncio
+async def test_general_route_emits_exactly_one_correlated_selection_trace(tmp_path) -> None:
+    gateway, _outbound = _direct_gateway()
+    trace_path = tmp_path / "general-route.jsonl"
+    gateway.latency_tracer = LatencyTracer(trace_path)
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    response_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._dispatch_structured_route(
+        session_id=session_id,
+        turn_id=turn_id,
+        response_id=response_id,
+        transcript="What is quantum computing?",
+    )
+    gateway.latency_tracer.close()
+
+    assert result == {"status": "continue_without_memory_retrieval"}
+    records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    selected = [record for record in records if record["event"] == "router_read_route_selected"]
+    assert len(selected) == 1
+    assert selected[0]["session_id"] == str(session_id)
+    assert selected[0]["turn_id"] == str(turn_id)
+    assert selected[0]["response_id"] == str(response_id)
+    assert selected[0]["metadata"] == {
+        "route": "GENERAL_LLM",
+        "decision_source": "rule",
+        "confidence": 1.0,
+        "router_mode": "on",
+    }
+    assert "quantum computing" not in trace_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "Create a task to submit the report tomorrow.",
+        "Create task to submit report on 32nd October.",
+    ],
+)
+async def test_task_route_emits_one_correlated_selection_trace_before_followup(
+    transcript: str, tmp_path
+) -> None:
+    gateway, _outbound = _direct_gateway()
+    trace_path = tmp_path / "task-route.jsonl"
+    gateway.latency_tracer = LatencyTracer(trace_path)
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    response_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._dispatch_structured_route(
+        session_id=session_id,
+        turn_id=turn_id,
+        response_id=response_id,
+        transcript=transcript,
+    )
+    # Approval/replay turns are handled by the pending-confirmation path and
+    # must not be counted as new task-route selections.
+    for _ in range(2):
+        await gateway._dispatch_structured_route(
+            session_id=session_id,
+            turn_id=uuid.uuid4(),
+            response_id=uuid.uuid4(),
+            transcript="Yes",
+        )
+    gateway.latency_tracer.close()
+
+    assert result == {"status": "continue_without_memory_retrieval"}
+    records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    selected = [record for record in records if record["event"] == "router_task_route_selected"]
+    assert len(selected) == 1
+    assert selected[0]["session_id"] == str(session_id)
+    assert selected[0]["turn_id"] == str(turn_id)
+    assert selected[0]["response_id"] == str(response_id)
+    assert selected[0]["metadata"] == {
+        "route": "TASK_ACTION",
+        "decision_source": "rule",
+        "confidence": 1.0,
+        "action_domain": "task",
+        "router_mode": "on",
+    }
+
+
+@pytest.mark.asyncio
+async def test_task_date_failure_returns_targeted_clarification_and_keeps_single_route_trace(
+    tmp_path,
+) -> None:
+    gateway, outbound = _direct_gateway()
+    trace_path = tmp_path / "task-date-failure.jsonl"
+    gateway.latency_tracer = LatencyTracer(trace_path)
+
+    async def no_memory() -> bool:
+        return False
+
+    async def empty_history(*_args, **_kwargs):
+        return ()
+
+    gateway._memory_user_enabled = no_memory
+    gateway._memory_excluded_for_session = no_memory
+    gateway._conversation_history_for_turn = empty_history
+
+    class FailedTaskToolLoop:
+        async def stream(self, request, *, context):
+            del context
+            call = LLMToolCall(
+                tool_call_id="failed-task-date",
+                name="create_task",
+                arguments={"title": "Submit report"},
+            )
+            yield _event(
+                request,
+                "tool_execution_failed",
+                1,
+                tool_call=call,
+                error_code="llm_tool_temporal_resolution_failed",
+            )
+
+    gateway.tool_loop = FailedTaskToolLoop()
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    response_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._stream_llm_response(
+        session_id=session_id,
+        turn_id=turn_id,
+        response_id=response_id,
+        transcript="Create task to submit report on 32nd October.",
+    )
+    gateway.latency_tracer.close()
+
+    records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    selected = [record for record in records if record["event"] == "router_task_route_selected"]
+    failed = [record for record in records if record["event"] == "task_date_resolution_failed"]
+    assert result["status"] == "clarification_required"
+    assert len(selected) == 1
+    assert len(failed) == 1
+    assert selected[0]["session_id"] == str(session_id)
+    assert selected[0]["turn_id"] == str(turn_id)
+    assert selected[0]["response_id"] == str(response_id)
+    assert outbound[-1]["text"] == (
+        "I couldn't resolve that task date or time. What date and time should I use?"
+    )
+
+
+@pytest.mark.asyncio
 async def test_general_route_omits_memory_context_and_search_but_keeps_history() -> None:
     from app.memory.tool_tools import register_memory_tools
     from app.routing.service import DecisionRouterService
@@ -1136,7 +1284,77 @@ async def test_general_route_omits_memory_context_and_search_but_keeps_history()
     assert captured[0].messages[0].content == "Earlier user request."
     assert len(captured[0].messages) == 2
     assert all(tool.name != "memory_search" for tool in captured[0].allowed_tools)
+    assert all(tool.name != "memory_save" for tool in captured[0].allowed_tools)
     assert "Memory evidence policy" not in captured[0].system_instructions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transcript", "content", "subject", "predicate"),
+    [
+        (
+            "Which shopping mall do I prefer?",
+            "My preferred shopping mall is Phoenix Mall.",
+            "shopping mall",
+            "preference",
+        ),
+        (
+            "What framework does my project use?",
+            "My project uses FastAPI.",
+            "project",
+            "framework",
+        ),
+        (
+            "which framework my project uses",
+            "My project uses FastAPI.",
+            "project",
+            "framework",
+        ),
+    ],
+)
+async def test_failed_manual_memory_reads_retrieve_without_general_route(
+    transcript: str,
+    content: str,
+    subject: str,
+    predicate: str,
+) -> None:
+    from app.memory.types import FusedMemory, MemoryQueryPlan, MemoryRetrievalResult, MemoryType
+
+    gateway, outbound = _direct_gateway()
+    memory = FusedMemory(
+        memory_id=uuid.uuid4(),
+        user_id=gateway.principal.user_id,
+        content=content,
+        rank=1,
+        sources=("structured", "fts"),
+        created_at=datetime(2026, 9, 20, tzinfo=UTC),
+        memory_type=MemoryType.PREFERENCE if predicate == "preference" else MemoryType.PROJECT,
+        subject=subject,
+        predicate=predicate,
+    )
+    service = _FakeRoutedMemoryService(
+        MemoryRetrievalResult(
+            status="ready",
+            plan=MemoryQueryPlan(normalized_query=transcript),
+            memories=(memory,),
+        )
+    )
+    _enable_routed_memory(gateway, service)
+    response_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._stream_llm_response(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=response_id,
+        transcript=transcript,
+    )
+
+    assert result["status"] == "completed"
+    assert len(service.calls) == 1
+    assert result["memory_evidence_ids"] == [str(memory.memory_id)]
+    assert outbound[-1]["text"].startswith("I have this saved:")
+    assert content in outbound[-1]["text"]
 
 
 class _ForgetRouteDatabase(FakeDatabase):
@@ -1186,7 +1404,7 @@ async def test_unique_memory_forget_creates_owned_confirmation_without_rag_or_ll
         SimpleNamespace(
             id=memory_id,
             user_id=gateway.principal.user_id,
-            content="I prefer tea",
+            content="My preferred shopping mall is Phoenix Mall",
             status="active",
         )
     ]
@@ -1201,7 +1419,7 @@ async def test_unique_memory_forget_creates_owned_confirmation_without_rag_or_ll
         session_id=session_id,
         turn_id=turn_id,
         response_id=response_id,
-        transcript="Forget that I prefer tea.",
+        transcript="Forget about my preferred shopping mall.",
     )
 
     pending = await gateway.confirmation_store.get(

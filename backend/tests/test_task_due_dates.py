@@ -41,6 +41,19 @@ def test_tomorrow_at_nine_uses_user_timezone_and_ignores_stale_model_timestamp()
         ("in 2 hours", datetime(2026, 9, 3, 20, 0, tzinfo=UTC)),
         ("Friday at 9 AM", datetime(2026, 9, 4, 3, 30, tzinfo=UTC)),
         ("September 10, 2026 at 4 PM", datetime(2026, 9, 10, 10, 30, tzinfo=UTC)),
+        ("tomorrow", datetime(2026, 9, 4, 18, 29, tzinfo=UTC)),
+        ("day after tomorrow", datetime(2026, 9, 5, 18, 29, tzinfo=UTC)),
+        ("today", datetime(2026, 9, 3, 18, 29, tzinfo=UTC)),
+        ("tonight", datetime(2026, 9, 3, 18, 29, tzinfo=UTC)),
+        ("this evening", datetime(2026, 9, 3, 18, 29, tzinfo=UTC)),
+        ("13 September", datetime(2026, 9, 13, 18, 29, tzinfo=UTC)),
+        ("13th September", datetime(2026, 9, 13, 18, 29, tzinfo=UTC)),
+        ("September 13", datetime(2026, 9, 13, 18, 29, tzinfo=UTC)),
+        ("2 October", datetime(2026, 10, 2, 18, 29, tzinfo=UTC)),
+        ("2nd October", datetime(2026, 10, 2, 18, 29, tzinfo=UTC)),
+        ("October 2", datetime(2026, 10, 2, 18, 29, tzinfo=UTC)),
+        ("2 Oct", datetime(2026, 10, 2, 18, 29, tzinfo=UTC)),
+        ("in 30 minutes", datetime(2026, 9, 3, 18, 30, tzinfo=UTC)),
     ],
 )
 def test_supported_relative_and_absolute_expressions(expression: str, expected: datetime) -> None:
@@ -56,12 +69,56 @@ def test_supported_relative_and_absolute_expressions(expression: str, expected: 
     )
 
 
-def test_relative_expression_requires_an_explicit_clock_time() -> None:
-    with pytest.raises(TaskDueDateResolutionError, match="clock time"):
+def test_task_without_date_keeps_due_at_empty() -> None:
+    assert resolve_task_due_at(
+        due_at=None,
+        due_expression=None,
+        source_transcript="Create a task to submit the report.",
+        now_utc=datetime(2026, 9, 3, 18, 0, tzinfo=UTC),
+        timezone_name="Asia/Kolkata",
+    ) is None
+
+
+def test_date_only_task_uses_end_of_day_in_device_timezone() -> None:
+    resolved = resolve_task_due_at(
+        due_at=None,
+        due_expression=None,
+        source_transcript="Create a task to submit the report tomorrow.",
+        now_utc=datetime(2026, 9, 3, 18, 0, tzinfo=UTC),
+        timezone_name="Asia/Kolkata",
+    )
+
+    assert resolved == datetime(2026, 9, 4, 18, 29, tzinfo=UTC)
+
+
+def test_past_yearless_date_fails_using_current_year_policy() -> None:
+    with pytest.raises(TaskDueDateResolutionError, match="future"):
         resolve_task_due_at(
-            due_at=datetime(2025, 8, 15, 9, tzinfo=UTC),
+            due_at=None,
             due_expression=None,
-            source_transcript="Remind me tomorrow.",
+            source_transcript="Create a task on 2 September.",
+            now_utc=datetime(2026, 9, 3, 18, 0, tzinfo=UTC),
+            timezone_name="Asia/Kolkata",
+        )
+
+
+def test_invalid_ordinal_date_fails_safely() -> None:
+    with pytest.raises(TaskDueDateResolutionError, match="invalid"):
+        resolve_task_due_at(
+            due_at=None,
+            due_expression=None,
+            source_transcript="Create a task on 32nd October.",
+            now_utc=datetime(2026, 9, 3, 18, 0, tzinfo=UTC),
+            timezone_name="Asia/Kolkata",
+        )
+
+
+def test_ambiguous_numeric_date_fails_safely() -> None:
+    with pytest.raises(TaskDueDateResolutionError, match="ambiguous"):
+        resolve_task_due_at(
+            due_at=None,
+            due_expression=None,
+            source_transcript="Create a task for 10/11.",
             now_utc=datetime(2026, 9, 3, 18, 0, tzinfo=UTC),
             timezone_name="Asia/Kolkata",
         )
@@ -110,7 +167,23 @@ def test_invalid_timezone_fails_without_mutation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_task_freezes_resolved_due_at_before_confirmation() -> None:
+@pytest.mark.parametrize(
+    ("source_transcript", "expected_due_at"),
+    [
+        (
+            "Remind me to call Rahul tomorrow at 9 AM.",
+            datetime(2026, 9, 4, 3, 30, tzinfo=UTC),
+        ),
+        (
+            "Create a task to submit the report tomorrow.",
+            datetime(2026, 9, 4, 18, 29, tzinfo=UTC),
+        ),
+    ],
+)
+async def test_create_task_freezes_resolved_due_at_before_confirmation(
+    source_transcript: str,
+    expected_due_at: datetime,
+) -> None:
     class FakeDatabase:
         def __init__(self) -> None:
             self.tasks = []
@@ -141,7 +214,7 @@ async def test_create_task_freezes_resolved_due_at_before_confirmation() -> None
         db=database,
         clock=_clock("2026-09-03T18:00:00+00:00"),
         user_timezone="Asia/Kolkata",
-        source_transcript="Remind me to call Rahul tomorrow at 9 AM.",
+        source_transcript=source_transcript,
         confirmation_requested=save_confirmation,
     )
     call = LLMToolCall(
@@ -156,7 +229,7 @@ async def test_create_task_freezes_resolved_due_at_before_confirmation() -> None
     assert pending.error_code == "llm_tool_confirmation_required"
     assert pending.executed is False
     assert database.tasks == []
-    assert captured[0].due_at == datetime(2026, 9, 4, 3, 30, tzinfo=UTC)
+    assert captured[0].due_at == expected_due_at
     assert captured[0].due_expression is None
 
     approved = await executor.execute(
@@ -174,4 +247,4 @@ async def test_create_task_freezes_resolved_due_at_before_confirmation() -> None
 
     assert approved.success is True
     assert approved.executed is True
-    assert database.tasks[0].due_at == datetime(2026, 9, 4, 3, 30, tzinfo=UTC)
+    assert database.tasks[0].due_at == expected_due_at

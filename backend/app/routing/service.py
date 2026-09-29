@@ -42,12 +42,20 @@ class DecisionRouterService:
         self._graph = graph
         self._shadow_semaphore = shadow_semaphore
 
-    def warm_shadow_graph(self) -> bool:
-        """Compile the pure graph during startup, never on a shadow turn."""
+    def is_active(self) -> bool:
+        """Return whether this configuration can route a user turn."""
 
-        if RouterMode(self.settings.router_mode) != RouterMode.SHADOW:
+        mode = RouterMode(self.settings.router_mode)
+        if mode == RouterMode.OFF:
             return False
-        if self.settings.router_cohort_percent <= 0:
+        if mode in {RouterMode.SHADOW, RouterMode.CANARY}:
+            return self.settings.router_cohort_percent > 0
+        return True
+
+    def warm_graph(self) -> bool:
+        """Compile the pure graph during startup for every active router mode."""
+
+        if not self.is_active():
             return False
         if self._graph is not None:
             return True
@@ -58,11 +66,146 @@ class DecisionRouterService:
             self._graph = build_router_graph()
         except Exception:  # noqa: BLE001 - a warmup failure must preserve legacy service
             LOGGER.exception(
-                "Router shadow graph startup warmup failed",
-                extra={"event": "router.shadow.warmup_failed"},
+                "Router graph startup warmup failed",
+                extra={
+                    "event": "router.warmup_failed",
+                    "router_mode": self.settings.router_mode,
+                },
             )
             return False
         return True
+
+    def warm_shadow_graph(self) -> bool:
+        """Backward-compatible alias for callers using the original warmup API."""
+
+        return self.warm_graph()
+
+    async def readiness(self) -> dict[str, object]:
+        """Verify active-mode configuration, graph topology, and execution."""
+
+        try:
+            mode = RouterMode(self.settings.router_mode)
+        except ValueError:
+            return {
+                "enabled": True,
+                "status": "not_ready",
+                "mode": str(self.settings.router_mode),
+                "error": "INVALID_ROUTER_MODE",
+            }
+
+        if not self.is_active():
+            return {
+                "enabled": False,
+                "status": "disabled",
+                "mode": mode.value,
+            }
+
+        graph = self._graph
+        if graph is None:
+            return {
+                "enabled": True,
+                "status": "not_ready",
+                "mode": mode.value,
+                "graph_compiled": False,
+                "error": "ROUTER_GRAPH_NOT_COMPILED",
+            }
+
+        expected_route_nodes = {f"route_{route.value.lower()}" for route in RouteName}
+        try:
+            graph_view = graph.get_graph()  # type: ignore[attr-defined]
+            graph_nodes = set(graph_view.nodes)
+            edge_pairs = {(edge.source, edge.target) for edge in graph_view.edges}
+        except Exception:  # noqa: BLE001 - readiness must report, not raise
+            return {
+                "enabled": True,
+                "status": "not_ready",
+                "mode": mode.value,
+                "graph_compiled": True,
+                "error": "ROUTER_GRAPH_INSPECTION_FAILED",
+            }
+
+        registered_route_nodes = expected_route_nodes & graph_nodes
+        required_edges = {
+            *(("validate_decision", node) for node in expected_route_nodes),
+            *((node, "__end__") for node in expected_route_nodes),
+        }
+        handlers_ready = registered_route_nodes == expected_route_nodes and required_edges.issubset(
+            edge_pairs
+        )
+        route_handlers = {
+            "status": "ready" if handlers_ready else "not_ready",
+            "registered": len(registered_route_nodes),
+            "expected": len(expected_route_nodes),
+        }
+        if not handlers_ready:
+            return {
+                "enabled": True,
+                "status": "not_ready",
+                "mode": mode.value,
+                "graph_compiled": True,
+                "route_handlers": route_handlers,
+                "error": "ROUTER_HANDLERS_INCOMPLETE",
+            }
+
+        probe_decision = RouteDecision(route=RouteName.GENERAL_LLM)
+        probe_context = RouterRuntimeContext(
+            user_id=uuid.UUID(int=0),
+            session_id=uuid.UUID(int=0),
+            turn_id=uuid.UUID(int=0),
+            response_id=uuid.UUID(int=0),
+        )
+        try:
+            probe_result = await asyncio.wait_for(
+                graph.ainvoke(
+                    {"decision": probe_decision.model_dump(mode="json")},
+                    context=probe_context,
+                ),
+                timeout=self.settings.router_timeout_ms / 1000,
+            )
+            probe_outcome = RouterOutcome.model_validate(probe_result["outcome"])
+        except TimeoutError:
+            return {
+                "enabled": True,
+                "status": "not_ready",
+                "mode": mode.value,
+                "graph_compiled": True,
+                "route_handlers": route_handlers,
+                "decision_probe": {"status": "not_ready"},
+                "error": "ROUTER_DECISION_TIMED_OUT",
+            }
+        except Exception:  # noqa: BLE001 - readiness must report, not raise
+            return {
+                "enabled": True,
+                "status": "not_ready",
+                "mode": mode.value,
+                "graph_compiled": True,
+                "route_handlers": route_handlers,
+                "decision_probe": {"status": "not_ready"},
+                "error": "ROUTER_DECISION_FAILED",
+            }
+
+        if probe_outcome.route != probe_decision.route or probe_outcome.needs_clarification:
+            return {
+                "enabled": True,
+                "status": "not_ready",
+                "mode": mode.value,
+                "graph_compiled": True,
+                "route_handlers": route_handlers,
+                "decision_probe": {"status": "not_ready"},
+                "error": "ROUTER_DECISION_INVALID",
+            }
+
+        return {
+            "enabled": True,
+            "status": "ready",
+            "mode": mode.value,
+            "graph_compiled": True,
+            "route_handlers": route_handlers,
+            "decision_probe": {
+                "status": "ready",
+                "route": probe_outcome.route.value,
+            },
+        }
 
     async def observe_shadow_transcript(
         self,

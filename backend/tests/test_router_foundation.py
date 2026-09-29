@@ -41,7 +41,7 @@ def test_router_flags_default_to_safe_off_values() -> None:
     assert settings.router_shadow_max_concurrent == 4
 
 
-def test_shadow_graph_is_warmed_once_only_for_active_shadow(monkeypatch) -> None:
+def test_graph_is_warmed_once_for_every_active_router_mode(monkeypatch) -> None:
     from app.routing import graph as routing_graph
 
     graph = _DecisionEchoGraph()
@@ -56,18 +56,24 @@ def test_shadow_graph_is_warmed_once_only_for_active_shadow(monkeypatch) -> None
     shadow = DecisionRouterService(
         Settings(_env_file=None, router_mode="shadow", router_cohort_percent=100)
     )
+    canary = DecisionRouterService(
+        Settings(_env_file=None, router_mode="canary", router_cohort_percent=100)
+    )
+    enabled = DecisionRouterService(Settings(_env_file=None, router_mode="on"))
     disabled = DecisionRouterService(Settings(_env_file=None, router_mode="off"))
 
-    assert disabled.warm_shadow_graph() is False
-    assert shadow.warm_shadow_graph() is True
-    assert shadow.warm_shadow_graph() is True
-    assert calls == 1
+    assert disabled.warm_graph() is False
+    assert shadow.warm_graph() is True
+    assert shadow.warm_graph() is True
+    assert canary.warm_graph() is True
+    assert enabled.warm_graph() is True
+    assert calls == 3
 
 
 @pytest.mark.parametrize(
     ("name", "value", "attribute", "expected"),
     [
-        ("ROUTER_MODE", "shadow", "router_mode", "shadow"),
+        ("ROUTER_MODE", "on", "router_mode", "on"),
         ("ROUTER_COHORT_PERCENT", "25", "router_cohort_percent", 25),
         ("ROUTER_TIMEOUT_MS", "400", "router_timeout_ms", 400),
         ("ROUTER_SHADOW_MAX_CONCURRENT", "3", "router_shadow_max_concurrent", 3),
@@ -158,6 +164,80 @@ class _FailingGraph(_CountingGraph):
     async def ainvoke(self, input: dict, *, context: RouterRuntimeContext) -> dict:
         self.calls += 1
         raise ValueError("Invalid route result")
+
+
+@pytest.mark.asyncio
+async def test_active_router_readiness_verifies_compilation_handlers_and_decision() -> None:
+    pytest.importorskip("langgraph")
+    service = DecisionRouterService(Settings(_env_file=None, router_mode="on"))
+
+    assert service.warm_graph() is True
+
+    assert await service.readiness() == {
+        "enabled": True,
+        "status": "ready",
+        "mode": "on",
+        "graph_compiled": True,
+        "route_handlers": {
+            "status": "ready",
+            "registered": len(RouteName),
+            "expected": len(RouteName),
+        },
+        "decision_probe": {
+            "status": "ready",
+            "route": "GENERAL_LLM",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_active_router_readiness_rejects_an_incomplete_handler_graph() -> None:
+    class _IncompleteGraph(_DecisionEchoGraph):
+        def get_graph(self):
+            return SimpleNamespace(nodes={"__start__", "validate_decision", "__end__"}, edges=[])
+
+    service = DecisionRouterService(
+        Settings(_env_file=None, router_mode="on"),
+        graph=_IncompleteGraph(),
+    )
+
+    result = await service.readiness()
+
+    assert result["status"] == "not_ready"
+    assert result["graph_compiled"] is True
+    assert result["route_handlers"] == {
+        "status": "not_ready",
+        "registered": 0,
+        "expected": len(RouteName),
+    }
+    assert result["error"] == "ROUTER_HANDLERS_INCOMPLETE"
+
+
+@pytest.mark.asyncio
+async def test_active_router_readiness_rejects_a_failed_decision_probe() -> None:
+    class _CompleteFailingGraph(_FailingGraph):
+        def get_graph(self):
+            route_nodes = {f"route_{route.value.lower()}" for route in RouteName}
+            edges = [
+                *(SimpleNamespace(source="validate_decision", target=node) for node in route_nodes),
+                *(SimpleNamespace(source=node, target="__end__") for node in route_nodes),
+            ]
+            return SimpleNamespace(
+                nodes={"__start__", "validate_decision", "__end__", *route_nodes},
+                edges=edges,
+            )
+
+    service = DecisionRouterService(
+        Settings(_env_file=None, router_mode="on"),
+        graph=_CompleteFailingGraph(),
+    )
+
+    result = await service.readiness()
+
+    assert result["status"] == "not_ready"
+    assert result["route_handlers"]["status"] == "ready"
+    assert result["decision_probe"] == {"status": "not_ready"}
+    assert result["error"] == "ROUTER_DECISION_FAILED"
 
 
 @pytest.mark.asyncio

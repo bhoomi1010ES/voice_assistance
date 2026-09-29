@@ -372,6 +372,53 @@ test('starts listening after session ready and keeps capture for the next turn',
   ).toBe(false);
 });
 
+test('manual finish commits the active turn and stops continuous auto-listening', async () => {
+  jest.useFakeTimers();
+  const adapter = new ContinuousChatAdapter();
+  adapter.status = status({ state: 'CONNECTED', connected: true });
+  const socket = new VoiceSocket({ adapter });
+  activeSockets.push(socket);
+
+  await socket.connect();
+  adapter.emit({
+    event: 'server.session.ready',
+    sessionId: SESSION_ID,
+    turnId: null,
+    responseId: null,
+    eventId: 'manual-finish-session-ready',
+    timestampMs: 1,
+  });
+  await jest.advanceTimersByTimeAsync(1);
+
+  expect(adapter.startTurnCalls).toBe(1);
+  adapter.emit({
+    event: 'server.turn.ready',
+    sessionId: SESSION_ID,
+    turnId: 'turn-manual-finish-1',
+    responseId: 'response-manual-finish-1',
+    eventId: 'manual-finish-turn-ready-1',
+    timestampMs: 2,
+  });
+  await socket.commitTurn({ suppressAutoListen: true });
+  adapter.emit({
+    event: 'server.turn.completed',
+    sessionId: SESSION_ID,
+    turnId: 'turn-manual-finish-1',
+    responseId: 'response-manual-finish-1',
+    eventId: 'manual-finish-turn-completed-1',
+    timestampMs: 3,
+  });
+  await jest.advanceTimersByTimeAsync(10);
+
+  expect(adapter.startTurnCalls).toBe(1);
+  expect(adapter.stopMicrophoneCalls).toBeGreaterThanOrEqual(1);
+  expect(socket.getSnapshot()).toMatchObject({
+    session: 'ready',
+    turn: 'idle',
+    continuousListening: true,
+  });
+});
+
 test('emits replacement telemetry only for a real barge-in replacement turn', async () => {
   const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => undefined);
   const adapter = new ContinuousChatAdapter();
