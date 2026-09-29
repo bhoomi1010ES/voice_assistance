@@ -126,6 +126,7 @@ export const strings = {
     toolConfirmationRequired: 'Waiting for your spoken approval or rejection.',
     voiceConfirmationListening:
       'Listening for you to say yes to approve or no to reject.',
+    voiceConfirmationStartListening: 'Start listening',
     toolApproved: 'Assistant action approved.',
     toolExecuting: 'Assistant action in progressâ€¦',
     toolSuccess: 'Assistant action completed.',

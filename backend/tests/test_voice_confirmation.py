@@ -321,6 +321,185 @@ async def test_pending_confirmation_survives_voice_session_reconnect() -> None:
 
 
 @pytest.mark.asyncio
+async def test_memory_forget_confirmation_survives_reconnect_and_executes_once() -> None:
+    from app.memory.tool_tools import MemoryForgetArguments
+
+    gateway, store, outbound, response_id, _count = await _gateway()
+    gateway.settings = gateway.settings.model_copy(update={"memory_write_enabled": True})
+    memory_id = uuid.uuid4()
+    executions = 0
+    staged = False
+    durable = False
+
+    async def forget_handler(_context, arguments) -> dict[str, object]:
+        nonlocal executions, staged
+        assert arguments.memory_id == memory_id
+        executions += 1
+        staged = True
+        return {"deleted": True, "memory_id": str(memory_id)}
+
+    async def commit() -> None:
+        nonlocal durable
+        gateway.db.commits += 1
+        durable = durable or staged
+
+    gateway.db.commit = commit
+
+    gateway.tool_registry.register(
+        name="memory_forget",
+        description="Forget one saved memory after confirmation.",
+        arguments_model=MemoryForgetArguments,
+        handler=forget_handler,
+        required_scopes=frozenset({"memory:write"}),
+        read_only=False,
+        requires_confirmation=True,
+        max_calls_per_turn=1,
+    )
+
+    async def authorized(_tool_name: str) -> bool:
+        return True
+
+    gateway._tool_authorized_now = authorized
+    original_session_id = gateway.voice_session.id
+    new_session_id = uuid.uuid4()
+    original_turn_id = uuid.uuid4()
+    tool_call_id = f"server-memory-forget-{original_turn_id}"
+    pending = PendingConfirmation.new(
+        authenticated_user_id=gateway.principal.user_id,
+        device_id=gateway.principal.device_id,
+        session_id=original_session_id,
+        original_turn_id=original_turn_id,
+        original_response_id=uuid.uuid4(),
+        tool_call_id=tool_call_id,
+        tool_name="memory_forget",
+        validated_tool_arguments={"memory_id": str(memory_id)},
+        idempotency_key=(
+            gateway.principal.user_id,
+            original_turn_id,
+            "memory_forget",
+            tool_call_id,
+        ),
+        ttl_seconds=120,
+    )
+    await store.create_or_get(pending)
+    rebound = await store.get(
+        (gateway.principal.user_id, gateway.principal.device_id, new_session_id)
+    )
+    assert rebound is not None and rebound.session_id == new_session_id
+
+    first = await gateway._resolve_pending_confirmation(
+        session_id=new_session_id,
+        turn_id=uuid.uuid4(),
+        response_id=response_id,
+        transcript="Yes",
+    )
+    assert durable is True
+    assert gateway.cancel_guard.cancel(response_id) is True
+    second = await gateway._resolve_pending_confirmation(
+        session_id=new_session_id,
+        turn_id=uuid.uuid4(),
+        response_id=response_id,
+        transcript="Yes",
+    )
+
+    assert first is not None and first["database_mutation"] is True
+    assert second == {"status": "completed", "confirmation": "already_handled"}
+    assert executions == 1
+    assert durable is True
+    assert gateway.db.commits >= 1
+    assert gateway.db.rollbacks == 0
+    assert "Done. I forgot that memory." in [
+        event.get("text") for event in outbound if event["type"] == "assistant.text.final"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revocation", ["cancellation", "authorization"])
+async def test_memory_forget_revocation_after_handler_rolls_back_before_commit(
+    revocation: str,
+) -> None:
+    from app.memory.tool_tools import MemoryForgetArguments
+
+    gateway, store, _outbound, response_id, _count = await _gateway()
+    gateway.settings = gateway.settings.model_copy(update={"memory_write_enabled": True})
+    memory_id = uuid.uuid4()
+    staged = False
+    durable = False
+    authorized_now = True
+
+    async def forget_handler(_context, arguments) -> dict[str, object]:
+        nonlocal authorized_now, staged
+        assert arguments.memory_id == memory_id
+        staged = True
+        if revocation == "cancellation":
+            gateway.cancel_guard.cancel(response_id)
+        else:
+            authorized_now = False
+        return {"deleted": True, "memory_id": str(memory_id)}
+
+    async def rollback() -> None:
+        nonlocal staged
+        staged = False
+        gateway.db.rollbacks += 1
+
+    async def commit() -> None:
+        nonlocal durable
+        gateway.db.commits += 1
+        durable = durable or staged
+
+    gateway.db.rollback = rollback
+    gateway.db.commit = commit
+    gateway.tool_registry.register(
+        name="memory_forget",
+        description="Forget one saved memory after confirmation.",
+        arguments_model=MemoryForgetArguments,
+        handler=forget_handler,
+        required_scopes=frozenset({"memory:write"}),
+        read_only=False,
+        requires_confirmation=True,
+        max_calls_per_turn=1,
+    )
+
+    async def authorized(_tool_name: str) -> bool:
+        return authorized_now
+
+    gateway._tool_authorized_now = authorized
+    session_id = gateway.voice_session.id
+    original_turn_id = uuid.uuid4()
+    tool_call_id = f"server-memory-forget-{original_turn_id}"
+    pending = PendingConfirmation.new(
+        authenticated_user_id=gateway.principal.user_id,
+        device_id=gateway.principal.device_id,
+        session_id=session_id,
+        original_turn_id=original_turn_id,
+        original_response_id=uuid.uuid4(),
+        tool_call_id=tool_call_id,
+        tool_name="memory_forget",
+        validated_tool_arguments={"memory_id": str(memory_id)},
+        idempotency_key=(
+            gateway.principal.user_id,
+            original_turn_id,
+            "memory_forget",
+            tool_call_id,
+        ),
+        ttl_seconds=120,
+    )
+    await store.create_or_get(pending)
+
+    result = await gateway._resolve_pending_confirmation(
+        session_id=session_id,
+        turn_id=uuid.uuid4(),
+        response_id=response_id,
+        transcript="Yes",
+    )
+
+    assert result is not None and result["database_mutation"] is False
+    assert staged is False
+    assert durable is False
+    assert gateway.db.rollbacks >= 1
+
+
+@pytest.mark.asyncio
 async def test_cancel_message_invalidates_completed_turn_pending_action() -> None:
     principal = _principal()
     pending = _pending(principal, uuid.uuid4())
@@ -495,6 +674,28 @@ def test_confirmation_prompt_identifies_action_and_spoken_choices() -> None:
 
     assert 'create task (titled "Call Rahul")' in prompt
     assert "Say yes to approve, or no to reject." in prompt
+
+
+def test_memory_forget_confirmation_prompt_does_not_expose_memory_content() -> None:
+    principal = _principal()
+    memory_id = uuid.uuid4()
+    pending = PendingConfirmation.new(
+        authenticated_user_id=principal.user_id,
+        device_id=principal.device_id,
+        session_id=uuid.uuid4(),
+        original_turn_id=uuid.uuid4(),
+        original_response_id=uuid.uuid4(),
+        tool_call_id="memory-forget-prompt",
+        tool_name="memory_forget",
+        validated_tool_arguments={"memory_id": str(memory_id)},
+        idempotency_key=(principal.user_id, uuid.uuid4(), "memory_forget", "memory-forget-prompt"),
+        ttl_seconds=120,
+    )
+
+    prompt = VoiceGateway._confirmation_prompt_text(pending)
+
+    assert prompt == "I can forget that saved memory. Say yes to approve, or no to reject."
+    assert str(memory_id) not in prompt
 
 
 def test_create_task_confirmation_copy_uses_task_language() -> None:

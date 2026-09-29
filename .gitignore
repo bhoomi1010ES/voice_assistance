@@ -88,6 +88,12 @@ yarn-error.log
 !/docs/20260917_180239_auth_field_layout_fix.md
 !/docs/20260923_181828Z_device_time_issue_fix.md
 !/docs/20260923_185955Z_barge_in_issue_fix.md
+!/docs/20260928_120434_phase0_owner_manual_override.md
+!/docs/20260928_120434_phase3_live_shadow_owner_override_plan.md
+!/docs/20260928_1214_phase3_shadow_enablement.md
+!/docs/20260928_122440_phase3_disagreement_review.md
+!/docs/20260928_1336_phase3_tts_route_fix_physical_check.md
+!/docs/20260928_1533_phase3_confirmation_listen_fallback.md
 !/docs/20260924_1108_phase0_phase2_acceptance.md
 !/docs/phase2_router_acceptance_v1.md
 
@@ -155,6 +161,9 @@ docs/latency_runs/
 !/docs/phase0_router_acceptance_corpus_v1.json
 !/docs/20260923_1739_phase0_router_acceptance_baseline.md
 !/docs/20260923_1819_langgraph_router_foundation.md
+!/docs/20260928_1621_phase3_muted_tts_completion.md
+!/docs/20260928_1652_phase3_acceptance_report.md
+!/docs/20260928_1652_phase3_adb_environment_fix.md
 !/docs/phase6_hybrid_rag_current_implementation_audit.md
 !/docs/20260916T015744Z_phase6a_stage4_async_graph_indexing.md
 !/docs/20260916T180134Z_phase_f1_privacy_retrieval_correctness.md

@@ -12,6 +12,7 @@ from app.core.clock import DeviceEpochClock, FrozenClock
 from app.core.config import Settings
 from app.llm.tool_loop import (
     EmptyToolArguments,
+    InMemoryToolIdempotencyStore,
     ToolExecutor,
     ToolRegistry,
     create_default_tool_registry,
@@ -27,6 +28,7 @@ from app.llm.types import (
 )
 from app.services.device_time import build_device_time_context
 from app.services.latency_trace import LatencyTracer
+from app.services.voice_confirmation import InMemoryVoiceConfirmationStore
 from app.websocket.cancellation import CancellationGuard
 from app.websocket.gateway import VoiceGateway
 
@@ -1137,22 +1139,195 @@ async def test_general_route_omits_memory_context_and_search_but_keeps_history()
     assert "Memory evidence policy" not in captured[0].system_instructions
 
 
-@pytest.mark.asyncio
-async def test_memory_forget_without_resolvable_id_abstains_without_retrieval_or_llm() -> None:
+class _ForgetRouteDatabase(FakeDatabase):
+    def __init__(self, rows=()) -> None:
+        super().__init__()
+        self.rows = list(rows)
+        self.resolution_queries = 0
+
+    async def scalars(self, _statement):
+        self.resolution_queries += 1
+        return self.rows
+
+
+def _forget_route_gateway(*, rows=()):
+    from app.memory.tool_tools import register_memory_tools
+
     gateway, outbound = _direct_gateway()
+    gateway.settings = gateway.settings.model_copy(update={"memory_write_enabled": True})
+    gateway.db = _ForgetRouteDatabase(rows)
+    gateway.principal = SimpleNamespace(user_id=uuid.uuid4(), device_id=uuid.uuid4())
+    gateway.voice_session = SimpleNamespace(id=uuid.uuid4(), client_metadata={})
+    gateway._session_id = gateway.voice_session.id
+    gateway.confirmation_store = InMemoryVoiceConfirmationStore()
+    registry = create_default_tool_registry()
+    register_memory_tools(registry, allow_write=True)
+    gateway.tool_registry = registry
+    gateway.tool_loop = SimpleNamespace(
+        executor=ToolExecutor(registry, idempotency_store=InMemoryToolIdempotencyStore())
+    )
+
+    async def memory_enabled() -> bool:
+        return True
+
+    async def memory_not_excluded() -> bool:
+        return False
+
+    gateway._memory_user_enabled = memory_enabled
+    gateway._memory_excluded_for_session = memory_not_excluded
+    return gateway, outbound
+
+
+@pytest.mark.asyncio
+async def test_unique_memory_forget_creates_owned_confirmation_without_rag_or_llm() -> None:
+    gateway, outbound = _forget_route_gateway()
+    memory_id = uuid.uuid4()
+    gateway.db.rows = [
+        SimpleNamespace(
+            id=memory_id,
+            user_id=gateway.principal.user_id,
+            content="I prefer tea",
+            status="active",
+        )
+    ]
+    session_id = gateway.voice_session.id
+    turn_id = uuid.uuid4()
+    response_id = uuid.uuid4()
+    gateway._response_turn_id = turn_id
+    gateway._last_response_id = response_id
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._stream_llm_response(
+        session_id=session_id,
+        turn_id=turn_id,
+        response_id=response_id,
+        transcript="Forget that I prefer tea.",
+    )
+
+    pending = await gateway.confirmation_store.get(
+        (gateway.principal.user_id, gateway.principal.device_id, session_id)
+    )
+    assert result["status"] == "confirmation_required"
+    assert result["proposed_tool_names"] == ["memory_forget"]
+    assert result["executed_tool_names"] == []
+    assert pending is not None
+    assert pending.tool_name == "memory_forget"
+    assert pending.validated_tool_arguments == {"memory_id": str(memory_id)}
+    assert gateway.db.resolution_queries == 1
+    assert [event["type"] for event in outbound] == [
+        "tool.status",
+        "confirmation.required",
+        "assistant.response.started",
+        "assistant.text.final",
+    ]
+    assert outbound[0]["tool_status"] == "understanding"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("row_factory", "expected_text"),
+    [
+        (
+            lambda owner: [
+                SimpleNamespace(
+                    id=uuid.uuid4(), user_id=owner, content="I prefer tea", status="active"
+                ),
+                SimpleNamespace(
+                    id=uuid.uuid4(), user_id=owner, content="I prefer tea", status="active"
+                ),
+            ],
+            "multiple matching saved memories",
+        ),
+        (lambda _owner: [], "safely identify"),
+        (
+            lambda owner: [
+                SimpleNamespace(
+                    id=uuid.uuid4(), user_id=owner, content="I prefer tea", status="deleted"
+                )
+            ],
+            "safely identify",
+        ),
+        (
+            lambda _owner: [
+                SimpleNamespace(
+                    id=uuid.uuid4(),
+                    user_id=uuid.uuid4(),
+                    content="I prefer tea",
+                    status="active",
+                )
+            ],
+            "safely identify",
+        ),
+    ],
+)
+async def test_unresolved_memory_forget_never_proposes_or_falls_back(
+    row_factory,
+    expected_text: str,
+) -> None:
+    gateway, outbound = _forget_route_gateway()
+    gateway.db.rows = row_factory(gateway.principal.user_id)
     response_id = uuid.uuid4()
     gateway.cancel_guard.activate(response_id)
 
     result = await gateway._stream_llm_response(
-        session_id=uuid.uuid4(),
+        session_id=gateway.voice_session.id,
+        turn_id=uuid.uuid4(),
+        response_id=response_id,
+        transcript="Forget that I prefer tea.",
+    )
+
+    pending = await gateway.confirmation_store.get(
+        (gateway.principal.user_id, gateway.principal.device_id, gateway.voice_session.id)
+    )
+    assert result["status"] == "completed"
+    assert result["executed_tool_names"] == []
+    assert pending is None
+    assert expected_text in outbound[-1]["text"]
+    assert [event["type"] for event in outbound] == [
+        "assistant.text.delta",
+        "assistant.text.final",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("write_enabled", "memory_enabled", "memory_excluded", "expected_text"),
+    [
+        (False, True, False, "changes are turned off"),
+        (True, False, False, "turned off for this account"),
+        (True, True, True, "can't change saved memories in this session"),
+    ],
+)
+async def test_memory_forget_respects_write_and_privacy_policy_before_resolution(
+    write_enabled: bool,
+    memory_enabled: bool,
+    memory_excluded: bool,
+    expected_text: str,
+) -> None:
+    gateway, outbound = _forget_route_gateway()
+    gateway.settings = gateway.settings.model_copy(update={"memory_write_enabled": write_enabled})
+
+    async def enabled() -> bool:
+        return memory_enabled
+
+    async def excluded() -> bool:
+        return memory_excluded
+
+    gateway._memory_user_enabled = enabled
+    gateway._memory_excluded_for_session = excluded
+    response_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._stream_llm_response(
+        session_id=gateway.voice_session.id,
         turn_id=uuid.uuid4(),
         response_id=response_id,
         transcript="Forget that I prefer tea.",
     )
 
     assert result["status"] == "completed"
-    assert result["executed_tool_names"] == []
-    assert "safely identify" in outbound[-1]["text"]
+    assert gateway.db.resolution_queries == 0
+    assert expected_text in outbound[-1]["text"]
 
 
 @pytest.mark.asyncio

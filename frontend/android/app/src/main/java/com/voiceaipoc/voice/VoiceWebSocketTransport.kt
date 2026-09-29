@@ -1731,7 +1731,16 @@ class VoiceWebSocketTransport(
                 metadata = mapOf("duration_basis" to "android_elapsed_realtime"),
             )
         }
-        if (!isTtsOutputEnabled()) return
+        if (!isTtsOutputEnabled()) {
+            mutedTtsPlaybackCompletion(frame, voiceOutputEnabled = false)?.let { responseId ->
+                ttsLogInfo(
+                    "TTS_MUTED_RESPONSE_SKIPPED response_id=$responseId " +
+                        "elapsedMs=${SystemClock.elapsedRealtime()}",
+                )
+                notifyTtsPlayback("tts.playback.completed", responseId)
+            }
+            return
+        }
         if (frame.startsResponse) {
             if (!ttsAudioPlayer.start(frame.responseId, frame.sampleRateHz)) {
                 return

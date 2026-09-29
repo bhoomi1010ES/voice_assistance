@@ -42,6 +42,28 @@ class DecisionRouterService:
         self._graph = graph
         self._shadow_semaphore = shadow_semaphore
 
+    def warm_shadow_graph(self) -> bool:
+        """Compile the pure graph during startup, never on a shadow turn."""
+
+        if RouterMode(self.settings.router_mode) != RouterMode.SHADOW:
+            return False
+        if self.settings.router_cohort_percent <= 0:
+            return False
+        if self._graph is not None:
+            return True
+
+        try:
+            from app.routing.graph import build_router_graph
+
+            self._graph = build_router_graph()
+        except Exception:  # noqa: BLE001 - a warmup failure must preserve legacy service
+            LOGGER.exception(
+                "Router shadow graph startup warmup failed",
+                extra={"event": "router.shadow.warmup_failed"},
+            )
+            return False
+        return True
+
     async def observe_shadow_transcript(
         self,
         transcript: str,

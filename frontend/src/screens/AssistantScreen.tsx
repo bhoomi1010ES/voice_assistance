@@ -30,9 +30,7 @@ import {
   VoiceConnectionState,
   VoiceSocketSnapshot,
 } from '../voice/VoiceSocket';
-import {
-  VoiceTranscriptMessage,
-} from '../voice/transcript';
+import { VoiceTranscriptMessage } from '../voice/transcript';
 import {
   ConversationAssistantMessage,
   ConversationMessage,
@@ -347,6 +345,15 @@ export function AssistantScreen() {
           {voiceConfirmationPending ? (
             <ToolConfirmationCard
               pendingConfirmation={pendingConfirmation}
+              onStartListening={() =>
+                execute(() => socket.startTurn({ autoCommitOnSpeechEnd: true }))
+              }
+              startListeningDisabled={
+                socketState.connection !== 'connected' ||
+                socketState.session !== 'ready' ||
+                socketState.turn !== 'idle' ||
+                socketState.ttsPlaybackState === 'speaking'
+              }
               testID="voice-confirmation-status"
             />
           ) : (
@@ -367,9 +374,13 @@ export function AssistantScreen() {
               />
               <VoiceStatusView
                 isActive={
-                  ['recording', 'speech_detected', 'committing', 'waiting'].includes(
-                    socketState.turn,
-                  ) || socketState.ttsPlaybackState === 'speaking'
+                  [
+                    'recording',
+                    'speech_detected',
+                    'committing',
+                    'waiting',
+                  ].includes(socketState.turn) ||
+                  socketState.ttsPlaybackState === 'speaking'
                 }
                 primaryStatus={voiceControlLabel(
                   socketState,
@@ -436,9 +447,7 @@ export function AssistantScreen() {
         {!conversationMessages.length &&
         !voiceConfirmationPending &&
         socketState.turn === 'idle' ? (
-          <QuickActionChips
-            onChipPress={() => execute(voiceControlAction)}
-          />
+          <QuickActionChips onChipPress={() => execute(voiceControlAction)} />
         ) : null}
 
         {/* Voice output preferences card */}
@@ -486,7 +495,9 @@ export function AssistantScreen() {
                 />
               ) : null}
               {socketState.ttsPlaybackState === 'failed' ? (
-                <AppText style={[styles.transcriptError, { color: colors.error }]}>
+                <AppText
+                  style={[styles.transcriptError, { color: colors.error }]}
+                >
                   {socketState.ttsError ?? strings.assistant.voiceOutputFailed}
                 </AppText>
               ) : null}

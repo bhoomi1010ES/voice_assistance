@@ -291,6 +291,19 @@ def test_acoustic_route_preflight_rejects_loudspeaker(monkeypatch) -> None:
         raise AssertionError("speaker route must block baseline capture")
 
 
+def test_acoustic_route_preflight_allows_speaker_only_when_explicit(monkeypatch) -> None:
+    import scripts.phase0_live_driver as driver
+
+    monkeypatch.setattr(driver.shutil, "which", lambda _: "adb.exe")
+    monkeypatch.setattr(
+        driver,
+        "run_command",
+        lambda *_args, **_kwargs: "Active communication device: role:output type:speaker addr:null",
+    )
+
+    assert check_acoustic_output_route("phone", allow_speaker=True) == "speaker"
+
+
 def test_phase0_gate_requires_paired_metrics_and_both_confirmed_writes() -> None:
     categories = [
         "general_llm",

@@ -54,3 +54,10 @@ internal data class TtsAudioFrame(
         private const val BYTES_PER_SAMPLE = 2
     }
 }
+
+/** Return a terminal playback event for a frame intentionally discarded while voice output is muted. */
+internal fun mutedTtsPlaybackCompletion(
+    frame: TtsAudioFrame,
+    voiceOutputEnabled: Boolean,
+): java.util.UUID? =
+    if (!voiceOutputEnabled && frame.endsResponse) frame.responseId else null

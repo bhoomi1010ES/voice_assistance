@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -12,6 +14,7 @@ from app.memory.providers import RemoteEmbeddingProvider, RemoteReranker
 from app.memory.retrieval import MemoryRetrievalService
 from app.memory.worker_service import MemoryWorkerService
 from app.reminders.worker_service import ReminderWorkerService
+from app.routing.service import DecisionRouterService
 from app.services.infrastructure import Infrastructure
 from app.services.push_delivery import UnavailablePushDeliveryProvider
 from app.stt.service import STTService
@@ -30,6 +33,22 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configure_logging(app_settings.log_level)
+        if app_settings.router_mode == "shadow" and app_settings.router_cohort_percent > 0:
+            router_service = DecisionRouterService(
+                app_settings,
+                shadow_semaphore=asyncio.Semaphore(app_settings.router_shadow_max_concurrent),
+            )
+            warm_started = time.perf_counter()
+            warmed = router_service.warm_shadow_graph()
+            app.state.router_decision_service = router_service
+            logging.getLogger("voice-assistance-backend").info(
+                "Router shadow graph startup warmup completed",
+                extra={
+                    "event": "router.shadow.warmup",
+                    "ready": warmed,
+                    "duration_ms": round((time.perf_counter() - warm_started) * 1000, 3),
+                },
+            )
         active_infrastructure = infrastructure or Infrastructure(app_settings)
         active_stt_service = stt_service or STTService(app_settings)
         active_llm_service = llm_service or LLMService(app_settings)

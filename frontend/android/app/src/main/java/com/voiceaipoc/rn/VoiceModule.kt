@@ -13,7 +13,6 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.module.annotations.ReactModule
 import com.facebook.react.modules.core.DeviceEventManagerModule
-import com.voiceaipoc.BuildConfig
 import com.voiceaipoc.audio.AudioConfig
 import com.voiceaipoc.audio.AudioEngine
 import com.voiceaipoc.audio.AudioEffectsManager
@@ -84,13 +83,7 @@ class VoiceModule(
     private val audioRouteController = AudioRouteController(
         reactContext.applicationContext,
         AudioRouteController.Config(
-            // Debug builds use the earpiece for physical baseline capture so
-            // phone playback cannot feed the loudspeaker back into the mic.
-            devicePreference = if (BuildConfig.DEBUG) {
-                AudioRouteController.DevicePreference.EARPIECE
-            } else {
-                audioConfig.communicationDevicePreference
-            },
+            devicePreference = audioConfig.communicationDevicePreference,
             communicationRouteEnabled = rolloutConfig.duplexCommunicationRouteEnabled,
         ),
     )

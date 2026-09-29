@@ -7,7 +7,11 @@ from pathlib import Path
 from app.llm.context import classify_voice_tool_choice
 from app.llm.tool_loop import create_default_tool_registry
 from app.memory.forget_resolution import forget_description
-from app.memory.tool_tools import build_explicit_memory_save_call, register_memory_tools
+from app.memory.tool_tools import (
+    build_explicit_memory_forget_call,
+    build_explicit_memory_save_call,
+    register_memory_tools,
+)
 from app.routing.models import RouteName
 from app.routing.rules import classify_transcript
 
@@ -43,6 +47,18 @@ def test_forget_description_removes_only_action_framing() -> None:
     assert forget_description("Forget my preference for a purple helicopter.") == (
         "preference for a purple helicopter"
     )
+
+
+def test_forget_call_contains_only_the_server_resolved_uuid() -> None:
+    memory_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+
+    call = build_explicit_memory_forget_call(memory_id, turn_id=turn_id)
+
+    assert call.tool_call_id == f"server-memory-forget-{turn_id}"
+    assert call.name == "memory_forget"
+    assert call.arguments == {"memory_id": str(memory_id)}
+    assert json.loads(call.arguments_json or "{}") == {"memory_id": str(memory_id)}
 
 
 def test_forget_resolver_is_owner_scoped_active_only_and_requires_unique_match() -> None:

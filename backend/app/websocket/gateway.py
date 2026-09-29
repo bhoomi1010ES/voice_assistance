@@ -41,9 +41,13 @@ from app.llm.tool_loop import (
 from app.llm.types import LLMEvent, LLMMessage, LLMRole, LLMToolCall, LLMUsage
 from app.llm.wait_status import classify_wait_status
 from app.memory.context import assemble_context, assemble_evidence_context
+from app.memory.forget_resolution import resolve_forget_target
 from app.memory.providers import MemoryProviderError
 from app.memory.repository import MemoryRepository
-from app.memory.tool_tools import build_explicit_memory_save_call
+from app.memory.tool_tools import (
+    build_explicit_memory_forget_call,
+    build_explicit_memory_save_call,
+)
 from app.models import ConversationTurn, User, VoiceSession
 from app.routing.formatters import format_structured_read_answer
 from app.routing.models import RouteName, RouterMode, RouterRuntimeContext
@@ -1309,6 +1313,12 @@ class VoiceGateway:
             ):
                 await self._close_stt_turn()
             if stt_error is not None:
+                self._log_router_shadow_skip(
+                    session_id=self._active_session_id(),
+                    turn_id=counters.turn_id,
+                    response_id=counters.response_id,
+                    reason="stt_error",
+                )
                 await self._persist_conversation_log(
                     counters.turn_id,
                     status="failed",
@@ -1349,6 +1359,12 @@ class VoiceGateway:
                     )
                 if confirmation_result is not None:
                     llm_result = confirmation_result
+                    self._log_router_shadow_skip(
+                        session_id=self._active_session_id(),
+                        turn_id=counters.turn_id,
+                        response_id=counters.response_id,
+                        reason="pre_router_confirmation_resolution",
+                    )
                 elif self.llm_service.enabled or RouterMode(self.settings.router_mode) in {
                     RouterMode.CANARY,
                     RouterMode.ON,
@@ -1374,6 +1390,12 @@ class VoiceGateway:
                             ),
                         )
                 if llm_result["status"] == "cancelled":
+                    self._log_router_shadow_skip(
+                        session_id=self._active_session_id(),
+                        turn_id=counters.turn_id,
+                        response_id=counters.response_id,
+                        reason="legacy_turn_cancelled",
+                    )
                     await self._persist_conversation_log(
                         counters.turn_id,
                         status="cancelled",
@@ -2612,17 +2634,12 @@ class VoiceGateway:
             and route_result.decision.action_domain is not None
             and route_result.decision.action_domain.value == "memory_forget"
         ):
-            # memory_forget currently accepts only a saved-memory UUID. Do not
-            # ask an LLM to invent that ID or re-enable retrieval for a write.
-            text = "I can't safely identify which saved memory to forget from that request."
-            await self._emit_routed_final_text(
+            return await self._dispatch_memory_forget_route(
                 session_id=session_id,
                 turn_id=turn_id,
                 response_id=response_id,
-                text=text,
-                route=RouteName.MEMORY_ACTION,
+                transcript=transcript,
             )
-            return {"status": "completed", "executed_tool_names": []}
 
         if decision.route not in {RouteName.DIRECT_TOOL, RouteName.STRUCTURED_READ}:
             return {"status": "continue_without_memory_retrieval"}
@@ -2775,6 +2792,128 @@ class VoiceGateway:
             "error": result.error_code,
         }
 
+    async def _dispatch_memory_forget_route(
+        self,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        transcript: str,
+    ) -> dict[str, Any]:
+        """Resolve one owned memory and submit it to the existing confirmation path."""
+
+        async def finish(text: str) -> dict[str, Any]:
+            await self._emit_routed_final_text(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+                route=RouteName.MEMORY_ACTION,
+            )
+            return {
+                "status": "completed",
+                "executed_tool_names": [],
+                "memory_route_allowed": False,
+                "direct_route": RouteName.MEMORY_ACTION.value,
+            }
+
+        if not self.cancel_guard.can_emit(response_id):
+            return {"status": "cancelled"}
+        if not self.settings.memory_write_enabled:
+            return await finish("Saved memory changes are turned off.")
+
+        try:
+            memory_enabled = await self._memory_user_enabled()
+            memory_excluded = await self._memory_excluded_for_session()
+        except Exception:  # noqa: BLE001 - memory action policy failures fail closed
+            return await finish("I couldn't check which saved memory to forget right now.")
+        if not memory_enabled:
+            return await finish("Saved memory is turned off for this account.")
+        if memory_excluded:
+            return await finish("I can't change saved memories in this session right now.")
+        if not self.cancel_guard.can_emit(response_id):
+            return {"status": "cancelled"}
+
+        try:
+            resolution = await resolve_forget_target(
+                self.db,
+                user_id=self.principal.user_id,
+                transcript=transcript,
+            )
+        except SQLAlchemyError:
+            return await finish("I couldn't check which saved memory to forget right now.")
+        if not self.cancel_guard.can_emit(response_id):
+            return {"status": "cancelled"}
+        if resolution.status == "ambiguous":
+            return await finish(
+                "I found multiple matching saved memories. Please say exactly which fact "
+                "you want me to forget."
+            )
+        if resolution.status != "unique" or len(resolution.memory_ids) != 1:
+            return await finish(
+                "I can't safely identify which saved memory to forget from that request."
+            )
+
+        call = build_explicit_memory_forget_call(resolution.memory_ids[0], turn_id=turn_id)
+        tool = self.tool_registry.get(call.name)
+        if tool is None or tool.read_only or not tool.requires_confirmation:
+            return await finish("I couldn't prepare that saved-memory change safely.")
+
+        effective_timezone, timezone_source = timezone_for_request(
+            transcript,
+            device_timezone=self._user_timezone(),
+        )
+        self._active_timezone_source = timezone_source
+        self._active_timezone = effective_timezone
+        context = ToolExecutionContext(
+            user_id=self.principal.user_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            scopes=frozenset({"memory:write"}),
+            db=self.db,
+            clock=self._trusted_user_clock(),
+            user_timezone=effective_timezone,
+            timezone_source=timezone_source,
+            device_time_context=self._time_context_for_timezone(effective_timezone),
+            source_transcript=transcript,
+            cancellation_check=lambda: not self.cancel_guard.can_emit(response_id),
+            authorization_check=self._tool_authorized_now,
+            confirmation_requested=self._persist_confirmation_request,
+            tool_execution_audit=self._record_tool_execution_audit,
+            memory_settings=self.settings,
+        )
+        await self._send_tool_status(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            tool_call_id=call.tool_call_id,
+            tool_name=call.name,
+            status="understanding",
+        )
+        result = await self.tool_loop.executor.execute(call, context=context)
+        if not self.cancel_guard.can_emit(response_id):
+            return {"status": "cancelled"}
+        if result.error_code == "llm_tool_confirmation_required":
+            return {
+                "status": "confirmation_required",
+                "proposed_tool_names": [call.name],
+                "executed_tool_names": [],
+                "memory_route_allowed": False,
+                "direct_route": RouteName.MEMORY_ACTION.value,
+            }
+
+        await self._send_tool_status(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            tool_call_id=call.tool_call_id,
+            tool_name=call.name,
+            status="failed",
+            error_code=result.error_code,
+        )
+        return await finish("I couldn't prepare that saved-memory change safely.")
+
     async def _emit_routed_final_text(
         self,
         *,
@@ -2899,6 +3038,41 @@ class VoiceGateway:
         )
         self._router_shadow_tasks.add(task)
         task.add_done_callback(self._router_shadow_tasks.discard)
+
+    def _log_router_shadow_skip(
+        self,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        reason: str,
+    ) -> None:
+        """Record a safe reason when an authoritative gateway path preempts shadow."""
+
+        if RouterMode(self.settings.router_mode) != RouterMode.SHADOW:
+            return
+        LOGGER.info(
+            "Router shadow observation skipped",
+            extra={
+                "event": "router.shadow.observation",
+                "session_id": str(session_id),
+                "turn_id": str(turn_id),
+                "response_id": str(response_id),
+                "router_status": "skipped",
+                "shadow_route": None,
+                "confidence": None,
+                "target_tool": None,
+                "action_domain": None,
+                "decision_source": None,
+                "legacy_route": None,
+                "needs_clarification": None,
+                "disagreement": None,
+                "disagreement_category": None,
+                "fallback_reason": reason,
+                "skip_reason": reason,
+                "latency_ms": 0.0,
+            },
+        )
 
     async def _observe_router_shadow(
         self,
@@ -3157,6 +3331,8 @@ class VoiceGateway:
 
         tool_label = pending.tool_name.replace("_", " ")
         arguments = pending.validated_tool_arguments
+        if pending.tool_name == "memory_forget":
+            return "I can forget that saved memory. Say yes to approve, or no to reject."
         title = str(arguments.get("title", "")).strip()
         details: list[str] = []
         if title:

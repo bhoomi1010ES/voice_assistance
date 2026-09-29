@@ -1,6 +1,6 @@
 ﻿# LangGraph decision-router integration plan
 
-**Status:** Phase 1 foundation and guarded Phase 3 shadow observation are implemented; shadow remains off and no routing behavior has been cut over.
+**Status:** Phase 0 is **PASS (Manual Owner Override)** for project progression (`automated_gate_passed=false`, `manual_verification_passed=true`, `owner_override=true`, `effective_gate_status=pass`). Phases 1, 2, 4, 5, 6, and 7 passed their implementation gates. Phase 3 remains **NOT PASSED**: device TTS is now physically audible and the muted-playback lifecycle fix is installed, but route disagreements, cold latency, and physical safety/category cases remain open. Router rollout remains unauthorized; repository configuration is `off`/`0`.
 **Plan reconciliation:** 2026-09-24 against `docs/pre_langgraph_architecture_audit.md` and the review comments supplied with this plan. The recorded repository snapshot below is audit-time evidence; re-check HEAD, working tree, configuration, tests, and service health immediately before implementation.
 **Scope:** route a **final STT transcript** to existing backend services. Do not move microphone capture, wake word, VAD, STT streaming, WebSocket ownership, TTS playback, or barge-in into LangGraph. This is an addendum to `implementation.md`, not a replacement for its unfinished acceptance gates.
 
@@ -42,12 +42,15 @@ The graph should return a validated outcome to the gateway. It must not own the 
 - [x] Decide and document the initial flag values, canary cohort, rollback owner, and provisional performance budgets before enabling a new route.
 - [x] Record current project test/build/lint failures and their disposition. The known backend routing failure must be triaged before foundation/shadow work; relevant project-level failures must be fixed or explicitly dispositioned before production canary.
 - [x] Include the known raw-transcript/time-resolution logging privacy issue in the pre-canary disposition; router telemetry itself must not add transcript or personal-memory content.
+- [x] Record the explicit owner manual override with `automated_gate_passed=false`, `manual_verification_passed=true`, `owner_override=true`, and `effective_gate_status=pass`; preserve automated evidence unchanged.
 
 **Progress (2026-09-24 reconciliation):** The safe revision/configuration snapshot and contract inventory are recorded in [`docs/20260923_1739_phase0_router_acceptance_baseline.md`](docs/20260923_1739_phase0_router_acceptance_baseline.md), with source, telemetry, test, and rollout reconciliation appended there. The 75-case corpus is frozen at [`docs/phase0_router_acceptance_corpus_v1.json`](docs/phase0_router_acceptance_corpus_v1.json); source traceability for proposal pages 8-9 and 11-13 is included. Corpus runner report: [`docs/phase2_router_acceptance_v1.md`](docs/phase2_router_acceptance_v1.md), 75/75 pass and 71/71 safety-critical pass. `ROUTER_MODE=off`; gateway dispatch remains unchanged. The latest physical capture on 2026-09-24 recorded five final-STT turns (two general questions, current time, current date, and memory query); four completed and the fifth was incomplete when capture stopped. It observed one each of the legacy time, date, and memory tools, plus embedding/vector/FTS/rerank pipeline events on all five turns. No confirmation or write occurred. The user's account was confirmed disposable, but no write test was performed. The collector flags segmented TTS and barge-in lifecycle records as duplicate/mismatched response events; the mismatched IDs belong to barge-in lifecycle events. Cross-device/backend clock pairing and turn-level speech-to-text/audio latency are therefore not accepted. Model call/token counts and route-tagged retrieval totals are unavailable. The capture artifact and details are recorded in the baseline report. This supplements, and does not supersede, the earlier 20-turn capture attempt, which also did not provide valid route-level metrics. The retained traces cannot support complete paired speech/turn percentiles or per-route call/token/retrieval/write-safety metrics. No fresh physical loudspeaker barge-in run was performed; keep the 2026-09-10 defect report separate. Legacy raw date/time-resolution log content has been removed; router telemetry emits no transcript or memory content. Prior full backend suite passed (456 passed, 56 skipped); targeted Ruff and `git diff --check` passed. A provisional inactive 5% stable-user-hash cohort and engineering guardrails are documented, but latency limits are not validated against a paired baseline; rollback ownership is assigned to Bhoomi with the backend lead/designated developer as backup. **Phase 0 gate: NOT PASSED** because valid route-labeled paired metrics and model/token counts are unavailable, write safety was not exercised, and budgets cannot be validated against a baseline. Router remains off.
 
 **Phase 0 follow-up (2026-09-24):** Collector/analyzer and physical-harness corrections plus their offline coverage are recorded in [`docs/20260924_1643_phase0_collector_and_live_readiness.md`](docs/20260924_1643_phase0_collector_and_live_readiness.md). This closes the collector implementation/test disposition, but no new physical turn was accepted: host ADB currently exits with `Cannot mkdir '\.android': Permission denied`, so phone, WebSocket, heartbeat, and microphone readiness could not be reverified. `/health` and `/ready` returned `ok`/`ready`; resolved router values remained `off`/`0`. The Phase 0 measurement checkbox remains open, and **Phase 0 remains NOT PASSED** pending a valid physical run and verified write/cleanup, route metrics, and baseline percentiles.
 
 **Connected-phone retry (2026-09-24):** ADB access was recovered for the requested run. Device `9b0ea196` (`CPH2527`) is online; the voice app was opened, microphone permission is granted, and USB reverse mappings for ports 8000 and 8081 are present. `/health` is `ok`; `/ready` is `ready` for PostgreSQL, Redis, LLM, embedding, and reranker, but the running service omits `dependencies.tts`. The physical driver stopped before speech or writes, so this attempt contributes no turns or baseline metrics. Evidence: [`docs/20260924_1820_connected_phone_phase0_phase0_automated_physical_baseline.md`](docs/20260924_1820_connected_phone_phase0_phase0_automated_physical_baseline.md). Router remains `off`/`0`; Phase 0 and dependent Phase 3 remain NOT PASSED.
+
+**Owner manual override (2026-09-28):** The project owner explicitly accepted the remaining Phase 0 automated-gate risk after manual physical-device verification. The machine-readable state is [`phase_gate_overrides.json`](phase_gate_overrides.json), evaluated by [`backend/app/core/phase_gate_status.py`](backend/app/core/phase_gate_status.py). Automated evidence remains unchanged and `automated_phase0_pass` remains `false`; the effective dependency is `automated_phase0_pass || owner_override` with `manual_verification_passed=true`. Phase 0 is therefore **PASS (Manual Owner Override)** for project progression. Phase 3 is unblocked and remains **NOT PASSED** until its fresh live shadow sample, disagreement review, and no-side-effect evidence are complete. See [`docs/20260928_120434_phase0_owner_manual_override.md`](docs/20260928_120434_phase0_owner_manual_override.md).
 
 **Server restart and device retry (2026-09-25):** Redis restarted and verified healthy (`PONG`, Redis 7.4.11); Metro restarted with a reset cache and `/status` returned 200; Uvicorn restarted and `/health`/`/ready` returned `ok`/`ready`, including TTS and memory providers. The PostgreSQL Windows service could not be restarted because Windows denied service control; PostgreSQL stayed running and the backend verified its connection. The app was relaunched after USB reverse mappings were restored, and Metro bundled the app successfully, so no reinstall was needed. The physical harness then stopped before prompts because the phone was awake but non-interactive and no voice controls were visible; no turns or writes occurred. Evidence: [`docs/20260925_1025_post_restart_phase0_phase0_automated_physical_baseline.md`](docs/20260925_1025_post_restart_phase0_phase0_automated_physical_baseline.md). Phase 0 remains NOT PASSED; unlock the phone and ensure the assistant screen is visible before retrying. Router stayed `off`/`0`.
 
@@ -76,7 +79,7 @@ The graph should return a validated outcome to the gateway. It must not own the 
 
 **Phase 2 implementation note (2026-09-24):** [`docs/20260924_1017_safe_router_rules.md`](docs/20260924_1017_safe_router_rules.md) and [`docs/20260924_1108_phase0_phase2_acceptance.md`](docs/20260924_1108_phase0_phase2_acceptance.md). The gateway's existing confirmation resolver remains authoritative; route preflight is not called by the gateway. The frozen 75-case corpus passes 75/75, including all 71 safety-critical cases; its deterministic harness made no model, retrieval, tool, database, or TTS calls and attempted no writes. Full backend suite: 456 passed, 56 skipped; relevant Ruff and `git diff --check` pass. The informational-task precedence regression and current date/time priority are fixed. Router remains `off`.
 
-**Gate: PASS for Phase 2 deterministic rules and preflight contract only.** This does not pass Phase 0 measurement/ownership gates or authorize shadow, canary, gateway dispatch, or cutover.
+**Gate: PASS for Phase 2 deterministic rules and preflight contract.** The automated Phase 0 measurement record remains false, but the owner override satisfies the Phase 0 project dependency. This does not authorize canary, gateway dispatch, or cutover.
 
 **Phase 0 corpus amendment (2026-09-25):** The acceptance corpus is version `1.1.0` with 85 cases (81 safety-critical), including ten `prompt_injection_stt` cases. The deterministic router returns clarification for the nine authority/bypass/mixed-action injections and keeps the informational “What does the memory_forget tool do?” case on `GENERAL_LLM`. Latest offline acceptance: 85/85, 81/81 safety-critical, zero injected executable routes, zero injected targets/domains, zero confirmation resolutions, and zero writes. See [`docs/20260925_1756_phase0_prompt_injection_corpus_amendment.md`](docs/20260925_1756_phase0_prompt_injection_corpus_amendment.md) and regenerated [`docs/phase2_router_acceptance_v1.md`](docs/phase2_router_acceptance_v1.md). This closes the offline corpus gap only; **Phase 0 remains NOT PASSED** pending its physical baseline and paired before-change metrics. `ROUTER_MODE=off`; cohort remains `0`.
 
@@ -90,7 +93,76 @@ The graph should return a validated outcome to the gateway. It must not own the 
 
 **Implementation progress (2026-09-24):** The gateway now schedules a pure shadow observation after the existing pending-confirmation check and legacy response path, for the stable configured cohort only. Shadow does not send WebSocket/TTS events, execute tools, call a model, or repeat memory retrieval. Memory-query observations are skipped when retrieval is disabled or the user/session policy opts out; a shared semaphore caps concurrent graph runs and the existing 250 ms timeout bounds them. Structured `router.shadow.observation` logs include route/target/source, confidence, status/fallback, measured latency, legacy route, disagreement/category, and session/turn/response IDs without transcript or memory content. Current local settings remain `ROUTER_MODE=off` and `ROUTER_COHORT_PERCENT=0`. Phase 0 is still NOT PASSED, so no live shadow turns were sampled and disagreement review remains pending. Focused router/gateway/confirmation tests: 128 passed, 10 skipped; frozen corpus: 75/75; Ruff and `git diff --check` pass. See [`docs/20260924_1229_phase3_safe_shadow_observation.md`](docs/20260924_1229_phase3_safe_shadow_observation.md).
 
-**Gate status: NOT PASSED.** Implementation is guarded and ready for a separately authorized shadow run after Phase 0 acceptance. Live sampled-turn execution, category-level disagreement review, and no-side-effect evidence are still outstanding.
+**Gate status: NOT PASSED; dependency unblocked.** The Phase 0 owner override permits the separately authorized shadow run. Live sampled-turn execution, category-level disagreement review, and no-side-effect evidence are still outstanding. Use [`docs/20260928_120434_phase3_live_shadow_owner_override_plan.md`](docs/20260928_120434_phase3_live_shadow_owner_override_plan.md) for the fresh run.
+
+**Shadow enablement and review (2026-09-28):** The local disposable test
+environment was briefly configured with `ROUTER_MODE=shadow` and
+`ROUTER_COHORT_PERCENT=100`, then restored to `off`/`0` because no live sample
+was available for disagreement review. The existing 250 ms timeout and
+four-turn concurrency bound remain in force. `/health` and `/ready` are
+healthy, and the legacy gateway response/TTS/tool path remains authoritative.
+Production stays at `off`/`0`; no canary or `on` mode is enabled. The
+enablement record is
+[`docs/20260928_1214_phase3_shadow_enablement.md`](docs/20260928_1214_phase3_shadow_enablement.md).
+The review record is [`docs/20260928_122440_phase3_disagreement_review.md`](docs/20260928_122440_phase3_disagreement_review.md).
+
+**Physical TTS follow-up (2026-09-28):** The connected CPH2527 app had a
+debug-only route override forcing playback to the quiet earpiece. The override
+was removed; the updated debug APK installed and Android audio logs show the
+speaker output path. Focused audio tests passed (16 total). The automated
+probe did not complete an STT-to-playback turn, so audible output is not yet
+accepted as Phase 3 sample evidence. The operator later confirmed that a reply
+is audible but too quiet; the active voice-call stream is at volume 2/9, so
+raise the phone's communication volume while the assistant is speaking. The
+temporary local shadow backend was returned to `off`/`0`; `/health` and `/ready`
+are healthy. Phase 3 remains **NOT PASSED** pending audible physical
+comfort confirmation, the fresh labeled shadow sample, disagreement review,
+and no-side-effect verification. See
+[`docs/20260928_1336_phase3_tts_route_fix_physical_check.md`](docs/20260928_1336_phase3_tts_route_fix_physical_check.md).
+
+**Phase 3 live sample and confirmation-listening follow-up (2026-09-28): NOT
+PASSED.** The connected CPH2527 produced 16 valid completed physical turns
+across the fresh shadow runs (4 turns were excluded for transcript mismatch,
+re-entry failure, or incomplete playback lifecycle). The backend emitted 19
+decided and 1 skipped privacy-safe shadow observations. Two disagreements need
+disposition: `STRUCTURED_READ -> MIXED_AMBIGUOUS` is a safe over-clarification;
+`MEMORY_QUERY -> GENERAL_LLM` remains unresolved because it can miss a personal
+fact. The observed shadow latency p95 is 1413 ms (warm observations were about
+6–10 ms), exceeding the configured 250 ms deadline on the cold first decision.
+The confirmation UI also had no way to re-arm the microphone after an action
+proposal; a safe “Start listening” microphone-only fallback now has focused UI,
+type, and Android debug-build coverage. A physical reminder-cancellation turn
+was not completed: STT similarity was 0.883, the app remained awaiting voice
+approval without listening, and the phone disappeared from ADB before the new
+APK could be installed. That proposal had zero tool calls or writes and expires
+after the configured 120-second confirmation TTL. The TTS voice-call speaker
+volume is now 6/9, but louder-volume comfort was not reconfirmed. Memory-disabled,
+prompt-injection, and multilingual physical cases also remain untested. The
+temporary shadow backend was stopped; the repository remains `off`/`0`, and no
+canary or `on` route was enabled. Full findings and artifacts:
+[`docs/20260928_1533_phase3_confirmation_listen_fallback.md`](docs/20260928_1533_phase3_confirmation_listen_fallback.md).
+
+**Phase 3 reconnect and muted-TTS follow-up (2026-09-28): NOT PASSED.** The
+CPH2527 reconnected, the rebuilt APK was installed, and a fresh spoken clock
+query produced a matching `DIRECT_TOOL` shadow/legacy decision. Its cold shadow
+latency was 1254.616 ms, still over the configured 250 ms limit. Investigation
+of the disabled “Start listening” control found that Android intentionally
+dropped muted TTS frames without emitting a playback-terminal event, leaving
+the turn in `waiting`. The native transport now reports terminal completion
+when it discards a muted response's final frame; its focused Android unit test
+and debug APK build passed, and the APK was installed. A confirmation response
+then entered a follow-up microphone turn while output was muted. During this
+test, a `create_task` proposal received an affirmative voice response and one
+test task was created; the user requested cleanup, and the exact task was
+deleted and verified absent. This does not count as the missing rejection/no-
+write test. Voice output is now enabled, and the user confirmed hearing the
+fresh clock reply. Six additional shadow decisions surfaced further
+disagreements, including `TASK_ACTION` vs `STRUCTURED_READ` and `TASK_ACTION`
+vs `GENERAL_LLM`. Memory-disabled, prompt-injection, multilingual, and physical
+spoken-rejection cases remain outstanding; the existing memory-query
+disagreement also remains unresolved. The temporary shadow backend was stopped;
+`.env` remains `ROUTER_MODE=off`, `ROUTER_COHORT_PERCENT=0`. See
+[`docs/20260928_1621_phase3_muted_tts_completion.md`](docs/20260928_1621_phase3_muted_tts_completion.md).
 
 ### 4. Cut over direct utilities and existing confirmation
 
@@ -104,7 +176,7 @@ The graph should return a validated outcome to the gateway. It must not own the 
 
 **Phase 4 implementation note (2026-09-24):** [`docs/20260924_2147_phase4_direct_clock_routes.md`](docs/20260924_2147_phase4_direct_clock_routes.md). Canary/on clock routes execute the graph decision before any memory retrieval, then invoke the registered read-only tool through `ToolExecutor` with authenticated turn context and audit. Existing pending confirmation resolution remains ahead of this path. A direct tool failure returns a bounded error without model fallback. Current local setting remains `ROUTER_MODE=off`; no live cutover was enabled. Focused tests: 161 passed; frozen route corpus: 75/75; Ruff and format checks passed. Phase 0 remains NOT PASSED.
 
-**Gate status: PASS for Phase 4 implementation checks.** This does not pass Phase 0 or authorize canary/on rollout.
+**Gate status: PASS for Phase 4 implementation checks.** Phase 0 is effective by owner override; canary/on rollout still requires Phase 3 and Phase 9 acceptance.
 
 ### 5. Add authoritative structured reads
 
@@ -115,7 +187,7 @@ The graph should return a validated outcome to the gateway. It must not own the 
 
 **Gate:** structured-read examples answer from authoritative rows with no RAG/main LLM; no cross-user data is returned.
 
-**Phase 5 implementation note (2026-09-24):** [`docs/20260924_2208_phase5_structured_reads.md`](docs/20260924_2208_phase5_structured_reads.md). Structured reads use the registered owner-scoped task/reminder tools through the gateway and ToolExecutor; direct responses bypass RAG/main LLM. Focused tests: 117 passed; Ruff passed; frozen router corpus: 75/75, zero critical failures; `git diff --check` passed. Router default remains `off`. **Phase 5 implementation gate: PASS; Phase 0 remains NOT PASSED**, so no rollout is authorized.
+**Phase 5 implementation note (2026-09-24):** [`docs/20260924_2208_phase5_structured_reads.md`](docs/20260924_2208_phase5_structured_reads.md). Structured reads use the registered owner-scoped task/reminder tools through the gateway and ToolExecutor; direct responses bypass RAG/main LLM. Focused tests: 117 passed; Ruff passed; frozen router corpus: 75/75, zero critical failures; `git diff --check` passed. Router default remains `off`. **Phase 5 implementation gate: PASS; Phase 0 dependency is satisfied by owner override**, so no rollout is authorized until Phase 3 and Phase 9 pass.
 
 ### 6. Route memory selectively, then evaluate evidence
 
@@ -127,45 +199,49 @@ The graph should return a validated outcome to the gateway. It must not own the 
 
 **Gate:** missing personal facts never fall through to a guessing general LLM; direct answers have verifiable evidence; disabled/failed retrieval is not misreported as ?you have no memory.?
 
-**Phase 6 implementation note (2026-09-24):** [`docs/20260924_2239_phase6_memory_routing_evidence.md`](docs/20260924_2239_phase6_memory_routing_evidence.md). Focused verification: 179 passed, 4 skipped; Ruff passed; the 11-case memory decision corpus passed; the 75-case router corpus passed with zero critical failures. Router default remains `off`; no rollout enabled. **Phase 6 implementation checks: PASS; Phase 0 remains NOT PASSED**, so no canary/on rollout is authorized.
+**Phase 6 implementation note (2026-09-24):** [`docs/20260924_2239_phase6_memory_routing_evidence.md`](docs/20260924_2239_phase6_memory_routing_evidence.md). Focused verification: 179 passed, 4 skipped; Ruff passed; the 11-case memory decision corpus passed; the 75-case router corpus passed with zero critical failures. Router default remains `off`; no rollout enabled. **Phase 6 implementation checks: PASS; Phase 0 dependency is satisfied by owner override**, so no canary/on rollout is authorized until Phase 3 and Phase 9 pass.
 
 ### 7. Make general LLM and action paths selective
 
 - [x] Ensure `GENERAL_LLM` skips memory embedding, FTS, vector search, RRF, reranker, and graph retrieval while retaining conversation history and the existing provider adapter. Personalized questions must not be mislabeled general.
 - [x] Ensure `TASK_ACTION` skips RAG by default; initially reuse the existing action extraction/proposal path and `ToolExecutor` confirmation, authorization, audit, transaction, and idempotency boundaries. Add a separate validated extractor only if it improves measured latency without weakening safety.
-- [ ] Route `MEMORY_ACTION` to the existing `memory_save`/`memory_forget` proposal and confirmation path; preserve scopes, user opt-out/exclusion, audit, and idempotency. Do not run RAG for the action itself, and do not create a second memory-write mechanism. Until this route is implemented, explicitly preserve and regression-test the existing memory-save bypass.
+- [x] Route `MEMORY_ACTION` to the existing `memory_save`/`memory_forget` proposal and confirmation path; preserve scopes, user opt-out/exclusion, audit, and idempotency. Do not run RAG for the action itself, and do not create a second memory-write mechanism. Until this route is implemented, explicitly preserve and regression-test the existing memory-save bypass.
 - [x] Decide the meaning of â€œRemind me â€¦â€ before action cutover: `create_reminder`, `create_task`, or another explicitly documented behavior. Add the decision and examples to the acceptance corpus. Do not claim notification delivery unless the configured push provider is available and that delivery path is verified.
 - [x] Before every routed write, re-check cancellation and authorization as close as possible to the mutation/transaction commit, then rely on idempotency for retries. Prove cancellation racing with execution and commit; cancellation after a committed transaction cannot undo that write. Preserve the existing confirmation as a prerequisite.
-- [ ] Never treat route confidence as permission. Route fallback is forbidden after an action is claimed/executed; preserve exactly-once behavior on retry, disconnect, and resume.
+- [x] Never treat route confidence as permission. Route fallback is forbidden after an action is claimed/executed; preserve exactly-once behavior on retry, disconnect, and resume.
 - [x] Test provider-specific adapter behavior with the OpenAI Responses adapter and the configured NVIDIA adapter before claiming provider-neutral release readiness.
 
 **Gate:** general questions and task/reminder actions issue zero RAG calls by default; memory actions use the existing proposal/confirmation path without retrieval; no task/reminder/memory mutation occurs before approval or more than once; cancelled work cannot commit a not-yet-committed mutation.
 
-**Phase 7 implementation note (updated 2026-09-24):** Selective no-RAG routing for general/task/action turns and the cancellation/authorization-before-commit guard remain covered by tests. The reminder decision is `create_task` with confirmation; no notification-delivery claim is made. `MEMORY_ACTION` save continues to use the existing explicit proposal path. A strict, bounded owner-scoped active-memory lookup primitive was added, with tests for unique, ambiguous, inactive, and foreign rows. It is not yet connected to a forget proposal or confirmation execution path, and no end-to-end action-owned retry/disconnect/resume acceptance exists. **Phase 7 remains NOT PASSED.** Router rollout remains off. Details: [Phase 7 selective action implementation](docs/20260924_2256_phase7_selective_actions.md) and [Phase 7/8 follow-up acceptance report](docs/20260924_1723_phase7_phase8_followup.md).
+**Historical Phase 7 gap note (2026-09-24):** Selective no-RAG routing for general/task/action turns and the cancellation/authorization-before-commit guard were covered by tests. The reminder decision was `create_task` with confirmation; no notification-delivery claim was made. `MEMORY_ACTION` save used the existing explicit proposal path. A strict, bounded owner-scoped active-memory lookup primitive existed, with tests for unique, ambiguous, inactive, and foreign rows, but it was not connected to a forget proposal or confirmation execution path. Phase 7 was therefore not passed at this snapshot. Details: [Phase 7 selective action implementation](docs/20260924_2256_phase7_selective_actions.md) and [Phase 7/8 follow-up acceptance report](docs/20260924_1723_phase7_phase8_followup.md).
 
-### 8. Add a small semantic classifier only if needed
+**Phase 7 completion note (2026-09-28):** The gateway now resolves explicit `memory_forget` actions through the bounded owner-scoped active-memory resolver. A unique match produces a server-owned UUID-only `memory_forget` call and submits it through the existing ToolExecutor and Redis confirmation authority; ambiguous, missing, inactive, foreign, write-disabled, account-disabled, session-excluded, and lookup-failure outcomes terminate without RAG, main-LLM fallback, proposal, or mutation. The confirmed path reuses authorization, cancellation-before-commit, audit, idempotency, reconnect, and replay protection. `memory_save` remains on its existing explicit proposal path. Focused Phase 7/router/memory verification passed (222 tests); the full backend suite passed (589 passed, 56 skipped); the router corpus passed 85/85 with zero writes; the refreshed classifier assessment passed 76/76 with zero false executable routes; touched Ruff and format checks passed. Router mode remains `off` with cohort `0`. Details: [Phase 7 memory-forget wiring](docs/20260928_103011_phase7_memory_forget_wiring.md).
+
+**Gate status: PASS for Phase 7 implementation and action-safety checks.** Phase 0 is effective by owner override. Phase 3 remains pending, and canary/on rollout is not authorized.
+
+### 8. Semantic classifier — NOT TRIGGERED / deferred; closed for initial router release
 
 - [x] Measure deterministic-rule coverage and tool-selector disagreement on the frozen corpus before deciding whether a semantic classifier is needed.
 - [ ] Add a separately configured classifier only if the measured safe-accuracy gap justifies it; bound input, tokens, deadline, and cost, and exclude obvious direct/pending-confirmation requests.
 - [ ] Parse and Pydantic-validate the classifier's proposed route independently of provider-native structured-output support; allow-list targets and fall back safely on malformed, timed-out, or low-confidence output.
 - [ ] Benchmark classification accuracy and incremental latency against the frozen corpus and the current provider/model, including adversarial prompt-injection text from STT.
 
-**Phase 8 decision (updated 2026-09-24): NOT TRIGGERED / deferred.** The reproducible assessment now includes the original 57 ordinary classification cases plus 10 Phase 7 action/information cases: 67/67 expected route/target/clarification matches, 20 ambiguous abstentions, and zero false executable deterministic routes. The offline named-tool selector chooses a tool on 28 cases, with 13 false executable disagreements: 12 where deterministic rules abstain as `MIXED_AMBIGUOUS`, plus one task-list selection for an informational joke request. The remaining 39 `auto` choices are unresolved. This is an offline selector proxy, not live legacy-vs-shadow evidence. No meaningful deterministic safe-accuracy gap justifies a semantic classifier. Re-evaluate only if valid shadow evidence or new labeled cases show a persistent deterministic gap. Details and command: [Phase 8 classifier assessment](docs/20260924_2310_phase8_classifier_assessment.md).
+**Phase 8 decision (re-measured 2026-09-28): NOT TRIGGERED / deferred; CLOSED for the initial router release.** The post-Phase-7 reproducible assessment contains 76 classification cases: 76/76 expected route/target/clarification matches, 28 ambiguous abstentions, and zero false executable deterministic routes. The offline named-tool selector chooses a tool on 30 cases, with 15 route disagreements; the remaining 46 `auto` choices are unresolved. Those are offline selector comparisons, not live legacy-vs-shadow evidence and not false executable deterministic routes. The assessment made zero model calls, retrieval calls, or writes, and no live classifier was added. No measured deterministic-accuracy gap justifies a semantic classifier. Keep Step 8 closed for the initial router release; reconsider only if valid shadow evidence or new labeled cases establish a persistent gap. Details and command: [Phase 8 classifier assessment](docs/20260924_2310_phase8_classifier_assessment.md) and [Phase 7 memory-forget wiring](docs/20260928_103011_phase7_memory_forget_wiring.md).
 
-**Gate:** deferred/not applicable while no classifier is warranted; if later triggered, a classifier must improve ambiguous-route accuracy within an agreed latency/cost budget and cannot authorize tools.
+**Gate:** closed/deferred while no classifier is warranted. If later triggered, require a separate flag, bounded input/tokens/deadline, skipping obvious clock and pending Yes/No turns, independent Pydantic validation, allow-listed targets, fail-closed behavior, frozen-corpus/provider/adversarial-STT benchmarking, and an explicit guarantee that classifier output can never authorize a write.
 
 ### 9. Roll out, measure, and keep rollback simple
 
 - [ ] Enable canary by stable authenticated cohort, then widen only after reviewing route disagreement, model/retrieval call counts, P50/P95 latency, STT-to-first-audio, response cancellation, stale TTS frames, and writes.
 - [ ] Review per-route router/main-model calls and token totals, embedding/reranker calls, retrieval calls, latency, and cost where provider pricing is verified. Do not infer cost from incomplete historical token aggregates.
 - [ ] Require 100% pass on critical intent distinctions, zero unconfirmed/duplicate writes, zero cross-user leakage, grounded memory no-result behavior, and no WebSocket/TTS protocol regression. Set numeric non-safety latency targets from Step 0 before canary; deterministic routing should not add a network round trip.
-- [x] Before production canary, fix or explicitly disposition the audit's known backend routing failure and relevant frontend/backend lint/type/format failures; close the transcript/time-resolution logging privacy issue or document an approved mitigation. Follow-up check: the known backend test failure is now covered by the passing backend suite; backend Ruff lint passes; outstanding whole-backend formatting and frontend type/lint/format failures are itemized as release blockers in [Phase 9 rollout readiness](docs/20260924_1740_phase9_rollout_readiness.md). Removed raw STT text/language/provider metrics from the routine transcript-delivery log and added a regression test. This disposition does not authorize canary.
+- [x] Before production canary, fix or explicitly disposition the audit's known backend routing failure and relevant frontend/backend lint/type/format failures; close the transcript/time-resolution logging privacy issue or document an approved mitigation. Follow-up check: the known backend test failure is now covered by the passing backend suite; backend Ruff lint passes; outstanding whole-backend formatting and frontend type/lint/format failures are itemized as release blockers in [Phase 9 rollout readiness](docs/20260924_1738_phase9_rollout_readiness.md). Removed raw STT text/language/provider metrics from the routine transcript-delivery log and added a regression test. This disposition does not authorize canary.
 - [ ] Verify both `off` rollback and an in-flight canary revert without changing persisted task/reminder/confirmation ownership. Document degraded dependency behavior and on-call diagnostics.
 - [ ] Run a physical voice regression on the same device after the router cutover, but track the existing loudspeaker barge-in failure as a separate baseline defect; do not attribute or â€œpassâ€ it based on graph-only tests.
 
 **Gate:** canary acceptance report and rollback drill pass before `on` becomes the default.
 
-**Phase 9 readiness update (2026-09-24): NOT PASSED; no canary was enabled.** Router remains `off` with cohort `0`. Phase 0 lacks valid route-labeled paired baseline/model-token metrics and Phase 7 remains NOT PASSED. The current project check results and rollback runbook are recorded in [Phase 9 rollout readiness](docs/20260924_1738_phase9_rollout_readiness.md). Privacy disposition is complete: routine final-transcript logs now contain IDs/timing only, with a regression test. The 5% stable-user cohort and latency targets remain provisional. The off-mode unit path is tested; an in-flight deployment rollback and physical post-cutover run were not performed.
+**Phase 9 readiness update (2026-09-28): NOT PASSED; no canary was enabled.** Router remains `off` with cohort `0`. Phase 0 is effective by owner override while its automated gate remains false; Phase 3 live shadow acceptance remains outstanding. The current project check results and rollback runbook are recorded in [Phase 9 rollout readiness](docs/20260924_1738_phase9_rollout_readiness.md). Privacy disposition is complete: routine final-transcript logs now contain IDs/timing only, with a regression test. The 5% stable-user cohort and latency targets remain provisional. The off-mode unit path is tested; an in-flight deployment rollback and physical post-cutover run were not performed.
 
 ### 10. Optional later phase: native LangGraph confirmation state
 
@@ -176,7 +252,7 @@ The graph should return a validated outcome to the gateway. It must not own the 
 
 **Gate:** an explicit migration design and separate acceptance report; this phase is **not required** for the initial router release.
 
-**Phase 10 pre-migration assessment (2026-09-24): DEFERRED.** Steps 0–9 are not stable: Phase 0 is NOT PASSED, Phase 7 is NOT PASSED, and Phase 9 rollout is NOT PASSED. The existing Redis confirmation store remains the sole pending-approval authority. No graph checkpointer, second confirmation path, or native `interrupt()` flow was added. A preliminary design/readiness assessment is recorded in [Phase 10 native confirmation assessment](docs/20260924_1742_phase10_native_confirmation_assessment.md); its migration choices and acceptance work remain gated on Steps 0–9 passing.
+**Phase 10 pre-migration assessment (updated 2026-09-28): DEFERRED.** Steps 0–9 are not stable: Phase 3 and Phase 9 rollout are NOT PASSED. Phase 0 is effective by explicit owner override, while its automated gate remains false. The existing Redis confirmation store remains the sole pending-approval authority. No graph checkpointer, second confirmation path, or native `interrupt()` flow was added. A preliminary design/readiness assessment is recorded in [Phase 10 native confirmation assessment](docs/20260924_1742_phase10_native_confirmation_assessment.md); its migration choices and acceptance work remain gated on Steps 0–9 passing.
 
 ## Proposed implementation touch points
 

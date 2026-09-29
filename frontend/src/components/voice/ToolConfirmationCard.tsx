@@ -3,16 +3,20 @@ import { StyleSheet, Text, View } from 'react-native';
 import { useAppTheme } from '../../design/ThemeProvider';
 import { radii, shadows, spacing, typography } from '../../design/tokens';
 import { strings } from '../../i18n/strings';
-import { AppText, Card } from '../ui/Primitives';
+import { ActionButton, AppText, Card } from '../ui/Primitives';
 import { ConversationToolMessage } from '../../voice/conversation';
 
 export type ToolConfirmationCardProps = {
   pendingConfirmation?: ConversationToolMessage | null;
+  onStartListening: () => void;
+  startListeningDisabled?: boolean;
   testID?: string;
 };
 
 export function ToolConfirmationCard({
   pendingConfirmation,
+  onStartListening,
+  startListeningDisabled = false,
   testID = 'voice-confirmation-status',
 }: ToolConfirmationCardProps) {
   const { colors } = useAppTheme();
@@ -56,6 +60,13 @@ export function ToolConfirmationCard({
         <Text style={[styles.voiceHint, { color: colors.textMuted }]}>
           Say “yes” to confirm or “no” to cancel.
         </Text>
+        <ActionButton
+          disabled={startListeningDisabled}
+          label={strings.assistant.voiceConfirmationStartListening}
+          onPress={onStartListening}
+          testID="voice-confirmation-start-listening"
+          variant="secondary"
+        />
       </View>
     </Card>
   );

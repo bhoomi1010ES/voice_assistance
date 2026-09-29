@@ -4416,6 +4416,16 @@ Detailed evidence: `docs/20260911_184809_phase8_tts_acceptance_pending.md`.
 
 ## LangGraph router rollout addendum — 2026-09-24
 
-The router rollout/canary plan is maintained separately in [`plan.md`](plan.md), Phase 0–9. Current Phase 9 rollout readiness is **NOT PASSED**; router mode remains `off`, with cohort `0%`. Phase 0 paired measurement and Phase 7 action-safety gates are still open. The transcript-content logging issue was closed, while current backend/frontend check failures and the rollback runbook are documented in [`docs/20260924_1738_phase9_rollout_readiness.md`](docs/20260924_1738_phase9_rollout_readiness.md). This addendum does not change the status of the physical barge-in acceptance in this document's Phase 9.
+The router rollout/canary plan is maintained separately in [`plan.md`](plan.md), Phase 0–9. Current Phase 9 rollout readiness is **NOT PASSED**; router mode remains `off`, with cohort `0%`. Phase 7 action safety passed on 2026-09-28, including owner-scoped `memory_forget` resolution through the existing ToolExecutor confirmation path. Phase 0 is **PASS (Manual Owner Override)** for project progression, while its automated gate remains false and its paired measurement evidence remains unchanged. Phase 3 live shadow acceptance is the next pending gate. The transcript-content logging issue was closed, while current backend/frontend check failures and the rollback runbook are documented in [`docs/20260924_1738_phase9_rollout_readiness.md`](docs/20260924_1738_phase9_rollout_readiness.md). Phase 7 evidence is recorded in [`docs/20260928_103011_phase7_memory_forget_wiring.md`](docs/20260928_103011_phase7_memory_forget_wiring.md). This addendum does not change the status of the physical barge-in acceptance in this document's Phase 9.
+
+The owner override and its effective dependency logic are documented in
+[`docs/20260928_120434_phase0_owner_manual_override.md`](docs/20260928_120434_phase0_owner_manual_override.md)
+and implemented by [`backend/app/core/phase_gate_status.py`](backend/app/core/phase_gate_status.py).
+The fresh Phase 3 execution plan is
+[`docs/20260928_120434_phase3_live_shadow_owner_override_plan.md`](docs/20260928_120434_phase3_live_shadow_owner_override_plan.md).
 
 The optional LangGraph confirmation-state phase is deferred until Steps 0–9 are stable. Redis remains the sole pending-confirmation authority; no native graph interruption/checkpointer path was added. The preliminary ownership, migration constraints, and future acceptance criteria are in [`docs/20260924_1742_phase10_native_confirmation_assessment.md`](docs/20260924_1742_phase10_native_confirmation_assessment.md).
+
+## OKF structured knowledge addendum — 2026-09-28
+
+OKF is planned as a separate, user-scoped structured knowledge engine beside the existing Hybrid RAG. The existing memory tables, BGE-M3 embeddings, pgvector/FTS retrieval, RRF, reranker, and GraphRAG subsystem remain unchanged. The default and rollback mode is `rag`; OKF starts disabled and has no subscription or entitlement assumptions. Implementation phases, schema, async synchronization, provenance/versioning, `rag|okf|hybrid` selection, context integration, safety gates, and rollback are defined in [`OKF_IMPLEMENTATION_PLAN.md`](OKF_IMPLEMENTATION_PLAN.md).

@@ -112,8 +112,9 @@ class Settings(BaseSettings):
     llm_max_retry_attempts: int = Field(default=2, ge=0, le=5)
     llm_anthropic_version: str = "2023-06-01"
 
-    # Shadow mode is observational only and remains disabled until Phase 0
-    # acceptance. `off` must preserve legacy behavior.
+    # Shadow mode is observational only and may be enabled after the automated
+    # Phase 0 gate or an explicit owner/manual Phase 0 override. `off` must
+    # preserve legacy behavior.
     router_mode: Literal["off", "shadow", "canary", "on"] = "off"
     router_cohort_percent: int = Field(default=0, ge=0, le=100)
     router_timeout_ms: int = Field(default=250, ge=1, le=10_000)

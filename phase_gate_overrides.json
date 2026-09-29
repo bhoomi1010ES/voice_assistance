@@ -1,0 +1,12 @@
+{
+  "phase0": {
+    "automated_phase0_pass": false,
+    "manual_verification_passed": true,
+    "owner_override": true,
+    "effective_gate_status": "pass",
+    "override_date": "2026-09-28",
+    "owner": "project owner",
+    "reason": "Automated Phase 0 reconciliation did not meet every stored acceptance criterion. The project owner completed manual physical-device verification and explicitly accepted the remaining risk on 2026-09-28. Phase 0 is therefore considered complete for project progression via manual owner override.",
+    "automated_evidence_unchanged": true
+  }
+}

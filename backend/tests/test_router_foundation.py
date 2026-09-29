@@ -41,6 +41,29 @@ def test_router_flags_default_to_safe_off_values() -> None:
     assert settings.router_shadow_max_concurrent == 4
 
 
+def test_shadow_graph_is_warmed_once_only_for_active_shadow(monkeypatch) -> None:
+    from app.routing import graph as routing_graph
+
+    graph = _DecisionEchoGraph()
+    calls = 0
+
+    def build_graph():
+        nonlocal calls
+        calls += 1
+        return graph
+
+    monkeypatch.setattr(routing_graph, "build_router_graph", build_graph)
+    shadow = DecisionRouterService(
+        Settings(_env_file=None, router_mode="shadow", router_cohort_percent=100)
+    )
+    disabled = DecisionRouterService(Settings(_env_file=None, router_mode="off"))
+
+    assert disabled.warm_shadow_graph() is False
+    assert shadow.warm_shadow_graph() is True
+    assert shadow.warm_shadow_graph() is True
+    assert calls == 1
+
+
 @pytest.mark.parametrize(
     ("name", "value", "attribute", "expected"),
     [
@@ -369,15 +392,24 @@ async def test_shadow_observation_rejects_graph_route_mismatch(caplog) -> None:
 
 
 def test_legacy_shadow_comparison_uses_observed_tool_route() -> None:
-    assert VoiceGateway._legacy_route_from_result(
-        {"status": "completed", "executed_tool_names": ["list_reminders"]}
-    ) == RouteName.STRUCTURED_READ
-    assert VoiceGateway._legacy_route_from_result(
-        {"status": "confirmation_required", "proposed_tool_names": ["create_task"]}
-    ) == RouteName.TASK_ACTION
-    assert VoiceGateway._legacy_route_from_result(
-        {"status": "completed", "executed_tool_names": ["get_current_date", "list_tasks"]}
-    ) == RouteName.MIXED_AMBIGUOUS
+    assert (
+        VoiceGateway._legacy_route_from_result(
+            {"status": "completed", "executed_tool_names": ["list_reminders"]}
+        )
+        == RouteName.STRUCTURED_READ
+    )
+    assert (
+        VoiceGateway._legacy_route_from_result(
+            {"status": "confirmation_required", "proposed_tool_names": ["create_task"]}
+        )
+        == RouteName.TASK_ACTION
+    )
+    assert (
+        VoiceGateway._legacy_route_from_result(
+            {"status": "completed", "executed_tool_names": ["get_current_date", "list_tasks"]}
+        )
+        == RouteName.MIXED_AMBIGUOUS
+    )
 
 
 @pytest.mark.asyncio
@@ -416,6 +448,47 @@ async def test_gateway_shadow_observation_emits_no_websocket_events() -> None:
     assert arguments["context"].turn_id == turn_id
     assert arguments["context"].response_id == response_id
     gateway._send.assert_not_awaited()
+
+
+def test_gateway_shadow_skip_is_privacy_safe_and_off_mode_is_silent(caplog) -> None:
+    caplog.set_level(logging.INFO, logger="voice-assistance-backend")
+    gateway = VoiceGateway.__new__(VoiceGateway)
+    gateway.settings = Settings(_env_file=None, router_mode="shadow")
+    session_id, turn_id, response_id = (uuid.uuid4() for _ in range(3))
+
+    gateway._log_router_shadow_skip(
+        session_id=session_id,
+        turn_id=turn_id,
+        response_id=response_id,
+        reason="pre_router_confirmation_resolution",
+    )
+
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "router.shadow.observation"
+    )
+    assert record.router_status == "skipped"
+    assert record.skip_reason == "pre_router_confirmation_resolution"
+    assert record.session_id == str(session_id)
+    assert record.turn_id == str(turn_id)
+    assert record.response_id == str(response_id)
+    assert record.shadow_route is None
+    assert "transcript" not in repr(record.__dict__)
+
+    caplog.clear()
+    gateway.settings = Settings(_env_file=None, router_mode="off")
+    gateway._log_router_shadow_skip(
+        session_id=session_id,
+        turn_id=turn_id,
+        response_id=response_id,
+        reason="pre_router_confirmation_resolution",
+    )
+    assert not [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "router.shadow.observation"
+    ]
 
 
 def test_cohort_selection_is_stable_and_bounded() -> None:

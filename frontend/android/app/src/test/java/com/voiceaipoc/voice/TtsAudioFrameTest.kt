@@ -66,4 +66,24 @@ class TtsAudioFrameTest {
 
         assertNull(TtsAudioFrame.parse(bytes))
     }
+
+    @Test
+    fun mutedOutputCompletesOnlyAtTheEndOfTheMatchingResponse() {
+        val responseId = UUID.randomUUID()
+        val endFrame = frame(responseId, flags = 2)
+        val regularFrame = frame(responseId, flags = 0)
+
+        assertEquals(responseId, mutedTtsPlaybackCompletion(endFrame, voiceOutputEnabled = false))
+        assertNull(mutedTtsPlaybackCompletion(regularFrame, voiceOutputEnabled = false))
+        assertNull(mutedTtsPlaybackCompletion(endFrame, voiceOutputEnabled = true))
+    }
+
+    private fun frame(responseId: UUID, flags: Int): TtsAudioFrame =
+        TtsAudioFrame(
+            flags = flags,
+            sampleRateHz = TtsAudioFrame.TTS_SAMPLE_RATE_HZ,
+            sequence = 0,
+            responseId = responseId,
+            payload = byteArrayOf(),
+        )
 }

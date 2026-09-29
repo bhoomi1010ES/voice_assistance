@@ -471,7 +471,7 @@ def check_device(serial: str, model: str, *, launch_app: bool = True) -> dict[st
     }
 
 
-def check_acoustic_output_route(serial: str) -> str:
+def check_acoustic_output_route(serial: str, *, allow_speaker: bool = False) -> str:
     adb = shutil.which("adb")
     if adb is None:
         raise BaselineAbort("adb is not available while verifying the phone audio route.")
@@ -482,9 +482,12 @@ def check_acoustic_output_route(serial: str) -> str:
         re.IGNORECASE,
     )
     route = match.group(1).casefold() if match else "unknown"
-    if route not in {"earpiece", "wired_headset", "wired_headphones"}:
+    allowed_routes = {"earpiece", "wired_headset", "wired_headphones"}
+    if allow_speaker:
+        allowed_routes.add("speaker")
+    if route not in allowed_routes:
         raise BaselineAbort(
-            "Phone output is not routed through the required earpiece/wired headphones; "
+            "Phone output is not routed through an allowed acoustic output; "
             f"detected {route}. No prompt was spoken."
         )
     return route
@@ -723,7 +726,8 @@ class PhysicalBaseline:
             launch_app=False,
         )
         self.environment["acoustic_output_route"] = check_acoustic_output_route(
-            self.args.device_serial
+            self.args.device_serial,
+            allow_speaker=self.args.allow_speaker_output and self.args.manual_prompts,
         )
         if not check_tcp("127.0.0.1", 8081):
             raise BaselineAbort("Metro is not reachable on local port 8081.")
@@ -1037,6 +1041,28 @@ class PhysicalBaseline:
         self.collect_new()
         return self.records[start:]
 
+    def _turn_playback_finished(self, turn_id: str) -> bool:
+        terminal = next(
+            (
+                record
+                for record in self.records
+                if str(record.get("session_id")) == self.session_id
+                and str(record.get("turn_id")) == turn_id
+                and record.get("event") in {"server.turn.completed", "turn_complete"}
+            ),
+            None,
+        )
+        if terminal is None:
+            return False
+        response_id = str(terminal.get("response_id") or "")
+        return any(
+            str(record.get("session_id")) == self.session_id
+            and str(record.get("turn_id")) == turn_id
+            and record.get("event") in TERMINAL_TTS_EVENTS
+            and (not response_id or str(record.get("response_id") or "") == response_id)
+            for record in self.records
+        )
+
     def _find_event(
         self,
         records: list[dict[str, Any]],
@@ -1112,7 +1138,7 @@ class PhysicalBaseline:
                     "turn_started",
                     "turn_ready_received",
                     "barge_in_replacement_turn_ready",
-                }:
+                } and not self._turn_playback_finished(current_turn_id):
                     raise BaselineAbort(
                         "Unexpected replacement turn appeared; laptop speech stopped."
                     )
@@ -1465,6 +1491,15 @@ class PhysicalBaseline:
             expected_reminder_id=expected_reminder_id,
             expected_task_id=expected_task_id,
         )
+        if (
+            valid
+            and confirmation["tool_name"] == "update_task"
+            and (
+                pending is None
+                or pending.validated_tool_arguments.get("status") != "completed"
+            )
+        ):
+            valid = False
         if not valid:
             await self.reject_owned_pending(pending, request_started_at)
             raise BaselineAbort(
@@ -1544,7 +1579,10 @@ class PhysicalBaseline:
         request_row["pending_confirmation_verified_before_speech"] = True
         request_row["unconfirmed_writes"] = 0
         request_row["cleanup_target_id"] = expected_task_id
-        request_row["cleanup_verified"] = confirmation["tool_name"] == "complete_task"
+        request_row["cleanup_verified"] = confirmation["tool_name"] in {
+            "complete_task",
+            "update_task",
+        }
         # The pre-approval turn is the measured route; write-safety counts are
         # attributed to this action across its authenticated Yes turn.
         request_row["write_attempts"] = sum(
@@ -1572,10 +1610,24 @@ class PhysicalBaseline:
             raise BaselineAbort("No active session was selected before the acoustic run.")
         preexisting = await self.db.reminders_for_marker(self.session_id, marker)
         preexisting_tasks = await self.db.tasks_for_marker(self.session_id, marker)
-        if preexisting or preexisting_tasks:
+        cleanup_only_retry = bool(self.manifest["cases"]) and all(
+            bool(case.get("confirmation", {}).get("target_from_case"))
+            and case.get("confirmation", {}).get("tool_name")
+            in {"complete_task", "update_task"}
+            for case in self.manifest["cases"]
+        )
+        if preexisting or (preexisting_tasks and not cleanup_only_retry):
             raise BaselineAbort(
                 "A Phase Zero marker reminder already exists; refusing to create another."
             )
+        if cleanup_only_retry:
+            active_tasks = [
+                row for row in preexisting_tasks if row.status in {"pending", "in_progress"}
+            ]
+            if len(active_tasks) != 1:
+                raise BaselineAbort(
+                    "Cleanup-only retry requires exactly one active disposable test task."
+                )
         for case in self.manifest["cases"]:
             if case.get("confirmation"):
                 await self.run_confirmation_case(case)
@@ -2035,6 +2087,11 @@ def main() -> None:
     parser.add_argument("--device-model", default="CPH2527")
     parser.add_argument("--run-id")
     parser.add_argument("--disposable-account-confirmed", action="store_true")
+    parser.add_argument(
+        "--allow-speaker-output",
+        action="store_true",
+        help="Allow the loudspeaker only with --manual-prompts; useful for Phase 3 TTS checks.",
+    )
     parser.add_argument(
         "--manual-prompts",
         action="store_true",

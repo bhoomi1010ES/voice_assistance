@@ -61,6 +61,22 @@ def build_explicit_memory_save_call(text: str, *, turn_id: uuid.UUID) -> LLMTool
     )
 
 
+def build_explicit_memory_forget_call(
+    memory_id: uuid.UUID,
+    *,
+    turn_id: uuid.UUID,
+) -> LLMToolCall:
+    """Build a server-owned forget call from one owner-scoped resolved UUID."""
+
+    arguments = MemoryForgetArguments(memory_id=memory_id).model_dump(mode="json")
+    return LLMToolCall(
+        tool_call_id=f"server-memory-forget-{turn_id}",
+        name="memory_forget",
+        arguments_json=json.dumps(arguments, ensure_ascii=False, separators=(",", ":")),
+        arguments=arguments,
+    )
+
+
 async def memory_search_handler(
     context: ToolExecutionContext,
     arguments: BaseModel,

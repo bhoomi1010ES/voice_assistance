@@ -10,12 +10,18 @@ and acceptance remain pending final remote validation evidence.
 Current gates:
 
 ```text
-PHASE 0: FAIL (unchanged; acoustic acceptance is not complete)
+PHASE 0: EFFECTIVE PASS (OWNER MANUAL OVERRIDE; AUTOMATED GATE NOT PASSED)
 PHASE 1: PASS
 PHASE 2: PASS
-PHASE 3: PASS
+PHASE 3: LIVE SHADOW ACCEPTANCE PENDING (UNBLOCKED)
 PHASE 4: IMPLEMENTED — ACCEPTANCE PENDING
 ```
+
+The Phase 0 owner override is recorded in
+[`phase_gate_overrides.json`](phase_gate_overrides.json). It satisfies the
+project dependency without changing historical automated summaries or claiming
+that their acceptance criteria passed. Phase 3 is the next phase and remains
+pending its own live shadow evidence.
 
 The Phase 2 cross-user backend isolation gate passed, Android secure-storage
 instrumentation passed, and Android JVM validation completed successfully. The

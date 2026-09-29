@@ -109,6 +109,7 @@ function createVoiceSocket(
     },
     start: jest.fn(),
     connect: jest.fn().mockResolvedValue(undefined),
+    startTurn: jest.fn().mockResolvedValue(undefined),
     stop: jest.fn().mockResolvedValue(undefined),
     commitTurn: jest.fn().mockResolvedValue(undefined),
     dispose: jest.fn().mockResolvedValue(undefined),
@@ -331,7 +332,7 @@ test('temporal clarification does not render a success acknowledgement', async (
   await act(async () => renderer.unmount());
 });
 
-test('assistant confirmation is voice-only and renders no approval controls', async () => {
+test('assistant confirmation keeps voice approval and offers a safe listen fallback', async () => {
   const pendingTool = {
     id: 'tool-call-1',
     role: 'tool' as const,
@@ -349,7 +350,13 @@ test('assistant confirmation is voice-only and renders no approval controls', as
     fetchImpl,
     storage: new EmptyTokenStorage(),
   });
-  const socket = createVoiceSocket([pendingTool]);
+  const socket = createVoiceSocket([pendingTool], undefined, {
+    connection: 'connected',
+    session: 'ready',
+    turn: 'idle',
+    heartbeat: 'healthy',
+    sessionId: 'session-1',
+  });
   let renderer: ReactTestRenderer.ReactTestRenderer;
 
   await act(async () => {
@@ -374,6 +381,14 @@ test('assistant confirmation is voice-only and renders no approval controls', as
   expect(
     renderer!.root.findAllByProps({ testID: 'tool-confirm-deny' }),
   ).toHaveLength(0);
+  const startListening = renderer!.root.findByProps({
+    testID: 'voice-confirmation-start-listening',
+  });
+  expect(startListening.props.disabled).toBe(false);
+  await act(async () => startListening.props.onPress());
+  expect(socket.startTurn).toHaveBeenCalledWith({
+    autoCommitOnSpeechEnd: true,
+  });
   await act(async () => renderer!.unmount());
 });
 
