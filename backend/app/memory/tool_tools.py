@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from sqlalchemy import select
 
+from app.core.config import get_settings
 from app.llm.errors import LLMToolError
 from app.llm.tool_loop import ToolExecutionContext, ToolRegistry
 from app.llm.types import LLMToolCall
@@ -159,6 +160,13 @@ async def memory_forget_handler(
     )
     if item is None:
         return {"deleted": False}
+    from app.okf.lifecycle import OkfLifecycleService
+
+    settings = context.memory_settings or get_settings()
+    await OkfLifecycleService(
+        policy_version=settings.okf_policy_version,
+        sync_enabled=settings.okf_enabled and settings.okf_sync_enabled,
+    ).remove_memory_source(context.db, user_id=context.user_id, memory_id=item.id)
     await context.db.delete(item)
     await MemoryRepository().bump_memory_version(context.db, user_id=context.user_id)
     return {"deleted": True, "memory_id": str(item.id)}

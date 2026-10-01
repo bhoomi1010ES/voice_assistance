@@ -3,6 +3,7 @@ from ipaddress import ip_address
 from pathlib import Path
 from typing import Literal, Self
 from urllib.parse import urlsplit, urlunsplit
+from uuid import UUID
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -134,6 +135,32 @@ class Settings(BaseSettings):
     graph_max_paths: int = Field(default=20, ge=1, le=100)
     graph_max_memories: int = Field(default=10, ge=1, le=50)
     graph_rag_timeout_ms: int = Field(default=50, ge=1, le=5_000)
+
+    # OKF rollout controls. The knowledge foundation is inert unless the
+    # master switch is enabled, and legacy RAG remains the default read path.
+    okf_enabled: bool = False
+    okf_sync_enabled: bool = False
+    knowledge_mode: Literal["rag", "okf", "combined"] = "rag"
+    okf_evaluation_enabled: bool = False
+    okf_evaluation_user_ids: tuple[UUID, ...] = ()
+    knowledge_rag_timeout_ms: int = Field(default=30_000, ge=1, le=60_000)
+    okf_shadow_reads: bool = False
+    okf_shadow_user_ids: tuple[UUID, ...] = ()
+    okf_context_max_chars: int = Field(default=4_000, ge=512, le=100_000)
+    okf_query_limit: int = Field(default=20, ge=1, le=100)
+    okf_retrieval_timeout_ms: int = Field(default=75, ge=1, le=5_000)
+    okf_shadow_max_concurrent: int = Field(default=4, ge=1, le=64)
+    okf_worker_mode: Literal["in_process", "standalone"] = "in_process"
+    okf_worker_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
+    okf_worker_shutdown_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    okf_job_lease_seconds: int = Field(default=120, ge=10, le=3_600)
+    okf_job_max_attempts: int = Field(default=5, ge=1, le=20)
+    okf_policy_version: str = Field(
+        default="okf-v1",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
     embedding_api_url: str | None = None
     rerank_api_url: str | None = None
     memory_expected_embedding_model: str = "BAAI/bge-m3"
@@ -275,6 +302,33 @@ class Settings(BaseSettings):
                 field_name="EMBEDDING_API_URL",
                 expected_path="/v1/embeddings",
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_okf_configuration(self) -> Self:
+        """Reject active OKF capabilities unless the master switch is enabled."""
+
+        if not self.okf_enabled and self.okf_sync_enabled:
+            raise ValueError("OKF_SYNC_ENABLED requires OKF_ENABLED=true")
+        if not self.okf_enabled and self.okf_shadow_reads:
+            raise ValueError("OKF_SHADOW_READS requires OKF_ENABLED=true")
+        if not self.okf_enabled and self.knowledge_mode != "rag":
+            raise ValueError("KNOWLEDGE_MODE=okf or combined requires OKF_ENABLED=true")
+        if self.okf_shadow_reads and not self.okf_shadow_user_ids:
+            raise ValueError("OKF_SHADOW_READS requires explicit disposable OKF_SHADOW_USER_IDS")
+        if self.okf_shadow_reads and self.knowledge_mode != "rag":
+            raise ValueError("OKF_SHADOW_READS requires KNOWLEDGE_MODE=rag")
+        if len(set(self.okf_shadow_user_ids)) != len(self.okf_shadow_user_ids):
+            raise ValueError("OKF_SHADOW_USER_IDS must not contain duplicates")
+        if len(set(self.okf_evaluation_user_ids)) != len(self.okf_evaluation_user_ids):
+            raise ValueError("OKF_EVALUATION_USER_IDS must not contain duplicates")
+        if self.okf_evaluation_enabled:
+            if self.app_env.lower() not in {"development", "test"}:
+                raise ValueError("OKF_EVALUATION_ENABLED is limited to development/test")
+            if not self.okf_enabled or not self.okf_sync_enabled:
+                raise ValueError("OKF_EVALUATION_ENABLED requires OKF_ENABLED and OKF_SYNC_ENABLED")
+            if not self.okf_evaluation_user_ids:
+                raise ValueError("OKF_EVALUATION_ENABLED requires explicit owner UUIDs")
         return self
 
     def _validate_memory_endpoint(

@@ -1,0 +1,153 @@
+{
+  "corpus_id": "okf-corpus-v1",
+  "version": "1.0.0",
+  "policy_version": "okf-v1",
+  "description": "Synthetic labeled OKF mapping and unchanged-RAG decision corpus; contains no production user data.",
+  "owner_id": "00000000-0000-4000-8000-000000000101",
+  "other_owner_id": "00000000-0000-4000-8000-000000000202",
+  "now": "2026-09-29T19:00:00+00:00",
+  "required_categories": [
+    "preference",
+    "project",
+    "decision",
+    "relationship",
+    "stable_fact",
+    "transient_fact",
+    "secret",
+    "contradiction",
+    "supersession",
+    "deletion",
+    "session_exclusion",
+    "cross_user"
+  ],
+  "cases": [
+    {
+      "id": "preference-response-style",
+      "category": "preference",
+      "sources": [
+        {"id": "pref-style", "content": "I prefer concise responses.", "memory_type": "preference", "subject": "user", "predicate": "response_style", "object_json": {"value": "concise"}, "sources": ["structured", "fts"]}
+      ],
+      "expected_mapping": {"eligible": true, "concept_type": "preference", "canonical_keys": ["preferences/response-style"], "assertion_state": "active"},
+      "rag": {"query": "Which response style do I prefer?", "records": ["pref-style"], "expected_route": "DIRECT_RAG", "expected_evidence_ids": ["pref-style"]}
+    },
+    {
+      "id": "project-framework",
+      "category": "project",
+      "sources": [
+        {"id": "project-framework", "content": "The Voice Assistant project uses FastAPI.", "memory_type": "project", "subject": "Voice Assistant", "predicate": "framework", "object_json": {"value": "FastAPI"}, "sources": ["structured", "fts"]}
+      ],
+      "expected_mapping": {"eligible": true, "concept_type": "project", "canonical_keys": ["projects/voice-assistant", "projects/voice-assistant/framework"], "assertion_state": "active"},
+      "rag": {"query": "Which framework does my Voice Assistant project use?", "records": ["project-framework"], "expected_route": "DIRECT_RAG", "expected_evidence_ids": ["project-framework"]}
+    },
+    {
+      "id": "project-database-decision",
+      "category": "decision",
+      "sources": [
+        {"id": "project-db", "content": "Project Atlas uses PostgreSQL as its selected database.", "memory_type": "fact", "subject": "Project Atlas", "predicate": "database", "object_json": {"value": "PostgreSQL", "decision": true}, "sources": ["structured", "fts"]}
+      ],
+      "expected_mapping": {"eligible": true, "concept_type": "decision", "canonical_keys": ["projects/project-atlas/database"], "assertion_state": "active"},
+      "rag": {"query": "Which database does my Project Atlas project use?", "records": ["project-db"], "expected_route": "DIRECT_RAG", "expected_evidence_ids": ["project-db"]}
+    },
+    {
+      "id": "relationship-colleague",
+      "category": "relationship",
+      "sources": [
+        {"id": "rahul-colleague", "content": "Rahul is my colleague.", "memory_type": "relationship", "subject": "Rahul", "predicate": "relationship", "object_json": {"target": "user", "kind": "colleague"}, "sources": ["structured", "fts"]}
+      ],
+      "expected_mapping": {"eligible": true, "concept_type": "relationship", "canonical_keys": ["relationships/rahul/user"], "assertion_state": "active"},
+      "rag": {"query": "What is my relationship with Rahul?", "records": ["rahul-colleague"], "expected_route": "DIRECT_RAG", "expected_evidence_ids": ["rahul-colleague"]}
+    },
+    {
+      "id": "stable-profile-home",
+      "category": "stable_fact",
+      "sources": [
+        {"id": "home-mumbai", "content": "My home base is Mumbai.", "memory_type": "fact", "subject": "user", "predicate": "home_base", "object_json": {"city": "Mumbai"}, "sources": ["structured", "fts"]}
+      ],
+      "expected_mapping": {"eligible": true, "concept_type": "profile", "canonical_keys": ["profile/home-base"], "assertion_state": "active"},
+      "rag": {"query": "What is my home base?", "records": ["home-mumbai"], "expected_route": "DIRECT_RAG", "expected_evidence_ids": ["home-mumbai"]}
+    },
+    {
+      "id": "transient-desk",
+      "category": "transient_fact",
+      "sources": [
+        {"id": "desk-today", "content": "I am sitting at desk seven today.", "memory_type": "event", "subject": "user", "predicate": "current_desk", "object_json": {"value": "desk seven"}, "sources": ["fts"]}
+      ],
+      "expected_mapping": {"eligible": false, "reason": "event_deferred", "canonical_keys": []},
+      "rag": {"query": "What do you remember about today's desk?", "records": ["desk-today"], "expected_route": "RAG_PLUS_LLM", "expected_evidence_ids": ["desk-today"]}
+    },
+    {
+      "id": "secret-credential",
+      "category": "secret",
+      "sources": [
+        {"id": "credential", "content": "My database password is a synthetic credential marker.", "memory_type": "fact", "subject": "user", "predicate": "database_password", "object_json": {"value": "synthetic-credential-marker"}, "sources": ["structured", "fts"]}
+      ],
+      "expected_mapping": {"eligible": false, "reason": "secret_rejected", "canonical_keys": []},
+      "rag": {"query": "What is my saved database password?", "records": [], "expected_route": "NO_RESULT", "expected_evidence_ids": []}
+    },
+    {
+      "id": "contradictory-home-base",
+      "category": "contradiction",
+      "sources": [
+        {"id": "home-mumbai-current", "content": "My home base is Mumbai.", "memory_type": "fact", "subject": "user", "predicate": "home_base", "object_json": {"city": "Mumbai"}, "sources": ["structured", "fts"]},
+        {"id": "home-pune-current", "content": "My home base is Pune.", "memory_type": "fact", "subject": "user", "predicate": "home_base", "object_json": {"city": "Pune"}, "sources": ["structured", "fts"]}
+      ],
+      "expected_mapping": {"eligible": true, "concept_type": "profile", "canonical_keys": ["profile/home-base"], "assertion_state": "contested", "active_assertions": 2},
+      "rag": {"query": "What is my home base?", "records": ["home-mumbai-current", "home-pune-current"], "expected_route": "RAG_PLUS_LLM", "expected_reason": "conflicting_evidence", "expected_evidence_ids": ["home-mumbai-current", "home-pune-current"]}
+    },
+    {
+      "id": "superseded-framework",
+      "category": "supersession",
+      "sources": [
+        {"id": "framework-flask-old", "content": "The Voice Assistant project uses Flask.", "memory_type": "project", "subject": "Voice Assistant", "predicate": "framework", "object_json": {"value": "Flask"}, "status": "superseded", "sources": ["structured", "fts"]},
+        {"id": "framework-fastapi-current", "content": "The Voice Assistant project uses FastAPI.", "memory_type": "project", "subject": "Voice Assistant", "predicate": "framework", "object_json": {"value": "FastAPI"}, "status": "active", "sources": ["structured", "fts"]}
+      ],
+      "expected_mapping": {"eligible": true, "concept_type": "project", "canonical_keys": ["projects/voice-assistant", "projects/voice-assistant/framework"], "assertion_state": "active", "active_assertions": 1},
+      "rag": {"query": "Which framework does my Voice Assistant project use?", "records": ["framework-flask-old", "framework-fastapi-current"], "expected_route": "DIRECT_RAG", "expected_evidence_ids": ["framework-fastapi-current"]}
+    },
+    {
+      "id": "deleted-preference",
+      "category": "deletion",
+      "sources": [
+        {"id": "deleted-beverage", "content": "I prefer green tea.", "memory_type": "preference", "subject": "user", "predicate": "beverage", "object_json": {"value": "green tea"}, "status": "deleted", "sources": ["structured", "fts"]}
+      ],
+      "expected_mapping": {"eligible": false, "reason": "source_not_active", "canonical_keys": []},
+      "rag": {"query": "Which beverage do I prefer?", "records": ["deleted-beverage"], "expected_route": "NO_RESULT", "expected_evidence_ids": []}
+    },
+    {
+      "id": "excluded-session-preference",
+      "category": "session_exclusion",
+      "sources": [
+        {"id": "excluded-editor", "content": "I prefer the Helix editor.", "memory_type": "preference", "subject": "user", "predicate": "editor", "object_json": {"value": "Helix"}, "session_excluded": true, "sources": ["structured", "fts"]}
+      ],
+      "expected_mapping": {"eligible": false, "reason": "source_session_excluded", "canonical_keys": []},
+      "rag": {"query": "Which editor do I prefer?", "records": [], "retrieval_status": "disabled", "expected_route": "UNAVAILABLE", "expected_reason": "retrieval_disabled", "expected_evidence_ids": []}
+    },
+    {
+      "id": "cross-user-name",
+      "category": "cross_user",
+      "sources": [
+        {"id": "other-name", "owner": "other", "content": "My name is Avery.", "memory_type": "fact", "subject": "user", "predicate": "name", "object_json": {"value": "Avery"}, "sources": ["structured", "fts"]}
+      ],
+      "expected_mapping": {"eligible": false, "reason": "foreign_owner", "canonical_keys": []},
+      "rag": {"query": "What is my name?", "records": ["other-name"], "expected_route": "UNAVAILABLE", "expected_reason": "owner_scope_violation", "expected_evidence_ids": []}
+    },
+    {
+      "id": "free-text-only-fact",
+      "category": "insufficient_structure",
+      "sources": [
+        {"id": "free-text", "content": "The user mentioned an unstructured favorite color.", "memory_type": "fact", "sources": ["fts"]}
+      ],
+      "expected_mapping": {"eligible": false, "reason": "insufficient_structured_fields", "canonical_keys": []},
+      "rag": {"query": "What do you remember about my favorite color?", "records": ["free-text"], "expected_route": "RAG_PLUS_LLM", "expected_evidence_ids": ["free-text"]}
+    },
+    {
+      "id": "summary-ineligible",
+      "category": "summary",
+      "sources": [
+        {"id": "summary-work", "content": "A synthetic summary of prior work discussions.", "memory_type": "summary", "sources": ["fts"]}
+      ],
+      "expected_mapping": {"eligible": false, "reason": "summary_ineligible", "canonical_keys": []},
+      "rag": {"query": "What do you remember about my work?", "records": ["summary-work"], "expected_route": "RAG_PLUS_LLM", "expected_evidence_ids": ["summary-work"]}
+    }
+  ]
+}

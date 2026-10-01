@@ -166,6 +166,52 @@ def test_general_knowledge_questions_do_not_become_memory_queries(transcript: st
     assert classify_transcript(transcript).route == RouteName.GENERAL_LLM
 
 
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "Which framework am I using for my project?",
+        "What framework did I choose for my voice assistant?",
+        "What did I decide to use for routing in my project?",
+        "Which database am I using in my assistant project?",
+        "Which framework am I using for my Willow Beacon project?",
+    ],
+)
+def test_explicit_project_use_and_decision_questions_are_memory_queries(
+    transcript: str,
+) -> None:
+    assert classify_transcript(transcript).route == RouteName.MEMORY_QUERY
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "What is LangGraph?",
+        "Which framework is best for AI agents?",
+        "Explain FastAPI.",
+        "What database should I use for a new project?",
+    ],
+)
+def test_general_framework_and_project_advice_stays_general(transcript: str) -> None:
+    assert classify_transcript(transcript).route == RouteName.GENERAL_LLM
+
+
+def test_unowned_named_project_property_is_ambiguous_not_a_memory_read() -> None:
+    decision = classify_transcript("What is the Willow Beacon project framework?")
+
+    assert decision.route == RouteName.MIXED_AMBIGUOUS
+    assert decision.target_tool is None
+    assert decision.read_arguments is None
+
+
+def test_project_memory_read_does_not_override_confirmation_gated_task_action() -> None:
+    decision = classify_transcript(
+        "Create a task to ask which framework am I using for my project?"
+    )
+
+    assert decision.route == RouteName.TASK_ACTION
+    assert decision.target_tool is None
+
+
 def test_structured_reads_have_only_bounded_schema_arguments() -> None:
     medicine = classify_transcript("What time do I take my medicine?")
 

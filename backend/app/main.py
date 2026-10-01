@@ -13,6 +13,8 @@ from app.llm.service import LLMService
 from app.memory.providers import RemoteEmbeddingProvider, RemoteReranker
 from app.memory.retrieval import MemoryRetrievalService
 from app.memory.worker_service import MemoryWorkerService
+from app.okf.shadow import ShadowReadCapacity
+from app.okf.worker_service import OkfWorkerService
 from app.reminders.worker_service import ReminderWorkerService
 from app.routing.service import DecisionRouterService
 from app.services.infrastructure import Infrastructure
@@ -38,6 +40,9 @@ def create_app(
             shadow_semaphore=asyncio.Semaphore(app_settings.router_shadow_max_concurrent),
         )
         app.state.router_decision_service = router_service
+        app.state.okf_shadow_capacity = ShadowReadCapacity(
+            app_settings.okf_shadow_max_concurrent
+        )
         if router_service.is_active():
             warm_started = time.perf_counter()
             warmed = router_service.warm_graph()
@@ -58,6 +63,7 @@ def create_app(
         reranker = None
         memory_worker = None
         reminder_worker = None
+        okf_worker = None
         if app_settings.memory_retrieval_mode != "off" or app_settings.memory_write_enabled:
             embedding_provider = RemoteEmbeddingProvider(app_settings)
             await embedding_provider.initialize()
@@ -90,6 +96,15 @@ def create_app(
                 await memory_worker.start()
                 app.state.memory_worker = memory_worker
             database = getattr(active_infrastructure, "database", None)
+            if (
+                app_settings.okf_enabled
+                and app_settings.okf_sync_enabled
+                and app_settings.okf_worker_mode == "in_process"
+                and getattr(database, "session_factory", None)
+            ):
+                okf_worker = OkfWorkerService(app_settings, database)
+                await okf_worker.start()
+                app.state.okf_worker = okf_worker
             if app_settings.reminder_worker_enabled and getattr(database, "session_factory", None):
                 reminder_worker = ReminderWorkerService(
                     app_settings,
@@ -107,6 +122,8 @@ def create_app(
             try:
                 if reminder_worker is not None:
                     await reminder_worker.stop()
+                if okf_worker is not None:
+                    await okf_worker.stop()
                 if memory_worker is not None:
                     await memory_worker.stop()
             finally:

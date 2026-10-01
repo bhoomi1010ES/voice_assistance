@@ -12,7 +12,7 @@ from app.memory.policy import ExtractionCandidate, validate_candidate
 from app.memory.repository import MemoryRepository
 from app.memory.types import MemorySourceKind, MemoryType
 from app.memory.writer import MemoryWriteConflict, MemoryWriter
-from app.models import MemoryItem, MemoryJob, User
+from app.models import MemoryItem, MemoryJob, OkfSyncJob, User
 from app.schemas import (
     MemoryCreateRequest,
     MemoryDeleteAllRequest,
@@ -63,12 +63,18 @@ async def get_memory_settings(
 @router.patch("/settings", response_model=MemorySettingsResponse)
 async def update_memory_settings(
     payload: MemorySettingsUpdateRequest,
+    request: Request,
     session: DatabaseSessionDependency,
     principal: Annotated[AuthPrincipal, Depends(get_current_principal)],
 ) -> User:
     user = await _owned_user(session, principal)
     if payload.enabled is not None:
+        was_enabled = user.memory_enabled
         user.memory_enabled = payload.enabled
+        if payload.enabled != was_enabled:
+            from app.okf.repository import OkfRepository
+
+            await OkfRepository().bump_memory_generation(session, user_id=user.id)
         if not payload.enabled:
             await session.execute(
                 update(MemoryJob)
@@ -78,11 +84,32 @@ async def update_memory_settings(
                 )
                 .values(status="cancelled", locked_at=None)
             )
+            await session.execute(
+                update(OkfSyncJob)
+                .where(
+                    OkfSyncJob.user_id == user.id,
+                    OkfSyncJob.status.in_(("pending", "retry_wait")),
+                )
+                .values(status="cancelled", locked_at=None)
+            )
     if payload.timezone is not None:
         user.timezone = payload.timezone
     if payload.locale is not None:
         user.locale = payload.locale
     await MemoryRepository().bump_memory_version(session, user_id=user.id)
+    if (
+        payload.enabled is True
+        and not was_enabled
+        and request.app.state.settings.okf_enabled
+        and request.app.state.settings.okf_sync_enabled
+    ):
+        from app.okf.jobs import enqueue_user_rebuild
+
+        await enqueue_user_rebuild(
+            session,
+            user_id=user.id,
+            policy_version=request.app.state.settings.okf_policy_version,
+        )
     await session.commit()
     await session.refresh(user)
     return user
@@ -91,10 +118,20 @@ async def update_memory_settings(
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_all_memories(
     payload: MemoryDeleteAllRequest,
+    request: Request,
     session: DatabaseSessionDependency,
     principal: Annotated[AuthPrincipal, Depends(get_current_principal)],
 ) -> None:
     user = await _owned_user(session, principal)
+    from app.okf.lifecycle import OkfLifecycleService
+
+    await OkfLifecycleService(
+        policy_version=request.app.state.settings.okf_policy_version,
+        sync_enabled=(
+            request.app.state.settings.okf_enabled
+            and request.app.state.settings.okf_sync_enabled
+        ),
+    ).purge_user(session, user_id=user.id)
     result = await session.execute(delete(MemoryItem).where(MemoryItem.user_id == user.id))
     if result.rowcount:
         await MemoryRepository().bump_memory_version(session, user_id=user.id)
@@ -282,6 +319,15 @@ async def update_memory(
         salience=payload.salience if payload.salience is not None else old.salience,
     )
     old.status = "superseded"
+    from app.okf.lifecycle import OkfLifecycleService
+
+    await OkfLifecycleService(
+        policy_version=request.app.state.settings.okf_policy_version,
+        sync_enabled=(
+            request.app.state.settings.okf_enabled
+            and request.app.state.settings.okf_sync_enabled
+        ),
+    ).remove_memory_source(session, user_id=principal.user_id, memory_id=old.id)
     try:
         candidate = validate_candidate(candidate, candidate.content)
         memory, _ = await MemoryWriter(request.app.state.settings).write_candidate(
@@ -320,6 +366,15 @@ async def delete_memory(
             resource_id=memory_id,
         )
         raise not_found()
+    from app.okf.lifecycle import OkfLifecycleService
+
+    await OkfLifecycleService(
+        policy_version=request.app.state.settings.okf_policy_version,
+        sync_enabled=(
+            request.app.state.settings.okf_enabled
+            and request.app.state.settings.okf_sync_enabled
+        ),
+    ).remove_memory_source(session, user_id=principal.user_id, memory_id=memory.id)
     await session.delete(memory)
     await MemoryRepository().bump_memory_version(session, user_id=principal.user_id)
     await session.commit()

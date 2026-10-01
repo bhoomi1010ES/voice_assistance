@@ -379,6 +379,16 @@ class MemoryJobWorker:
     async def _purge_session(self, session: AsyncSession, job: MemoryJob) -> None:
         if job.source_session_id is None:
             raise ValueError("memory_source_session_missing")
+        from app.okf.lifecycle import OkfLifecycleService
+
+        await OkfLifecycleService(
+            policy_version=self.settings.okf_policy_version,
+            sync_enabled=(
+                self.settings.okf_enabled and self.settings.okf_sync_enabled
+            ),
+        ).exclude_session(
+            session, user_id=job.user_id, session_id=job.source_session_id
+        )
         await session.execute(
             MemoryItem.__table__.delete().where(
                 MemoryItem.user_id == job.user_id,

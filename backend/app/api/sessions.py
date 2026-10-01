@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 
 from app.api.dependencies import DatabaseSessionDependency, get_current_principal
-from app.models import VoiceSession
+from app.models import MemoryItem, VoiceSession
 from app.schemas import MemoryExclusionRequest, SessionUpdateRequest, VoiceSessionResponse
 from app.services.auth import AuthPrincipal
 from app.services.ownership import get_owned_voice_session, record_ownership_denial
@@ -118,8 +118,45 @@ async def set_memory_exclusion(
         )
         raise not_found()
     metadata = dict(voice_session.client_metadata or {})
+    was_excluded = metadata.get("memory_excluded") is True
+    if payload.excluded and not was_excluded:
+        from app.okf.lifecycle import OkfLifecycleService
+
+        await OkfLifecycleService(
+            policy_version=request.app.state.settings.okf_policy_version,
+            sync_enabled=(
+                request.app.state.settings.okf_enabled
+                and request.app.state.settings.okf_sync_enabled
+            ),
+        ).exclude_session(session, user_id=principal.user_id, session_id=session_id)
     metadata["memory_excluded"] = payload.excluded
     voice_session.client_metadata = metadata
+    if was_excluded and not payload.excluded:
+        from app.memory.repository import MemoryRepository
+
+        await MemoryRepository().bump_memory_version(session, user_id=principal.user_id)
+        settings = request.app.state.settings
+        if settings.okf_enabled and settings.okf_sync_enabled:
+            from app.okf.jobs import enqueue_memory_sync
+
+            memory_ids = tuple(
+                (
+                    await session.scalars(
+                        select(MemoryItem.id).where(
+                            MemoryItem.user_id == principal.user_id,
+                            MemoryItem.source_session_id == session_id,
+                            MemoryItem.status == "active",
+                        )
+                    )
+                ).all()
+            )
+            for memory_id in memory_ids:
+                await enqueue_memory_sync(
+                    session,
+                    user_id=principal.user_id,
+                    memory_id=memory_id,
+                    policy_version=settings.okf_policy_version,
+                )
     await session.commit()
     await session.refresh(voice_session)
     return voice_session
@@ -185,5 +222,14 @@ async def delete_session(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "SESSION_ACTIVE", "message": "Active sessions cannot be deleted."},
         )
+    from app.okf.lifecycle import OkfLifecycleService
+
+    await OkfLifecycleService(
+        policy_version=request.app.state.settings.okf_policy_version,
+        sync_enabled=(
+            request.app.state.settings.okf_enabled
+            and request.app.state.settings.okf_sync_enabled
+        ),
+    ).exclude_session(session, user_id=principal.user_id, session_id=session_id)
     await session.delete(voice_session)
     await session.commit()

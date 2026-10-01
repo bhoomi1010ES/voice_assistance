@@ -82,6 +82,23 @@ _MEMORY_QUERY = re.compile(
     r"what\s+do\s+you\s+remember(?:\s+about\s+(?:me|my\s+.{1,40}))?)\b",
     re.I,
 )
+_PROJECT_MEMORY_QUERY = re.compile(
+    r"\b(?:which|what)\s+(?:framework|database|routing|architecture|language)\s+"
+    r"am\s+i\s+using\b(?=.{0,80}\b(?:my|our)\s+(?:[\w'-]+\s+){0,3}"
+    r"(?:project|assistant|backend)\b)|"
+    r"\bwhat\s+(?:framework|database|routing|architecture|language)\s+did\s+i\s+"
+    r"(?:choose|decide)\b(?=.{0,80}\b(?:project|assistant|backend|routing)\b)|"
+    r"\bwhat\s+did\s+i\s+decide\s+to\s+use\s+for\s+"
+    r"(?:routing|architecture|framework|database|language)\b"
+    r"(?=.{0,80}\bmy\s+(?:[\w'-]+\s+){0,3}(?:project|assistant|backend)\b)",
+    re.I,
+)
+_AMBIGUOUS_NAMED_PROJECT_PROPERTY = re.compile(
+    r"\bwhat(?:\s+is|'s)\s+(?:the\s+)?[a-z0-9][\w'-]*"
+    r"(?:\s+[a-z0-9][\w'-]*)+\s+project\s+"
+    r"(?:framework|database|routing|architecture|language)\b",
+    re.I,
+)
 _MEMORY_SAVE = re.compile(
     r"^(?:(?:please\s+)?remember\s+(?:that\s+)?\S.+|"
     r"(?:please\s+)?save\s+(?:(?:that|this)\s+)?\S.+|"
@@ -247,6 +264,14 @@ def classify_transcript(transcript: str) -> RouteDecision:
         return _decision(RouteName.MIXED_AMBIGUOUS)
 
     if _MALFORMED_STT.search(text):
+        return _decision(RouteName.MIXED_AMBIGUOUS)
+
+    # Project-property reads need an explicit personal-use/decision cue. A
+    # named project without that cue is ambiguous between stored user context
+    # and an ordinary informational question, so it must not trigger retrieval.
+    if actions == 0 and _PROJECT_MEMORY_QUERY.search(text):
+        return _decision(RouteName.MEMORY_QUERY)
+    if actions == 0 and _AMBIGUOUS_NAMED_PROJECT_PROPERTY.search(text):
         return _decision(RouteName.MIXED_AMBIGUOUS)
 
     if _clock_request_with_explicit_timezone(_CURRENT_TIME, text):

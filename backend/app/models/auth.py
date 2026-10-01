@@ -36,6 +36,7 @@ class User(Base):
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
     locale: Mapped[str] = mapped_column(String(16), nullable=False, default="en")
     memory_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    memory_generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
@@ -47,6 +48,7 @@ class User(Base):
         Index("ix_users_email_unique", "email", unique=True),
         Index("ix_users_status", "status"),
         CheckConstraint("status IN ('active', 'disabled')", name="ck_users_status"),
+        CheckConstraint("memory_generation >= 0", name="ck_users_memory_generation"),
     )
 
 

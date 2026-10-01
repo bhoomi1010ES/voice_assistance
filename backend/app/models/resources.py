@@ -6,6 +6,7 @@ from typing import Any
 
 from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Computed,
@@ -14,9 +15,11 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, REAL, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -486,6 +489,270 @@ class MemoryJob(Base):
         CheckConstraint("attempts >= 0", name="ck_memory_jobs_attempts"),
         Index("ix_memory_jobs_claim", "status", "available_at"),
         Index("ix_memory_jobs_user_status", "user_id", "status"),
+    )
+
+
+class OkfConcept(Base):
+    """Stable, owner-scoped identity for one knowledge concept."""
+
+    __tablename__ = "okf_concepts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    parent_concept_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    concept_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    canonical_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["parent_concept_id", "user_id"],
+            ["okf_concepts.id", "okf_concepts.user_id"],
+            ondelete="SET NULL",
+            name="fk_okf_concepts_parent_user",
+        ),
+        UniqueConstraint("id", "user_id", name="uq_okf_concepts_id_user_id"),
+        UniqueConstraint("user_id", "canonical_key", name="uq_okf_concepts_user_key"),
+        CheckConstraint(
+            "concept_type IN ('profile', 'preference', 'project', 'decision', "
+            "'relationship', 'fact')",
+            name="ck_okf_concepts_type",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'contested', 'retired')",
+            name="ck_okf_concepts_status",
+        ),
+        CheckConstraint("btrim(title) <> ''", name="ck_okf_concepts_title_nonblank"),
+        CheckConstraint(
+            "canonical_key ~ '^(profile|preferences|projects|relationships|facts)/"
+            "[a-z0-9]+(-[a-z0-9]+)*(/[a-z0-9]+(-[a-z0-9]+)*){0,6}$'",
+            name="ck_okf_concepts_canonical_key",
+        ),
+        CheckConstraint("btrim(policy_version) <> ''", name="ck_okf_concepts_policy_nonblank"),
+        Index("ix_okf_concepts_user_type_status", "user_id", "concept_type", "status"),
+    )
+
+
+class OkfConceptAssertion(Base):
+    """The current materialized value for an independently supported claim."""
+
+    __tablename__ = "okf_concept_assertions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    concept_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    value_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    display_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    confidence: Mapped[float] = mapped_column(REAL, nullable=False, default=1.0)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["concept_id", "user_id"],
+            ["okf_concepts.id", "okf_concepts.user_id"],
+            ondelete="CASCADE",
+            name="fk_okf_assertions_concept_user",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "id", "current_version"],
+            [
+                "okf_concept_versions.user_id",
+                "okf_concept_versions.assertion_id",
+                "okf_concept_versions.version",
+            ],
+            name="fk_okf_assertions_current_version",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+        ),
+        UniqueConstraint("id", "user_id", name="uq_okf_assertions_id_user_id"),
+        CheckConstraint(
+            "status IN ('active', 'superseded', 'retired')",
+            name="ck_okf_assertions_status",
+        ),
+        CheckConstraint("current_version >= 1", name="ck_okf_assertions_current_version"),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_okf_assertions_confidence"),
+        CheckConstraint(
+            "valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from",
+            name="ck_okf_assertions_validity",
+        ),
+        CheckConstraint("btrim(display_text) <> ''", name="ck_okf_assertions_display_nonblank"),
+        CheckConstraint("btrim(policy_version) <> ''", name="ck_okf_assertions_policy_nonblank"),
+        Index("ix_okf_assertions_user_concept_status", "user_id", "concept_id", "status"),
+    )
+
+
+class OkfConceptVersion(Base):
+    """Immutable snapshot of an accepted assertion change."""
+
+    __tablename__ = "okf_concept_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    concept_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    assertion_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    value_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    display_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[float] = mapped_column(REAL, nullable=False)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    change_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["concept_id", "user_id"],
+            ["okf_concepts.id", "okf_concepts.user_id"],
+            ondelete="CASCADE",
+            name="fk_okf_versions_concept_user",
+        ),
+        ForeignKeyConstraint(
+            ["assertion_id", "user_id"],
+            ["okf_concept_assertions.id", "okf_concept_assertions.user_id"],
+            ondelete="CASCADE",
+            name="fk_okf_versions_assertion_user",
+        ),
+        UniqueConstraint("id", "user_id", name="uq_okf_versions_id_user_id"),
+        UniqueConstraint(
+            "user_id", "assertion_id", "version", name="uq_okf_versions_assertion_version"
+        ),
+        CheckConstraint("version >= 1", name="ck_okf_versions_version"),
+        CheckConstraint(
+            "status IN ('active', 'superseded', 'retired')", name="ck_okf_versions_status"
+        ),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_okf_versions_confidence"),
+        CheckConstraint(
+            "valid_to IS NULL OR valid_from IS NULL OR valid_to >= valid_from",
+            name="ck_okf_versions_validity",
+        ),
+        CheckConstraint(
+            "change_kind IN ('create', 'update', 'supersede', 'retire', 'restore')",
+            name="ck_okf_versions_change_kind",
+        ),
+        CheckConstraint("btrim(display_text) <> ''", name="ck_okf_versions_display_nonblank"),
+        CheckConstraint("btrim(policy_version) <> ''", name="ck_okf_versions_policy_nonblank"),
+    )
+
+
+class OkfConceptSource(Base):
+    """Content-free provenance linking a version to owned source evidence."""
+
+    __tablename__ = "okf_concept_sources"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    concept_version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    memory_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    evidence_role: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "user_id",
+            "concept_version_id",
+            "memory_id",
+            "evidence_role",
+            name="pk_okf_concept_sources",
+        ),
+        ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["concept_version_id", "user_id"],
+            ["okf_concept_versions.id", "okf_concept_versions.user_id"],
+            ondelete="CASCADE",
+            name="fk_okf_sources_version_user",
+        ),
+        ForeignKeyConstraint(
+            ["memory_id", "user_id"],
+            ["memory_items.id", "memory_items.user_id"],
+            ondelete="CASCADE",
+            name="fk_okf_sources_memory_user",
+        ),
+        CheckConstraint(
+            "evidence_role IN ('supports', 'contradicts', 'supersedes')",
+            name="ck_okf_sources_evidence_role",
+        ),
+        Index("ix_okf_sources_user_memory", "user_id", "memory_id"),
+    )
+
+
+class OkfSyncJob(Base):
+    """Content-free durable work item for asynchronous OKF reconciliation."""
+
+    __tablename__ = "okf_sync_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    memory_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    memory_generation: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        UniqueConstraint("user_id", "idempotency_key", name="uq_okf_jobs_user_idempotency"),
+        CheckConstraint(
+            "event_type IN ('upsert_memory', 'remove_memory', 'rebuild_user', 'purge_user')",
+            name="ck_okf_jobs_event_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'retry_wait', 'completed', 'dead', 'cancelled')",
+            name="ck_okf_jobs_status",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_okf_jobs_attempts"),
+        CheckConstraint("memory_generation >= 0", name="ck_okf_jobs_memory_generation"),
+        CheckConstraint(
+            "((event_type IN ('upsert_memory', 'remove_memory') AND memory_id IS NOT NULL) OR "
+            "(event_type IN ('rebuild_user', 'purge_user') AND memory_id IS NULL))",
+            name="ck_okf_jobs_memory_scope",
+        ),
+        CheckConstraint("btrim(idempotency_key) <> ''", name="ck_okf_jobs_key_nonblank"),
+        CheckConstraint("btrim(policy_version) <> ''", name="ck_okf_jobs_policy_nonblank"),
+        Index("ix_okf_jobs_claim", "status", "available_at"),
+        Index("ix_okf_jobs_user_status", "user_id", "status"),
     )
 
 

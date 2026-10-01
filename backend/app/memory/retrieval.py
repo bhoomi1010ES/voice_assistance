@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.models import MemoryChunk, MemoryItem
+from app.models import MemoryChunk, MemoryItem, VoiceSession
 
 from .providers import MemoryProviderError, RemoteEmbeddingProvider, RemoteReranker
 from .types import (
@@ -31,9 +31,16 @@ _QUERY_STOPWORDS = frozenset(
         "about",
         "and",
         "are",
+        "am",
+        "be",
+        "been",
+        "can",
         "did",
         "do",
+        "does",
         "for",
+        "from",
+        "have",
         "how",
         "i",
         "is",
@@ -43,22 +50,41 @@ _QUERY_STOPWORDS = frozenset(
         "of",
         "on",
         "the",
+        "tell",
+        "told",
         "to",
         "use",
+        "used",
+        "using",
         "what",
         "when",
         "where",
         "which",
         "who",
         "why",
+        "you",
+        "your",
+        "remember",
+        "remembered",
+        "saved",
     }
 )
 
 
 def _base_memory_query(user_id: uuid.UUID, plan: MemoryQueryPlan) -> Select:
+    excluded_source_session = (
+        select(VoiceSession.id)
+        .where(
+            VoiceSession.id == MemoryItem.source_session_id,
+            VoiceSession.user_id == MemoryItem.user_id,
+            VoiceSession.client_metadata.contains({"memory_excluded": True}),
+        )
+        .exists()
+    )
     query = select(MemoryItem).where(
         MemoryItem.user_id == user_id,
         MemoryItem.status == MemoryStatus.ACTIVE,
+        ~excluded_source_session,
     )
     if plan.memory_types:
         query = query.where(MemoryItem.memory_type.in_(plan.memory_types))
@@ -107,7 +133,7 @@ async def structured_retrieve(
             (time.perf_counter_ns() - started_ns) / 1_000_000,
             {"started_monotonic_ns": started_ns},
         )
-    return [
+    candidates = [
         MemoryCandidate(
             memory_id=row.id,
             user_id=row.user_id,
@@ -128,6 +154,23 @@ async def structured_retrieve(
         )
         for index, row in enumerate(rows, start=1)
     ]
+    if trace is not None:
+        trace(
+            "structured_candidates",
+            0.0,
+            {
+                "filters": {"owner_id": str(user_id), "status": "active"},
+                "candidates": [
+                    {
+                        "memory_id": str(item.memory_id),
+                        "rank": item.source_rank,
+                        "score": item.score,
+                    }
+                    for item in candidates
+                ],
+            },
+        )
+    return candidates
 
 
 async def fts_retrieve(
@@ -148,7 +191,12 @@ async def fts_retrieve(
     )
     if not terms:
         return []
-    tsquery = func.websearch_to_tsquery("simple", f'"{" ".join(terms)}"')
+    # Require every meaningful lexical term, but do not require them to be
+    # adjacent or in the same order as the stored sentence. User queries often
+    # place the requested field before the entity while memories state the
+    # entity before the field (e.g. "framework ... Willow Beacon project").
+    tsquery_text = " ".join(terms)
+    tsquery = func.websearch_to_tsquery("simple", tsquery_text)
     query = _base_memory_query(user_id, plan).where(MemoryItem.search_tsv.op("@@")(tsquery))
     rank = func.ts_rank_cd(MemoryItem.search_tsv, tsquery)
     started_ns = time.perf_counter_ns()
@@ -165,9 +213,14 @@ async def fts_retrieve(
         trace(
             "fts_db_query",
             (time.perf_counter_ns() - started_ns) / 1_000_000,
-            {"started_monotonic_ns": started_ns},
+            {
+                "started_monotonic_ns": started_ns,
+                "selected_terms": terms,
+                "query_mode": "all_terms_unordered",
+                "candidate_count": len(rows),
+            },
         )
-    return [
+    candidates = [
         MemoryCandidate(
             memory_id=row[0].id,
             user_id=row[0].user_id,
@@ -188,6 +241,23 @@ async def fts_retrieve(
         )
         for index, row in enumerate(rows, start=1)
     ]
+    if trace is not None:
+        trace(
+            "fts_candidates",
+            0.0,
+            {
+                "filters": {"owner_id": str(user_id), "status": "active"},
+                "candidates": [
+                    {
+                        "memory_id": str(item.memory_id),
+                        "rank": item.source_rank,
+                        "fts_score": item.score,
+                    }
+                    for item in candidates
+                ],
+            },
+        )
+    return candidates
 
 
 def should_run_structured_retrieval(plan: MemoryQueryPlan) -> bool:
@@ -223,7 +293,12 @@ async def dense_retrieve(
         trace(
             "embedding",
             (time.perf_counter_ns() - embedding_started_ns) / 1_000_000,
-            {"started_monotonic_ns": embedding_started_ns},
+            {
+                "started_monotonic_ns": embedding_started_ns,
+                "query": plan.normalized_query,
+                "dimensions": len(embedding),
+                "l2_norm": sum(float(value) ** 2 for value in embedding) ** 0.5,
+            },
         )
     distance = MemoryChunk.embedding.cosine_distance(list(embedding))
     minimum_distance = func.min(distance).label("distance")
@@ -248,7 +323,24 @@ async def dense_retrieve(
         trace(
             "vector_db_query",
             (time.perf_counter_ns() - query_started_ns) / 1_000_000,
-            {"started_monotonic_ns": query_started_ns},
+            {
+                "started_monotonic_ns": query_started_ns,
+                "filters": {
+                    "owner_id": str(user_id),
+                    "status": "active",
+                    "chunk_embedding": "not_null",
+                    "limit": limit,
+                },
+                "candidates": [
+                    {
+                        "memory_id": str(row[0].id),
+                        "rank": rank,
+                        "cosine_distance": float(row[1] or 0.0),
+                        "cosine_similarity": 1.0 - float(row[1] or 0.0),
+                    }
+                    for rank, row in enumerate(rows, start=1)
+                ],
+            },
         )
     return [
         MemoryCandidate(
@@ -375,10 +467,12 @@ class MemoryRetrievalService:
         *,
         embedding_provider: RemoteEmbeddingProvider | None = None,
         reranker: RemoteReranker | None = None,
+        diagnostic_trace: Callable[[str, float, dict[str, Any]], None] | None = None,
     ) -> None:
         self.settings = settings
         self.embedding_provider = embedding_provider
         self.reranker = reranker
+        self.diagnostic_trace = diagnostic_trace
 
     async def readiness(self) -> dict[str, object]:
         if self.settings.memory_retrieval_mode == "off" and not self.settings.memory_write_enabled:
@@ -442,6 +536,7 @@ class MemoryRetrievalService:
         limit: int | None = None,
         trace: Callable[[str, float, dict[str, Any]], None] | None = None,
     ) -> MemoryRetrievalResult:
+        trace = trace or self.diagnostic_trace
         requested_limit = self.settings.memory_final_context_count
         if limit is not None:
             requested_limit = min(
@@ -553,7 +648,19 @@ class MemoryRetrievalService:
             trace(
                 "rrf",
                 (time.perf_counter_ns() - rrf_started_ns) / 1_000_000,
-                {"count": len(fused), "started_monotonic_ns": rrf_started_ns},
+                {
+                    "count": len(fused),
+                    "started_monotonic_ns": rrf_started_ns,
+                    "candidates": [
+                        {
+                            "memory_id": str(item.memory_id),
+                            "rank": item.rank,
+                            "rrf_score": item.score,
+                            "sources": list(item.sources),
+                        }
+                        for item in fused
+                    ],
+                },
             )
         if self.reranker is not None and fused:
             fallback_memory_ids = {candidate.memory_id for candidate in fts} | {
@@ -578,11 +685,47 @@ class MemoryRetrievalService:
                         (time.perf_counter_ns() - rerank_started_ns) / 1_000_000,
                         {"count": len(fused), "started_monotonic_ns": rerank_started_ns},
                     )
+                    trace(
+                        "reranked_candidates",
+                        0.0,
+                        {
+                            "candidates": [
+                                {
+                                    "memory_id": str(item.memory_id),
+                                    "rank": item.rank,
+                                    "reranker_score": item.score,
+                                    "sources": list(item.sources),
+                                }
+                                for item in fused
+                            ]
+                        },
+                    )
+                reranked = fused
                 fused = apply_relevance_boundary(
                     fused,
                     minimum_score=self.settings.memory_min_rerank_score,
                     trusted_memory_ids=boundary_trusted_memory_ids,
                 )
+                if trace is not None:
+                    accepted_ids = {item.memory_id for item in fused}
+                    trace(
+                        "relevance_boundary",
+                        0.0,
+                        {
+                            "minimum_score": self.settings.memory_min_rerank_score,
+                            "candidates": [
+                                {
+                                    "memory_id": str(item.memory_id),
+                                    "reranker_score": item.score,
+                                    "trusted_exact_evidence": (
+                                        item.memory_id in boundary_trusted_memory_ids
+                                    ),
+                                    "accepted": item.memory_id in accepted_ids,
+                                }
+                                for item in reranked
+                            ],
+                        },
+                    )
             except MemoryProviderError as error:
                 provider_error = provider_error or error.code
                 # RRF scores are not reranker scores, so applying the
@@ -590,6 +733,25 @@ class MemoryRetrievalService:
                 # only lexical/structured evidence and never expose a
                 # dense-only nearest neighbour when reranking is unavailable.
                 fused = tuple(item for item in fused if item.memory_id in fallback_memory_ids)
+        if trace is not None:
+            trace(
+                "final_candidates",
+                0.0,
+                {
+                    "provider_error": provider_error,
+                    "candidates": [
+                        {
+                            "memory_id": str(item.memory_id),
+                            "rank": item.rank,
+                            "score": item.score,
+                            "sources": list(item.sources),
+                            "status": item.status.value,
+                            "owner_id": str(item.user_id),
+                        }
+                        for item in fused[: plan.limit]
+                    ],
+                },
+            )
         return MemoryRetrievalResult(
             status="degraded" if provider_error else "ready",
             plan=plan,

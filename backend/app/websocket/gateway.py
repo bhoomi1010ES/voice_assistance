@@ -216,7 +216,15 @@ class VoiceGateway:
             )
             if app_state is not None:
                 app_state.router_decision_service = self.router_service
+        from app.okf.shadow import ShadowReadCapacity
+
+        self._okf_shadow_capacity = getattr(
+            app_state,
+            "okf_shadow_capacity",
+            ShadowReadCapacity(settings.okf_shadow_max_concurrent),
+        )
         self._router_shadow_tasks: set[asyncio.Task[None]] = set()
+        self._okf_shadow_tasks: set[asyncio.Task[None]] = set()
         self.tts_service = tts_service
         self.tool_registry = tool_registry or create_default_tool_registry()
         if tool_registry is None and (
@@ -1485,6 +1493,7 @@ class VoiceGateway:
             return {"status": "failed", "error": "empty_transcript"}
         routed_memory_context: str | None = None
         routed_memory_evidence_ids: tuple[uuid.UUID, ...] = ()
+        routed_memory_evidence_route = "RAG_PLUS_LLM"
         skip_legacy_memory_retrieval = False
         routed_result = await self._dispatch_structured_route(
             session_id=session_id,
@@ -1496,6 +1505,9 @@ class VoiceGateway:
             if routed_result.get("status") == "continue_with_memory_evidence":
                 routed_memory_context = routed_result.get("memory_context")
                 routed_memory_evidence_ids = tuple(routed_result.get("memory_evidence_ids", ()))
+                routed_memory_evidence_route = routed_result.get(
+                    "memory_evidence_route", "RAG_PLUS_LLM"
+                )
             elif routed_result.get("status") == "continue_without_memory_retrieval":
                 skip_legacy_memory_retrieval = True
             else:
@@ -2298,7 +2310,7 @@ class VoiceGateway:
                         "memory_evidence_ids": [
                             str(memory_id) for memory_id in routed_memory_evidence_ids
                         ],
-                        "memory_evidence_route": "RAG_PLUS_LLM",
+                        "memory_evidence_route": routed_memory_evidence_route,
                     }
                     if routed_memory_evidence_ids
                     else {}
@@ -2460,7 +2472,10 @@ class VoiceGateway:
 
             if not self.cancel_guard.can_emit(response_id):
                 return {"status": "cancelled"}
-            if self.settings.memory_retrieval_mode != "inject":
+            if (
+                self.settings.knowledge_mode == "rag"
+                and self.settings.memory_retrieval_mode != "inject"
+            ):
                 text = (
                     "Saved memory lookup is turned off."
                     if self.settings.memory_retrieval_mode == "off"
@@ -2512,7 +2527,7 @@ class VoiceGateway:
 
             websocket_app = getattr(getattr(self, "websocket", None), "app", None)
             memory_service = getattr(getattr(websocket_app, "state", None), "memory_service", None)
-            if memory_service is None:
+            if memory_service is None and self.settings.knowledge_mode == "rag":
                 text = "I couldn't check your saved memories right now."
                 await self._emit_routed_final_text(
                     session_id=session_id,
@@ -2522,6 +2537,15 @@ class VoiceGateway:
                     route=RouteName.MEMORY_QUERY,
                 )
                 return {"status": "completed", "executed_tool_names": []}
+
+            if self.settings.knowledge_mode in {"okf", "combined"}:
+                return await self._dispatch_selected_knowledge(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    transcript=transcript,
+                    rag_service=memory_service,
+                )
 
             def trace_memory_stage(
                 stage: str, duration_ms: float, metadata: dict[str, Any]
@@ -2548,6 +2572,7 @@ class VoiceGateway:
             retrieval_now = (
                 self._trusted_user_clock().now_utc().astimezone(ZoneInfo(memory_timezone))
             )
+            rag_started_ns = time.perf_counter_ns()
             try:
                 result = await memory_service.retrieve(
                     self.db,
@@ -2558,6 +2583,7 @@ class VoiceGateway:
                 )
             except (MemoryProviderError, SQLAlchemyError):
                 result = None
+            rag_latency_ms = (time.perf_counter_ns() - rag_started_ns) / 1_000_000
             if not self.cancel_guard.can_emit(response_id):
                 return {"status": "cancelled"}
             evaluation = (
@@ -2570,6 +2596,17 @@ class VoiceGateway:
                 if result is not None
                 else None
             )
+            if result is not None and evaluation is not None:
+                self._schedule_okf_shadow_read(
+                    transcript=transcript,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    rag_disposition=evaluation.route.value,
+                    rag_evidence_ids=evaluation.evidence_ids,
+                    rag_latency_ms=rag_latency_ms,
+                    route_prechecked=True,
+                )
             if evaluation is not None:
                 self._trace_latency(
                     session_id=session_id,
@@ -5078,6 +5115,15 @@ class VoiceGateway:
                 await asyncio.gather(*shadow_tasks, return_exceptions=True)
             if shadow_task_set is not None:
                 shadow_task_set.clear()
+            okf_shadow_task_set = getattr(self, "_okf_shadow_tasks", None)
+            okf_shadow_tasks = list(okf_shadow_task_set or ())
+            for task in okf_shadow_tasks:
+                if not task.done():
+                    task.cancel()
+            if okf_shadow_tasks:
+                await asyncio.gather(*okf_shadow_tasks, return_exceptions=True)
+            if okf_shadow_task_set is not None:
+                okf_shadow_task_set.clear()
             await self._cancel_stt_finalize_task()
             retry_task = self._retry_response_task
             self._retry_response_task = None
@@ -5848,17 +5894,30 @@ class VoiceGateway:
                 turn_id=turn_id,
                 response_id=response_id,
             ):
+                retrieval_now = self._now_datetime()
+                rag_started_ns = time.perf_counter_ns()
                 result = await service.retrieve(
                     self.db,
                     user_id=self.principal.user_id,
                     query=transcript,
-                    now=self._now_datetime(),
+                    now=retrieval_now,
                     trace=trace_retrieval_stage,
                 )
+                rag_latency_ms = (time.perf_counter_ns() - rag_started_ns) / 1_000_000
         except (MemoryProviderError, SQLAlchemyError):
             # Memory is an enhancement; a provider outage must not prevent
             # the committed transcript from reaching the configured LLM.
             return None
+        self._schedule_okf_shadow_read(
+            transcript=transcript,
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            rag_result=result,
+            rag_now=retrieval_now,
+            rag_latency_ms=rag_latency_ms,
+            route_prechecked=False,
+        )
         if self.settings.memory_retrieval_mode == "shadow" or not result.memories:
             return None
         return (
@@ -5868,6 +5927,219 @@ class VoiceGateway:
             ).text
             or None
         )
+
+    def _schedule_okf_shadow_read(
+        self,
+        *,
+        transcript: str,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        route_prechecked: bool,
+        rag_disposition: str | None = None,
+        rag_evidence_ids: tuple[uuid.UUID, ...] = (),
+        rag_result=None,
+        rag_now: datetime | None = None,
+        rag_latency_ms: float = 0.0,
+    ) -> None:
+        """Schedule a read-only comparison; this method never awaits shadow work."""
+
+        if (
+            not self.settings.okf_shadow_reads
+            or not self.settings.okf_enabled
+            or self.settings.knowledge_mode != "rag"
+            or self.principal.user_id not in self.settings.okf_shadow_user_ids
+        ):
+            return
+        if not route_prechecked:
+            try:
+                from app.routing.rules import classify_transcript
+
+                if classify_transcript(transcript).route != RouteName.MEMORY_QUERY:
+                    return
+            except (TypeError, ValueError):
+                return
+        if rag_result is not None:
+            from app.memory.evaluation import evaluate_memory_result
+
+            evaluation = evaluate_memory_result(
+                rag_result,
+                user_id=self.principal.user_id,
+                query=transcript,
+                now=rag_now or self._now_datetime(),
+            )
+            rag_disposition = evaluation.route.value
+            rag_evidence_ids = evaluation.evidence_ids
+        if rag_disposition is None:
+            rag_disposition = "UNAVAILABLE"
+        capacity = getattr(self, "_okf_shadow_capacity", None)
+        if capacity is None:
+            from app.okf.shadow import ShadowReadCapacity
+
+            capacity = ShadowReadCapacity(self.settings.okf_shadow_max_concurrent)
+            self._okf_shadow_capacity = capacity
+        task_set = getattr(self, "_okf_shadow_tasks", None)
+        if task_set is None:
+            task_set = set()
+            self._okf_shadow_tasks = task_set
+        from app.okf.shadow import schedule_shadow_read
+
+        schedule_shadow_read(
+            settings=self.settings,
+            session_factory=getattr(self, "session_factory", None),
+            user_id=self.principal.user_id,
+            session_id=session_id,
+            query=transcript,
+            now=rag_now or self._now_datetime(),
+            rag_disposition=rag_disposition,
+            rag_evidence_ids=rag_evidence_ids,
+            rag_latency_ms=rag_latency_ms,
+            capacity=capacity,
+            task_set=task_set,
+            correlation={
+                "session_id": str(session_id),
+                "turn_id": str(turn_id),
+                "response_id": str(response_id),
+            },
+        )
+
+    async def _dispatch_selected_knowledge(
+        self,
+        *,
+        session_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        response_id: uuid.UUID,
+        transcript: str,
+        rag_service,
+    ) -> dict[str, Any]:
+        """Run opt-in OKF/COMBINED only for routed MEMORY_QUERY turns."""
+
+        from app.knowledge import (
+            KnowledgeSelector,
+            build_knowledge_context,
+            configured_engines,
+        )
+        from app.okf.retrieval import OkfRetrievalService
+        from app.okf.types import KnowledgeDisposition, KnowledgeRequest
+
+        if not self.cancel_guard.can_emit(response_id):
+            return {"status": "cancelled"}
+        request = KnowledgeRequest(
+            user_id=self.principal.user_id,
+            query=transcript,
+            now=self._now_datetime(),
+            session_id=session_id,
+            cancellation_check=not self.cancel_guard.can_emit(response_id),
+        )
+        selector = KnowledgeSelector(
+            self.settings.knowledge_mode,
+            configured_engines(
+                self.settings,
+                rag_service=rag_service,
+                okf_service=OkfRetrievalService(self.settings),
+            ),
+        )
+        started = time.perf_counter()
+        selection = await selector.retrieve(self.db, request)
+        self._trace_latency(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            component="knowledge",
+            event="knowledge_selection_completed",
+            duration_ms=(time.perf_counter() - started) * 1_000,
+            metadata={
+                "mode": selection.mode,
+                "disposition": selection.disposition.value,
+                "reason": selection.reason,
+                "evidence_count": len(selection.facts),
+                "engine_count": len(selection.results),
+            },
+        )
+        if not self.cancel_guard.can_emit(response_id):
+            return {"status": "cancelled"}
+
+        if selection.disposition == KnowledgeDisposition.UNAVAILABLE:
+            text = "I couldn't check your saved memories right now."
+            await self._emit_routed_final_text(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+                route=RouteName.MEMORY_QUERY,
+            )
+            return {"status": "completed", "executed_tool_names": []}
+        if selection.disposition == KnowledgeDisposition.NO_RESULT:
+            await self._emit_routed_final_text(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text="I don't have a saved memory that answers that.",
+                route=RouteName.MEMORY_QUERY,
+            )
+            return {"status": "completed", "executed_tool_names": []}
+        if selection.disposition == KnowledgeDisposition.DIRECT_ANSWER:
+            result = next(
+                (
+                    item
+                    for item in selection.results
+                    if item.disposition == KnowledgeDisposition.DIRECT_ANSWER
+                ),
+                None,
+            )
+            if result is None or not result.direct_text or not result.evidence_ids:
+                await self._emit_routed_final_text(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    text="I couldn't verify a single saved answer for that.",
+                    route=RouteName.MEMORY_QUERY,
+                )
+                return {"status": "completed", "executed_tool_names": []}
+            await self._emit_routed_final_text(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=result.direct_text,
+                route=RouteName.MEMORY_QUERY,
+                memory_evidence_ids=result.evidence_ids,
+                memory_evidence_route="OKF_DIRECT_ANSWER",
+            )
+            return {
+                "status": "completed",
+                "executed_tool_names": [],
+                "memory_evidence_ids": [str(value) for value in result.evidence_ids],
+            }
+
+        context = build_knowledge_context(
+            selection,
+            max_chars=min(
+                self.settings.memory_context_max_chars,
+                self.settings.okf_context_max_chars,
+            ),
+        )
+        if not context.text:
+            text = (
+                "I found conflicting saved entries, so I can't verify which one is current."
+                if selection.disposition == KnowledgeDisposition.CONFLICT
+                else "I don't have a saved memory that answers that."
+            )
+            await self._emit_routed_final_text(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+                route=RouteName.MEMORY_QUERY,
+            )
+            return {"status": "completed", "executed_tool_names": []}
+        return {
+            "status": "continue_with_memory_evidence",
+            "memory_context": context.text,
+            "memory_evidence_ids": context.evidence_ids,
+            "memory_evidence_route": (
+                f"{selection.mode.upper()}_{selection.disposition.value.upper()}"
+            ),
+        }
 
 
 def _safe_client_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

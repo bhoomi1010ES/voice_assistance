@@ -1235,7 +1235,12 @@ async def test_general_route_omits_memory_context_and_search_but_keeps_history()
     captured = []
     gateway, _outbound = _gateway(lambda _request: ())
     gateway.settings = _settings().model_copy(
-        update={"router_mode": "on", "memory_retrieval_mode": "inject"}
+        update={
+            "router_mode": "on",
+            "memory_retrieval_mode": "inject",
+            "knowledge_mode": "combined",
+            "okf_enabled": True,
+        }
     )
     gateway.router_service = DecisionRouterService(gateway.settings)
     registry = create_default_tool_registry()
@@ -1286,6 +1291,71 @@ async def test_general_route_omits_memory_context_and_search_but_keeps_history()
     assert all(tool.name != "memory_search" for tool in captured[0].allowed_tools)
     assert all(tool.name != "memory_save" for tool in captured[0].allowed_tools)
     assert "Memory evidence policy" not in captured[0].system_instructions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("router_mode", ["off", "shadow"])
+async def test_legacy_router_modes_never_enter_okf_selector(router_mode: str) -> None:
+    gateway, _outbound = _direct_gateway()
+    gateway.settings = gateway.settings.model_copy(
+        update={"router_mode": router_mode, "knowledge_mode": "okf", "okf_enabled": True}
+    )
+    gateway.router_service.settings = gateway.settings
+    called = []
+
+    async def unexpected_selected_knowledge(**_kwargs):
+        called.append(True)
+        raise AssertionError("Legacy router modes must not enter the OKF selector.")
+
+    gateway._dispatch_selected_knowledge = unexpected_selected_knowledge
+    response_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._dispatch_structured_route(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=response_id,
+        transcript="What is my favorite spaceship?",
+    )
+
+    assert result is None
+    assert called == []
+
+
+@pytest.mark.asyncio
+async def test_canary_memory_query_enters_selected_knowledge_path() -> None:
+    gateway, _outbound = _direct_gateway()
+    gateway.settings = gateway.settings.model_copy(
+        update={"knowledge_mode": "okf", "okf_enabled": True}
+    )
+    gateway.router_service.settings = gateway.settings
+    _enable_routed_memory(
+        gateway,
+        _FakeRoutedMemoryService(result=None),
+    )
+    gateway.settings = gateway.settings.model_copy(
+        update={"knowledge_mode": "okf", "okf_enabled": True}
+    )
+    gateway.router_service.settings = gateway.settings
+    called = []
+
+    async def selected_knowledge(**kwargs):
+        called.append(kwargs)
+        return {"status": "completed", "executed_tool_names": []}
+
+    gateway._dispatch_selected_knowledge = selected_knowledge
+    response_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._dispatch_structured_route(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=response_id,
+        transcript="What is my favorite spaceship?",
+    )
+
+    assert result["status"] == "completed"
+    assert len(called) == 1
 
 
 @pytest.mark.asyncio

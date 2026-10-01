@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 
 from app.core.config import Settings
@@ -248,3 +250,193 @@ def test_graph_feature_flags_load_from_dotenv(tmp_path) -> None:
     assert settings.graph_write_enabled is True
     assert settings.graph_max_depth == 3
     assert settings.graph_rag_timeout_ms == 125
+
+
+def test_okf_defaults_are_disabled_and_rag_only() -> None:
+    settings = Settings(
+        _env_file=None,
+        okf_enabled=False,
+        okf_sync_enabled=False,
+        knowledge_mode="rag",
+        okf_shadow_reads=False,
+        okf_evaluation_enabled=False,
+    )
+
+    assert settings.okf_enabled is False
+    assert settings.okf_sync_enabled is False
+    assert settings.knowledge_mode == "rag"
+    assert settings.knowledge_rag_timeout_ms == 30_000
+    assert settings.okf_shadow_reads is False
+    assert settings.okf_shadow_user_ids == ()
+    assert settings.okf_evaluation_enabled is False
+    assert settings.okf_evaluation_user_ids == ()
+    assert settings.okf_worker_mode == "in_process"
+    assert settings.okf_context_max_chars == 4_000
+    assert settings.okf_query_limit == 20
+    assert settings.okf_retrieval_timeout_ms == 75
+    assert settings.okf_policy_version == "okf-v1"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"okf_sync_enabled": True}, "OKF_SYNC_ENABLED requires OKF_ENABLED=true"),
+        ({"okf_shadow_reads": True}, "OKF_SHADOW_READS requires OKF_ENABLED=true"),
+        (
+            {"knowledge_mode": "okf"},
+            "KNOWLEDGE_MODE=okf or combined requires OKF_ENABLED=true",
+        ),
+        (
+            {"knowledge_mode": "combined"},
+            "KNOWLEDGE_MODE=okf or combined requires OKF_ENABLED=true",
+        ),
+    ],
+)
+def test_okf_capabilities_require_master_switch(overrides: dict[str, object], message: str) -> None:
+    values: dict[str, object] = {
+        "okf_enabled": False,
+        "okf_sync_enabled": False,
+        "knowledge_mode": "rag",
+        "okf_shadow_reads": False,
+    }
+    values.update(overrides)
+    with pytest.raises(ValueError, match=message):
+        Settings(
+            _env_file=None,
+            **values,
+        )
+
+
+@pytest.mark.parametrize("knowledge_mode", ["rag", "okf", "combined"])
+def test_okf_enabled_accepts_each_knowledge_mode(knowledge_mode: str) -> None:
+    settings = Settings(
+        _env_file=None,
+        okf_enabled=True,
+        okf_sync_enabled=True,
+        knowledge_mode=knowledge_mode,
+        okf_shadow_reads=knowledge_mode == "rag",
+        okf_shadow_user_ids=(
+            (uuid.UUID("00000000-0000-0000-0000-000000000101"),) if knowledge_mode == "rag" else ()
+        ),
+    )
+
+    assert settings.knowledge_mode == knowledge_mode
+    assert settings.okf_sync_enabled is True
+    assert settings.okf_shadow_reads is (knowledge_mode == "rag")
+
+
+def test_okf_shadow_reads_require_explicit_disposable_user_allowlist() -> None:
+    with pytest.raises(ValueError, match="explicit disposable OKF_SHADOW_USER_IDS"):
+        Settings(_env_file=None, okf_enabled=True, okf_shadow_reads=True)
+
+
+def test_okf_shadow_user_allowlist_rejects_duplicate_ids() -> None:
+    user_id = uuid.UUID("00000000-0000-0000-0000-000000000101")
+    with pytest.raises(ValueError, match="must not contain duplicates"):
+        Settings(
+            _env_file=None,
+            okf_enabled=True,
+            okf_shadow_reads=True,
+            okf_shadow_user_ids=(user_id, user_id),
+        )
+
+
+def test_okf_shadow_requires_rag_to_remain_authoritative() -> None:
+    user_id = uuid.UUID("00000000-0000-0000-0000-000000000101")
+    with pytest.raises(ValueError, match="requires KNOWLEDGE_MODE=rag"):
+        Settings(
+            _env_file=None,
+            okf_enabled=True,
+            knowledge_mode="combined",
+            okf_shadow_reads=True,
+            okf_shadow_user_ids=(user_id,),
+        )
+
+
+def test_okf_shadow_allowlist_loads_from_environment(monkeypatch) -> None:
+    disposable_user_id = "00000000-0000-0000-0000-000000000101"
+    monkeypatch.setenv("OKF_ENABLED", "true")
+    monkeypatch.setenv("OKF_SYNC_ENABLED", "false")
+    monkeypatch.setenv("OKF_SHADOW_READS", "true")
+    monkeypatch.setenv("KNOWLEDGE_MODE", "rag")
+    monkeypatch.setenv("OKF_SHADOW_USER_IDS", f'["{disposable_user_id}"]')
+
+    settings = Settings(_env_file=None)
+
+    assert settings.okf_shadow_user_ids == (uuid.UUID(disposable_user_id),)
+
+
+def test_okf_evaluation_requires_explicit_dev_owner_allowlist() -> None:
+    owner_id = uuid.UUID("00000000-0000-0000-0000-000000000101")
+    settings = Settings(
+        _env_file=None,
+        app_env="development",
+        okf_enabled=True,
+        okf_sync_enabled=True,
+        okf_evaluation_enabled=True,
+        okf_evaluation_user_ids=(owner_id,),
+    )
+
+    assert settings.okf_evaluation_enabled is True
+    assert settings.okf_evaluation_user_ids == (owner_id,)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"app_env": "production"}, "limited to development/test"),
+        ({"okf_sync_enabled": False}, "requires OKF_ENABLED and OKF_SYNC_ENABLED"),
+        ({"okf_evaluation_user_ids": ()}, "requires explicit owner UUIDs"),
+    ],
+)
+def test_okf_evaluation_rejects_unsafe_configuration(overrides, message: str) -> None:
+    values = {
+        "_env_file": None,
+        "app_env": "development",
+        "okf_enabled": True,
+        "okf_sync_enabled": True,
+        "okf_evaluation_enabled": True,
+        "okf_evaluation_user_ids": (uuid.UUID("00000000-0000-0000-0000-000000000101"),),
+    }
+    values.update(overrides)
+    with pytest.raises(ValueError, match=message):
+        Settings(**values)
+
+
+def test_okf_evaluation_allowlist_rejects_duplicate_ids() -> None:
+    owner_id = uuid.UUID("00000000-0000-0000-0000-000000000101")
+    with pytest.raises(ValueError, match="OKF_EVALUATION_USER_IDS must not contain duplicates"):
+        Settings(
+            _env_file=None,
+            okf_enabled=True,
+            okf_sync_enabled=True,
+            okf_evaluation_enabled=True,
+            okf_evaluation_user_ids=(owner_id, owner_id),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("okf_context_max_chars", 511),
+        ("okf_query_limit", 0),
+        ("okf_retrieval_timeout_ms", 5_001),
+        ("knowledge_rag_timeout_ms", 60_001),
+        ("okf_shadow_max_concurrent", 0),
+        ("okf_job_lease_seconds", 9),
+        ("okf_job_max_attempts", 21),
+        ("okf_policy_version", "contains spaces"),
+    ],
+)
+def test_okf_limits_and_policy_version_are_validated(
+    field_name: str, invalid_value: object
+) -> None:
+    with pytest.raises(ValueError, match=field_name):
+        Settings(
+            _env_file=None,
+            okf_enabled=False,
+            okf_sync_enabled=False,
+            knowledge_mode="rag",
+            okf_shadow_reads=False,
+            **{field_name: invalid_value},
+        )

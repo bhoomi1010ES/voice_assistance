@@ -15,8 +15,8 @@ from app.main import create_app
 from app.memory.jobs import MemoryJobWorker
 from app.memory.policy import ExtractionCandidate
 from app.memory.repository import MemoryRepository
-from app.memory.retrieval import MemoryRetrievalService
-from app.memory.types import MemorySourceKind, MemoryType
+from app.memory.retrieval import MemoryRetrievalService, fts_retrieve
+from app.memory.types import MemorySourceKind, MemoryType, build_memory_query_plan
 from app.memory.writer import MemoryWriter
 from app.models import (
     AuditLog,
@@ -29,6 +29,7 @@ from app.models import (
     User,
     VoiceSession,
 )
+from app.okf.lifecycle import OkfLifecycleService
 from app.services.auth import hash_password
 from tests.test_phase2_resources_integration import _auth, _email, _login, _register
 from tests.test_support import NoopSTTService
@@ -69,7 +70,10 @@ async def _cleanup(settings: Settings, emails: set[str]) -> None:
 
 
 def test_memory_settings_crud_and_delete_all(resource_client) -> None:
-    client, _settings, emails = resource_client
+    client, settings, emails = resource_client
+    client.app.state.settings = settings.model_copy(
+        update={"okf_enabled": True, "okf_sync_enabled": True}
+    )
     email = _email("phase6-memory")
     emails.add(email)
     _register(client, email)
@@ -207,7 +211,10 @@ def test_memory_version_is_once_per_created_or_superseding_write(resource_client
                 )
             )
             await session.commit()
-            writer = MemoryWriter(settings)
+            okf_settings = settings.model_copy(
+                update={"okf_enabled": True, "okf_sync_enabled": True}
+            )
+            writer = MemoryWriter(okf_settings)
             first_candidate = ExtractionCandidate(
                 content="I prefer green tea",
                 memory_type=MemoryType.PREFERENCE,
@@ -227,6 +234,7 @@ def test_memory_version_is_once_per_created_or_superseding_write(resource_client
             await session.commit()
             owner = await session.get(User, user_id)
             assert owner is not None and owner.memory_version == 1
+            assert owner.memory_generation == 0
 
             repository = MemoryRepository()
             reembed, enqueued = await repository.enqueue_reembed_memory(
@@ -256,6 +264,7 @@ def test_memory_version_is_once_per_created_or_superseding_write(resource_client
             await session.commit()
             owner = await session.get(User, user_id)
             assert owner is not None and owner.memory_version == 1
+            assert owner.memory_generation == 0
 
             second, second_created = await writer.write_candidate(
                 session,
@@ -275,6 +284,7 @@ def test_memory_version_is_once_per_created_or_superseding_write(resource_client
             await session.commit()
             owner = await session.get(User, user_id)
             assert owner is not None and owner.memory_version == 2
+            assert owner.memory_generation == 1
         await engine.dispose()
 
     asyncio.run(run())
@@ -381,3 +391,212 @@ async def _run_extraction_job(settings: Settings, email: str) -> None:
         assert stored_user is not None and stored_user.memory_version == 1
         assert stored_job is not None and stored_job.status == "completed"
     await engine.dispose()
+
+
+def test_excluded_session_source_is_filtered_from_rag() -> None:
+    if os.getenv("RUN_INTEGRATION_TESTS") != "1":
+        pytest.skip("Set RUN_INTEGRATION_TESTS=1 to run RAG lifecycle integration checks.")
+    settings = Settings(memory_retrieval_mode="inject")
+    if not settings.database_url:
+        pytest.skip("Database is not configured.")
+    email = _email("phase6-rag-excluded-source")
+
+    async def run() -> None:
+        engine = create_async_engine(settings.database_dsn)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        user_id = uuid.uuid4()
+        now = datetime.now(UTC)
+        try:
+            async with factory() as session:
+                user = User(
+                    id=user_id,
+                    email=email,
+                    password_hash=hash_password("excluded-source-test-password"),
+                    memory_enabled=True,
+                )
+                device = Device(
+                    id=uuid.uuid4(),
+                    user_id=user_id,
+                    device_identifier=f"excluded-{uuid.uuid4().hex}",
+                    platform="android",
+                )
+                auth_session = AuthSession(
+                    id=uuid.uuid4(),
+                    user_id=user_id,
+                    device_id=device.id,
+                    refresh_token_hash=uuid.uuid4().hex,
+                    created_at=now,
+                    last_used_at=now,
+                    expires_at=now + timedelta(days=1),
+                )
+                voice_session = VoiceSession(
+                    id=uuid.uuid4(),
+                    user_id=user_id,
+                    device_id=device.id,
+                    auth_session_id=auth_session.id,
+                    protocol_version=1,
+                    client_metadata={"memory_excluded": False},
+                    status="completed",
+                    started_at=now,
+                    last_activity_at=now,
+                    ended_at=now,
+                )
+                session.add(user)
+                await session.flush()
+                session.add(device)
+                await session.flush()
+                session.add(auth_session)
+                await session.flush()
+                session.add(voice_session)
+                await session.flush()
+                memory, created = await MemoryWriter(settings).write_candidate(
+                    session,
+                    user_id=user_id,
+                    candidate=ExtractionCandidate(
+                        content="My hidden orchard is called Windfall Grove.",
+                        memory_type=MemoryType.FACT,
+                        subject="user",
+                        predicate="orchard",
+                        object_json={"value": "Windfall Grove"},
+                        confidence=1.0,
+                        salience=1.0,
+                    ),
+                    source_kind=MemorySourceKind.MANUAL_API,
+                    source_session_id=voice_session.id,
+                )
+                assert created
+                await session.commit()
+                memory_id = memory.id
+
+                retrieval = MemoryRetrievalService(settings)
+                before = await retrieval.retrieve(
+                    session, user_id=user_id, query="hidden orchard", now=now
+                )
+                assert memory_id in {item.memory_id for item in before.memories}
+
+                voice_session.client_metadata = {"memory_excluded": True}
+                await OkfLifecycleService(
+                    policy_version=settings.okf_policy_version,
+                    sync_enabled=False,
+                ).exclude_session(session, user_id=user_id, session_id=voice_session.id)
+                await session.commit()
+
+                after = await retrieval.retrieve(
+                    session, user_id=user_id, query="hidden orchard", now=now
+                )
+                assert memory_id not in {item.memory_id for item in after.memories}
+        finally:
+            async with factory() as session:
+                await session.execute(delete(User).where(User.id == user_id))
+                await session.commit()
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_rag_fts_matches_reordered_query_terms_without_matching_unrelated_project() -> None:
+    if os.getenv("RUN_INTEGRATION_TESTS") != "1":
+        pytest.skip("Set RUN_INTEGRATION_TESTS=1 to run RAG lexical integration checks.")
+    settings = Settings(memory_retrieval_mode="inject")
+    if not settings.database_url:
+        pytest.skip("Database is not configured.")
+    email = _email("phase6-rag-reordered-fts")
+
+    async def run() -> None:
+        engine = create_async_engine(settings.database_dsn)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        user_id = uuid.uuid4()
+        now = datetime.now(UTC)
+        try:
+            async with factory() as session:
+                user = User(
+                    id=user_id,
+                    email=email,
+                    password_hash=hash_password("reordered-fts-test-password"),
+                    memory_enabled=True,
+                )
+                device = Device(
+                    id=uuid.uuid4(),
+                    user_id=user_id,
+                    device_identifier=f"fts-{uuid.uuid4().hex}",
+                    platform="android",
+                )
+                auth_session = AuthSession(
+                    id=uuid.uuid4(),
+                    user_id=user_id,
+                    device_id=device.id,
+                    refresh_token_hash=uuid.uuid4().hex,
+                    created_at=now,
+                    last_used_at=now,
+                    expires_at=now + timedelta(days=1),
+                )
+                voice_session = VoiceSession(
+                    id=uuid.uuid4(),
+                    user_id=user_id,
+                    device_id=device.id,
+                    auth_session_id=auth_session.id,
+                    protocol_version=1,
+                    client_metadata={"memory_excluded": False},
+                    status="completed",
+                    started_at=now,
+                    last_activity_at=now,
+                    ended_at=now,
+                )
+                session.add(user)
+                await session.flush()
+                session.add(device)
+                await session.flush()
+                session.add(auth_session)
+                await session.flush()
+                session.add(voice_session)
+                await session.flush()
+                expected, _ = await MemoryWriter(settings).write_candidate(
+                    session,
+                    user_id=user_id,
+                    candidate=ExtractionCandidate(
+                        content="My Willow Beacon project uses the FastAPI framework.",
+                        memory_type=MemoryType.PROJECT,
+                        subject="Willow Beacon",
+                        predicate="framework",
+                        object_json={"value": "FastAPI"},
+                        confidence=1.0,
+                        salience=1.0,
+                    ),
+                    source_kind=MemorySourceKind.MANUAL_API,
+                    source_session_id=voice_session.id,
+                )
+                unrelated, _ = await MemoryWriter(settings).write_candidate(
+                    session,
+                    user_id=user_id,
+                    candidate=ExtractionCandidate(
+                        content="My Maple Harbor project uses the Flask framework.",
+                        memory_type=MemoryType.PROJECT,
+                        subject="Maple Harbor",
+                        predicate="framework",
+                        object_json={"value": "Flask"},
+                        confidence=1.0,
+                        salience=1.0,
+                    ),
+                    source_kind=MemorySourceKind.MANUAL_API,
+                    source_session_id=voice_session.id,
+                )
+                await session.flush()
+                plan = build_memory_query_plan(
+                    "Which framework am I using for my Willow Beacon project?", now=now
+                )
+                candidates = await fts_retrieve(
+                    session,
+                    user_id=user_id,
+                    plan=plan,
+                    limit=8,
+                )
+                candidate_ids = {item.memory_id for item in candidates}
+                assert expected.id in candidate_ids
+                assert unrelated.id not in candidate_ids
+        finally:
+            async with factory() as session:
+                await session.execute(delete(User).where(User.id == user_id))
+                await session.commit()
+            await engine.dispose()
+
+    asyncio.run(run())

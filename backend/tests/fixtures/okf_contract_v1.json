@@ -1,0 +1,117 @@
+{
+  "contract_id": "okf-contract-v1",
+  "version": "1.0.0",
+  "policy_version": "okf-v1",
+  "description": "Frozen OKF-0 domain contract. It defines deterministic mapping and service boundaries without enabling runtime behavior.",
+  "concept_types": {
+    "enabled": ["profile", "preference", "project", "decision", "relationship", "fact"],
+    "deferred": ["routine", "event"],
+    "ineligible": ["summary"]
+  },
+  "canonical_key": {
+    "normalization": "NFKC, casefold, trim, collapse whitespace, transliterate only through an explicit versioned map, replace separators with hyphen, reject empty segments",
+    "pattern": "^(?:profile|preferences|projects|relationships|facts)/[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*){0,6}$",
+    "max_characters": 512,
+    "max_segments": 8,
+    "server_generated_only": true,
+    "roots": ["profile", "preferences", "projects", "relationships", "facts"]
+  },
+  "predicate_maps": {
+    "profile": ["home_base", "home_location", "name", "occupation", "timezone"],
+    "preference": ["beverage", "commute", "editor", "language", "response_style", "tool"],
+    "project_child": ["database", "embedding_model", "framework", "language", "repository", "status", "vector_store"],
+    "decision": ["database", "embedding_model", "framework", "selected_model", "vector_store"],
+    "relationship": ["colleague", "depends_on", "manager", "member_of", "relationship", "reports_to"]
+  },
+  "mapping": {
+    "requires_active_memory": true,
+    "requires_included_source_session": true,
+    "requires_structured_subject": true,
+    "requires_structured_predicate": true,
+    "requires_bounded_object_json": true,
+    "parses_free_text_for_identity_or_value": false,
+    "rejects_secrets": true,
+    "unknown_predicate_action": "abstain",
+    "insufficient_structure_action": "abstain"
+  },
+  "assertion_policy": {
+    "equivalent_value": "attach_provenance_without_new_version",
+    "explicit_newer_value": "supersede_old_assertion_and_activate_new_assertion",
+    "incompatible_current_values": "retain_multiple_active_assertions_and_mark_concept_contested",
+    "confidence_may_choose_winner": false,
+    "retrieval_requires_active_current_provenance": true
+  },
+  "privacy_barrier": {
+    "same_transaction_events": [
+      "forget",
+      "rest_delete",
+      "delete_all",
+      "session_exclusion",
+      "session_delete",
+      "session_purge"
+    ],
+    "update_supersession_invalidates_old_current_assertions_before_commit": true,
+    "background_reconciliation_may_leave_stale_read_window": false,
+    "delete_all_purges_content_bearing_okf_rows": true,
+    "disable_is_deletion": false,
+    "running_job_requires_fresh_memory_generation_before_commit": true
+  },
+  "service_contracts": {
+    "KnowledgeRequest": [
+      "user_id",
+      "query",
+      "now",
+      "session_id",
+      "memory_enabled",
+      "memory_excluded",
+      "cancellation_check"
+    ],
+    "KnowledgeResult": [
+      "engine",
+      "status",
+      "evidence",
+      "conflicts",
+      "degraded_reason",
+      "duration_ms"
+    ],
+    "KnowledgeDisposition": [
+      "direct_answer",
+      "continue_with_evidence",
+      "no_result",
+      "unavailable",
+      "conflict",
+      "cancelled"
+    ],
+    "OkfConceptProposal": [
+      "concept_type",
+      "canonical_key",
+      "title",
+      "value_json",
+      "display_text",
+      "confidence",
+      "valid_from",
+      "valid_to",
+      "source_memory_id",
+      "policy_version"
+    ],
+    "OkfEvidence": [
+      "concept_id",
+      "assertion_id",
+      "concept_type",
+      "canonical_key",
+      "display_text",
+      "status",
+      "source_memory_ids",
+      "valid_from",
+      "valid_to"
+    ],
+    "OkfSyncOutcome": [
+      "status",
+      "reason_code",
+      "concept_ids",
+      "assertion_ids",
+      "source_memory_id",
+      "policy_version"
+    ]
+  }
+}

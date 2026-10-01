@@ -34,6 +34,7 @@ def _memory(
     valid_from: datetime | None = None,
     valid_to: datetime | None = None,
     object_json: dict | None = None,
+    memory_type: MemoryType = MemoryType.FACT,
 ) -> FusedMemory:
     return FusedMemory(
         memory_id=uuid.uuid4(),
@@ -43,7 +44,7 @@ def _memory(
         score=score,
         sources=sources,
         created_at=NOW - timedelta(days=2),
-        memory_type=MemoryType.FACT,
+        memory_type=memory_type,
         subject=subject,
         predicate=predicate,
         object_json=object_json,
@@ -53,10 +54,18 @@ def _memory(
     )
 
 
-def _result(*memories: FusedMemory, status: str = "ready") -> MemoryRetrievalResult:
+def _result(
+    *memories: FusedMemory,
+    status: str = "ready",
+    memory_types: tuple[MemoryType, ...] = (),
+) -> MemoryRetrievalResult:
     return MemoryRetrievalResult(
         status=status,
-        plan=MemoryQueryPlan(normalized_query="What is my name?", intent=MemoryIntent.FACT),
+        plan=MemoryQueryPlan(
+            normalized_query="What is my name?",
+            intent=MemoryIntent.FACT,
+            memory_types=memory_types,
+        ),
         memories=tuple(memories),
     )
 
@@ -158,6 +167,260 @@ def test_dense_only_low_score_is_not_treated_as_grounded_evidence() -> None:
     )
 
     assert evaluated.route == MemoryEvaluationRoute.NO_RESULT
+
+
+@pytest.mark.parametrize(
+    ("query", "predicate", "memory_type", "expected"),
+    [
+        (
+            "Which framework am I using for my Willow Beacon project?",
+            "framework",
+            MemoryType.PROJECT,
+            True,
+        ),
+        (
+            "What did I tell you about my Willow Beacon project?",
+            "framework",
+            MemoryType.PROJECT,
+            True,
+        ),
+        (
+            "What data store did I tell you my Willow Beacon project uses?",
+            "database",
+            MemoryType.PROJECT,
+            True,
+        ),
+        (
+            "Which framework did I choose for the Willow Beacon project?",
+            "framework",
+            MemoryType.PROJECT,
+            True,
+        ),
+        ("Which framework did I choose?", "framework", MemoryType.PROJECT, False),
+        (
+            "Which framework am I using for my Harbor Light project?",
+            "framework",
+            MemoryType.PROJECT,
+            False,
+        ),
+        (
+            "Which framework am I using for my Willow Beacon project?",
+            "database",
+            MemoryType.PROJECT,
+            False,
+        ),
+        (
+            "What did I tell you about my Willow Beacon project?",
+            "framework",
+            MemoryType.FACT,
+            False,
+        ),
+    ],
+)
+def test_dense_project_evidence_requires_named_owner_project_and_matching_field(
+    query: str,
+    predicate: str,
+    memory_type: MemoryType,
+    expected: bool,
+) -> None:
+    owner = uuid.uuid4()
+    memory = _memory(
+        owner,
+        content="My Willow Beacon project uses LangGraph and SQLite.",
+        subject="Willow Beacon",
+        predicate=predicate,
+        sources=("dense",),
+        object_json={"value": "LangGraph" if predicate == "framework" else "SQLite"},
+        memory_type=memory_type,
+    )
+
+    evaluated = evaluate_memory_result(
+        _result(memory), user_id=owner, query=query, now=NOW
+    )
+
+    if expected:
+        assert evaluated.route == MemoryEvaluationRoute.RAG_PLUS_LLM
+        assert evaluated.evidence_ids == (memory.memory_id,)
+    else:
+        assert evaluated.route == MemoryEvaluationRoute.NO_RESULT
+        assert evaluated.evidence_ids == ()
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Where do I live?",
+        "What city do I live in?",
+        "Where is my home?",
+        "What is my home location?",
+        "Which city is my residence?",
+        "Tell me where I stay.",
+    ],
+)
+def test_dense_home_location_evidence_supports_semantic_paraphrases(query: str) -> None:
+    owner = uuid.uuid4()
+    memory = _memory(
+        owner,
+        content="My home location is Cedar Quay.",
+        subject="user",
+        predicate="home_location",
+        sources=("dense",),
+        object_json={"value": "Cedar Quay"},
+    )
+
+    evaluated = evaluate_memory_result(
+        _result(memory), user_id=owner, query=query, now=NOW
+    )
+
+    assert evaluated.route == MemoryEvaluationRoute.RAG_PLUS_LLM
+    assert evaluated.reason == "multiple_or_non_exact_evidence"
+    assert evaluated.evidence_ids == (memory.memory_id,)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Where does my brother live?",
+        "Where does Alice live?",
+        "Where is my office?",
+        "Where do I work?",
+        "Where does okf4-20260930t192056z-other-owner live?",
+    ],
+)
+def test_dense_home_location_does_not_answer_sibling_or_other_subject_queries(
+    query: str,
+) -> None:
+    owner = uuid.uuid4()
+    memory = _memory(
+        owner,
+        content="The stable-person home location is Cedar Quay.",
+        subject="stable-person",
+        predicate="home_location",
+        sources=("dense",),
+        object_json={"value": "Cedar Quay"},
+    )
+
+    evaluated = evaluate_memory_result(
+        _result(memory), user_id=owner, query=query, now=NOW
+    )
+
+    assert evaluated.route == MemoryEvaluationRoute.NO_RESULT
+    assert evaluated.evidence_ids == ()
+
+
+def test_dense_home_base_supports_stay_paraphrase() -> None:
+    owner = uuid.uuid4()
+    memory = _memory(
+        owner,
+        content="My home base is Juniper Quay.",
+        subject="user",
+        predicate="home_base",
+        sources=("dense",),
+        object_json={"value": "Juniper Quay"},
+    )
+
+    evaluated = evaluate_memory_result(
+        _result(memory), user_id=owner, query="Where do I usually stay?", now=NOW
+    )
+
+    assert evaluated.route == MemoryEvaluationRoute.RAG_PLUS_LLM
+    assert evaluated.evidence_ids == (memory.memory_id,)
+
+
+def test_broad_structured_preference_candidate_is_not_a_keyboard_answer() -> None:
+    owner = uuid.uuid4()
+    beverage = _memory(
+        owner,
+        content="I prefer jasmine tea.",
+        predicate="beverage",
+        object_json={"value": "jasmine tea"},
+    )
+    evaluated = evaluate_memory_result(
+        _result(beverage, memory_types=(MemoryType.PREFERENCE,)),
+        user_id=owner,
+        query="Which keyboard do I prefer?",
+        now=NOW,
+    )
+
+    assert evaluated.route == MemoryEvaluationRoute.NO_RESULT
+    assert evaluated.reason == "no_relevant_lexical_or_structured_support"
+    assert evaluated.evidence_ids == ()
+
+
+def test_explicit_preference_field_does_not_admit_sibling_preference() -> None:
+    owner = uuid.uuid4()
+    beverage = _memory(
+        owner,
+        content="I prefer mint tea.",
+        memory_type=MemoryType.PREFERENCE,
+        subject="Juniper test profile",
+        predicate="beverage",
+        object_json={"value": "mint tea"},
+    )
+    response_style = _memory(
+        owner,
+        content="I prefer concise answers.",
+        memory_type=MemoryType.PREFERENCE,
+        subject="Juniper test profile",
+        predicate="response_style",
+        object_json={"value": "concise"},
+    )
+
+    beverage_result = evaluate_memory_result(
+        _result(beverage, response_style, memory_types=(MemoryType.PREFERENCE,)),
+        user_id=owner,
+        query="Which beverage do I prefer for my Juniper test profile?",
+        now=NOW,
+    )
+    style_result = evaluate_memory_result(
+        _result(beverage, response_style, memory_types=(MemoryType.PREFERENCE,)),
+        user_id=owner,
+        query="What response style do I prefer for my Juniper test profile?",
+        now=NOW,
+    )
+
+    assert beverage_result.evidence_ids == (beverage.memory_id,)
+    assert style_result.evidence_ids == (response_style.memory_id,)
+
+
+def test_lexical_overlap_with_wrong_memory_type_is_not_relevant_evidence() -> None:
+    owner = uuid.uuid4()
+    hardware_fact = _memory(
+        owner,
+        content="My mechanical keyboard is a Keychron.",
+        memory_type=MemoryType.FACT,
+        predicate="hardware",
+        object_json={"value": "Keychron"},
+    )
+    evaluated = evaluate_memory_result(
+        _result(hardware_fact, memory_types=(MemoryType.PREFERENCE,)),
+        user_id=owner,
+        query="Which keyboard do I prefer?",
+        now=NOW,
+    )
+
+    assert evaluated.route == MemoryEvaluationRoute.NO_RESULT
+    assert evaluated.evidence_ids == ()
+
+
+def test_strong_attribute_match_remains_retrievable() -> None:
+    owner = uuid.uuid4()
+    keyboard = _memory(
+        owner,
+        content="I prefer a compact mechanical keyboard.",
+        memory_type=MemoryType.PREFERENCE,
+        predicate="keyboard",
+        object_json={"value": "compact mechanical"},
+    )
+    evaluated = evaluate_memory_result(
+        _result(keyboard, memory_types=(MemoryType.PREFERENCE,)),
+        user_id=owner,
+        query="Which keyboard do I prefer?",
+        now=NOW,
+    )
+
+    assert evaluated.route == MemoryEvaluationRoute.DIRECT_RAG
+    assert evaluated.evidence_ids == (keyboard.memory_id,)
 
 
 def test_temporal_or_synthesis_question_does_not_get_a_direct_answer() -> None:

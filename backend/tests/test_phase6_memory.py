@@ -616,6 +616,10 @@ async def test_confirmed_memory_forget_bumps_version_for_real_deletion(monkeypat
     item = SimpleNamespace(id=uuid.uuid4(), status="active")
     bump = AsyncMock()
     monkeypatch.setattr(tool_tools.MemoryRepository, "bump_memory_version", bump)
+    from app.okf.lifecycle import OkfLifecycleService
+
+    barrier = AsyncMock()
+    monkeypatch.setattr(OkfLifecycleService, "remove_memory_source", barrier)
     session = AsyncMock()
     session.scalar.return_value = item
     context = ToolExecutionContext(
@@ -632,6 +636,7 @@ async def test_confirmed_memory_forget_bumps_version_for_real_deletion(monkeypat
     )
 
     assert result == {"deleted": True, "memory_id": str(item.id)}
+    barrier.assert_awaited_once_with(session, user_id=context.user_id, memory_id=item.id)
     session.delete.assert_awaited_once_with(item)
     bump.assert_awaited_once_with(session, user_id=context.user_id)
 

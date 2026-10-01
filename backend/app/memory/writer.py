@@ -82,6 +82,16 @@ class MemoryWriter:
                 .order_by(MemoryItem.created_at.desc(), MemoryItem.id.desc())
             )
             if old is not None:
+                # Remove old OKF provenance before the supersession becomes visible.
+                # This is a local SQL barrier; concept mapping remains worker-only.
+                from app.okf.lifecycle import OkfLifecycleService
+
+                await OkfLifecycleService(
+                    policy_version=self.settings.okf_policy_version,
+                    sync_enabled=(
+                        self.settings.okf_enabled and self.settings.okf_sync_enabled
+                    ),
+                ).remove_memory_source(session, user_id=user_id, memory_id=old.id)
                 old.status = MemoryStatus.SUPERSEDED
                 supersedes_id = old.id
                 if self.settings.graph_write_enabled:
@@ -230,6 +240,19 @@ class MemoryWriter:
                             },
                         )
         await self.repository.bump_memory_version(session, user_id=user_id)
+        if (
+            self.settings.okf_enabled
+            and self.settings.okf_sync_enabled
+            and source_session_id is not None
+        ):
+            from app.okf.jobs import enqueue_memory_sync
+
+            await enqueue_memory_sync(
+                session,
+                user_id=user_id,
+                memory_id=item.id,
+                policy_version=self.settings.okf_policy_version,
+            )
         return item, True
 
     async def write_many(
