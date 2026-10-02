@@ -26,6 +26,7 @@ from app.models import (
     MemoryItem,
     MemoryJob,
     Message,
+    OkfSyncJob,
     User,
     VoiceSession,
 )
@@ -66,6 +67,96 @@ async def _cleanup(settings: Settings, emails: set[str]) -> None:
             await session.execute(delete(AuditLog).where(AuditLog.user_id.in_(user_ids)))
             await session.execute(delete(User).where(User.id.in_(user_ids)))
             await session.commit()
+    await engine.dispose()
+
+
+async def _create_voice_sourced_memory(
+    settings: Settings,
+    email: str,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    engine = create_async_engine(settings.database_dsn)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        user_id = await session.scalar(select(User.id).where(User.email == email))
+        assert user_id is not None
+        device = await session.scalar(
+            select(Device)
+            .where(Device.user_id == user_id, Device.revoked_at.is_(None))
+            .order_by(Device.created_at.desc())
+        )
+        auth_session = await session.scalar(
+            select(AuthSession)
+            .where(AuthSession.user_id == user_id, AuthSession.revoked_at.is_(None))
+            .order_by(AuthSession.created_at.desc())
+        )
+        assert device is not None and auth_session is not None
+        now = datetime.now(UTC)
+        voice_session = VoiceSession(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            device_id=device.id,
+            auth_session_id=auth_session.id,
+            protocol_version=1,
+            status="completed",
+            started_at=now,
+            last_activity_at=now,
+            ended_at=now,
+        )
+        session.add(voice_session)
+        await session.flush()
+        memory, created = await MemoryWriter(settings).write_candidate(
+            session,
+            user_id=user_id,
+            candidate=ExtractionCandidate(
+                content="The Orion project uses Redis",
+                memory_type=MemoryType.FACT,
+                subject="Project Orion",
+                predicate="uses",
+                object_json={"service": "Redis"},
+                confidence=1.0,
+                salience=1.0,
+            ),
+            source_kind=MemorySourceKind.EXPLICIT_TOOL,
+            source_session_id=voice_session.id,
+        )
+        assert created
+        await session.commit()
+        result = (voice_session.id, memory.id)
+    await engine.dispose()
+    return result
+
+
+async def _assert_memory_update_kept_source_and_enqueued_sync(
+    settings: Settings,
+    email: str,
+    source_session_id: uuid.UUID,
+    old_memory_id: uuid.UUID,
+    new_memory_id: uuid.UUID,
+) -> None:
+    engine = create_async_engine(settings.database_dsn)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        old = await session.get(MemoryItem, old_memory_id)
+        new = await session.get(MemoryItem, new_memory_id)
+        assert old is not None and new is not None
+        assert old.status == "superseded"
+        assert old.content == "The Orion project uses Redis"
+        assert old.subject == "Project Orion" and old.predicate == "uses"
+        assert old.object_json == {"service": "Redis"}
+        assert new.status == "active" and new.supersedes_id == old.id
+        assert new.source_session_id == source_session_id
+        assert new.subject == "Project Orion" and new.predicate == "uses"
+        assert new.object_json == {"service": "PostgreSQL"}
+        user_id = await session.scalar(select(User.id).where(User.email == email))
+        assert user_id is not None
+        upsert = await session.scalar(
+            select(OkfSyncJob).where(
+                OkfSyncJob.user_id == user_id,
+                OkfSyncJob.memory_id == new_memory_id,
+                OkfSyncJob.event_type == "upsert_memory",
+            )
+        )
+        assert upsert is not None and upsert.status == "pending"
     await engine.dispose()
 
 
@@ -152,6 +243,41 @@ def test_memory_settings_crud_and_delete_all(resource_client) -> None:
     )
     assert client.get("/memories/settings", headers=headers).json()["version"] == 4
     assert client.get(f"/memories/{memory_id}", headers=headers).status_code == 404
+
+
+def test_memory_update_preserves_source_session_and_enqueues_okf(resource_client) -> None:
+    client, settings, emails = resource_client
+    settings = settings.model_copy(update={"okf_enabled": True, "okf_sync_enabled": True})
+    client.app.state.settings = settings
+    email = _email("phase6-memory-okf-update")
+    emails.add(email)
+    _register(client, email)
+    tokens = _login(client, email, "phase6-memory-okf-update-device")
+    headers = _auth(tokens)
+
+    source_session_id, old_memory_id = asyncio.run(_create_voice_sourced_memory(settings, email))
+    edited = client.patch(
+        f"/memories/{old_memory_id}",
+        headers=headers,
+        json={
+            "subject": "Project Orion",
+            "predicate": "uses",
+            "object_json": {"service": "PostgreSQL"},
+        },
+    )
+
+    assert edited.status_code == 200, edited.text
+    new_memory_id = uuid.UUID(edited.json()["id"])
+    assert edited.json()["supersedes_id"] == str(old_memory_id)
+    asyncio.run(
+        _assert_memory_update_kept_source_and_enqueued_sync(
+            settings,
+            email,
+            source_session_id,
+            old_memory_id,
+            new_memory_id,
+        )
+    )
 
 
 def test_explicit_extraction_job_is_idempotent_and_owner_scoped(resource_client) -> None:

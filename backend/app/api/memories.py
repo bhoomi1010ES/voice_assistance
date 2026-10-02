@@ -335,6 +335,7 @@ async def update_memory(
             user_id=principal.user_id,
             candidate=candidate,
             source_kind=MemorySourceKind.MANUAL_API,
+            source_session_id=old.source_session_id,
             metadata_json=payload.metadata if payload.metadata is not None else old.metadata_json,
         )
     except (MemoryWriteConflict, ValueError) as error:
