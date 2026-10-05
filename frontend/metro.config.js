@@ -28,8 +28,17 @@ function resolveReactNativePrivateModule(moduleName) {
  *
  * @type {import('@react-native/metro-config').MetroConfig}
  */
+const defaultConfig = getDefaultConfig(__dirname);
 const config = {
   resolver: {
+    // Native build outputs and Gradle caches are not JavaScript inputs.
+    // Crawling these large directories can stall Metro startup on Windows.
+    blockList: [
+      defaultConfig.resolver.blockList,
+      /[/\\]\.gradle(?:-cache|-user-home)?[/\\]/,
+      /[/\\]\.cxx[/\\]/,
+      /[/\\]android[/\\](?:app[/\\])?build[/\\]/,
+    ],
     resolveRequest: (context, moduleName, platform) => {
       const privateModule = resolveReactNativePrivateModule(moduleName);
       if (privateModule) {
@@ -40,4 +49,4 @@ const config = {
   },
 };
 
-module.exports = mergeConfig(getDefaultConfig(__dirname), config);
+module.exports = mergeConfig(defaultConfig, config);

@@ -25,10 +25,14 @@ export type MemoryItem = {
 
 export type MemorySettings = {
   enabled: boolean;
+  knowledge_mode: KnowledgeMode;
+  okf_available: boolean;
   timezone: string;
   locale: string;
   version: number;
 };
+
+export type KnowledgeMode = 'rag' | 'okf';
 
 export type VoiceSession = {
   id: string;

@@ -34,6 +34,7 @@ class MemorySaveArguments(BaseModel):
     memory_type: MemoryType = MemoryType.FACT
     subject: StrictStr | None = Field(default=None, max_length=512)
     predicate: StrictStr | None = Field(default=None, max_length=128)
+    object_json: dict[str, Any] | None = None
 
 
 class MemoryForgetArguments(BaseModel):
@@ -53,6 +54,7 @@ def build_explicit_memory_save_call(text: str, *, turn_id: uuid.UUID) -> LLMTool
         memory_type=candidate.memory_type,
         subject=candidate.subject,
         predicate=candidate.predicate,
+        object_json=candidate.object_json,
     ).model_dump(mode="json", exclude_none=True)
     return LLMToolCall(
         tool_call_id=f"server-memory-save-{turn_id}",
@@ -119,6 +121,7 @@ async def memory_save_handler(
         memory_type=arguments.memory_type,
         subject=arguments.subject,
         predicate=arguments.predicate,
+        object_json=arguments.object_json,
         confidence=1.0,
         salience=1.0,
     )

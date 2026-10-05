@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -101,6 +102,73 @@ def test_ready_returns_200_when_dependencies_are_healthy() -> None:
 
     assert response.status_code == 200
     assert response.json() == readiness
+
+
+def test_ready_reports_in_process_okf_worker_state() -> None:
+    settings = Settings(
+        _env_file=None,
+        okf_enabled=True,
+        okf_sync_enabled=True,
+        okf_worker_mode="in_process",
+        memory_retrieval_mode="off",
+        memory_write_enabled=False,
+    )
+    readiness = {
+        "status": "ready",
+        "dependencies": {
+            "postgres": {"status": "ok"},
+            "redis": {"status": "ok"},
+        },
+    }
+    app = create_app(
+        settings=settings,
+        infrastructure=StubInfrastructure(readiness),
+        stt_service=NoopSTTService(),
+    )
+
+    with TestClient(app) as client:
+        app.state.okf_worker = SimpleNamespace(running=True)
+        response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json()["dependencies"]["okf_sync_worker"] == {
+        "enabled": True,
+        "mode": "in_process",
+        "status": "ready",
+    }
+
+
+def test_ready_fails_when_required_in_process_okf_worker_is_missing() -> None:
+    settings = Settings(
+        _env_file=None,
+        okf_enabled=True,
+        okf_sync_enabled=True,
+        okf_worker_mode="in_process",
+        memory_retrieval_mode="off",
+        memory_write_enabled=False,
+    )
+    readiness = {
+        "status": "ready",
+        "dependencies": {
+            "postgres": {"status": "ok"},
+            "redis": {"status": "ok"},
+        },
+    }
+    app = create_app(
+        settings=settings,
+        infrastructure=StubInfrastructure(readiness),
+        stt_service=NoopSTTService(),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["dependencies"]["okf_sync_worker"] == {
+        "enabled": True,
+        "mode": "in_process",
+        "status": "not_ready",
+    }
 
 
 def test_ready_returns_503_with_dependency_details_when_unavailable() -> None:

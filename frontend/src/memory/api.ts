@@ -2,6 +2,7 @@ import { AuthController } from '../auth/AuthController';
 import {
   MemoryItem,
   MemoryCreate,
+  KnowledgeMode,
   MemorySettings,
   MemoryUpdate,
   VoiceSession,
@@ -82,11 +83,11 @@ export function getMemorySettings(
 
 export function updateMemorySettings(
   controller: AuthController,
-  enabled: boolean,
+  update: { enabled?: boolean; knowledge_mode?: KnowledgeMode },
 ): Promise<MemorySettings> {
   return controller.request<MemorySettings>('/memories/settings', {
     method: 'PATCH',
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify(update),
   });
 }
 

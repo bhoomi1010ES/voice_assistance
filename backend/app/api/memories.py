@@ -52,12 +52,26 @@ async def _owned_user(session, principal: AuthPrincipal) -> User:
     return user
 
 
+def _memory_settings_response(user: User, request: Request) -> MemorySettingsResponse:
+    settings = request.app.state.settings
+    return MemorySettingsResponse(
+        enabled=user.memory_enabled,
+        knowledge_mode=user.knowledge_mode,
+        okf_available=bool(settings.okf_enabled and settings.okf_sync_enabled),
+        timezone=user.timezone,
+        locale=user.locale,
+        version=user.memory_version,
+    )
+
+
 @router.get("/settings", response_model=MemorySettingsResponse)
 async def get_memory_settings(
+    request: Request,
     session: DatabaseSessionDependency,
     principal: Annotated[AuthPrincipal, Depends(get_current_principal)],
-) -> User:
-    return await _owned_user(session, principal)
+) -> MemorySettingsResponse:
+    user = await _owned_user(session, principal)
+    return _memory_settings_response(user, request)
 
 
 @router.patch("/settings", response_model=MemorySettingsResponse)
@@ -66,10 +80,13 @@ async def update_memory_settings(
     request: Request,
     session: DatabaseSessionDependency,
     principal: Annotated[AuthPrincipal, Depends(get_current_principal)],
-) -> User:
+) -> MemorySettingsResponse:
     user = await _owned_user(session, principal)
+    was_enabled = user.memory_enabled
+    previous_knowledge_mode = user.knowledge_mode
+    rebuild_okf = False
+
     if payload.enabled is not None:
-        was_enabled = user.memory_enabled
         user.memory_enabled = payload.enabled
         if payload.enabled != was_enabled:
             from app.okf.repository import OkfRepository
@@ -92,14 +109,30 @@ async def update_memory_settings(
                 )
                 .values(status="cancelled", locked_at=None)
             )
+    if payload.knowledge_mode is not None:
+        if payload.knowledge_mode == "okf" and not (
+            request.app.state.settings.okf_enabled and request.app.state.settings.okf_sync_enabled
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "KNOWLEDGE_MODE_UNAVAILABLE",
+                    "message": "The requested knowledge mode is not available.",
+                },
+            )
+        rebuild_okf = bool(
+            payload.knowledge_mode == "okf"
+            and user.knowledge_mode != previous_knowledge_mode
+            and user.memory_enabled
+        )
+        user.knowledge_mode = payload.knowledge_mode
     if payload.timezone is not None:
         user.timezone = payload.timezone
     if payload.locale is not None:
         user.locale = payload.locale
     await MemoryRepository().bump_memory_version(session, user_id=user.id)
     if (
-        payload.enabled is True
-        and not was_enabled
+        ((payload.enabled is True and not was_enabled) or rebuild_okf)
         and request.app.state.settings.okf_enabled
         and request.app.state.settings.okf_sync_enabled
     ):
@@ -112,7 +145,7 @@ async def update_memory_settings(
         )
     await session.commit()
     await session.refresh(user)
-    return user
+    return _memory_settings_response(user, request)
 
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
@@ -128,8 +161,7 @@ async def delete_all_memories(
     await OkfLifecycleService(
         policy_version=request.app.state.settings.okf_policy_version,
         sync_enabled=(
-            request.app.state.settings.okf_enabled
-            and request.app.state.settings.okf_sync_enabled
+            request.app.state.settings.okf_enabled and request.app.state.settings.okf_sync_enabled
         ),
     ).purge_user(session, user_id=user.id)
     result = await session.execute(delete(MemoryItem).where(MemoryItem.user_id == user.id))
@@ -324,8 +356,7 @@ async def update_memory(
     await OkfLifecycleService(
         policy_version=request.app.state.settings.okf_policy_version,
         sync_enabled=(
-            request.app.state.settings.okf_enabled
-            and request.app.state.settings.okf_sync_enabled
+            request.app.state.settings.okf_enabled and request.app.state.settings.okf_sync_enabled
         ),
     ).remove_memory_source(session, user_id=principal.user_id, memory_id=old.id)
     try:
@@ -372,8 +403,7 @@ async def delete_memory(
     await OkfLifecycleService(
         policy_version=request.app.state.settings.okf_policy_version,
         sync_enabled=(
-            request.app.state.settings.okf_enabled
-            and request.app.state.settings.okf_sync_enabled
+            request.app.state.settings.okf_enabled and request.app.state.settings.okf_sync_enabled
         ),
     ).remove_memory_source(session, user_id=principal.user_id, memory_id=memory.id)
     await session.delete(memory)

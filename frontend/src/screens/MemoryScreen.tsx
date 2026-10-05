@@ -245,10 +245,27 @@ export function MemoryScreen() {
     setSaving(true);
     setError(null);
     try {
-      setSettings(await updateMemorySettings(controller, !settings.enabled));
+      setSettings(
+        await updateMemorySettings(controller, { enabled: !settings.enabled }),
+      );
       setMessage(
         settings.enabled ? strings.memory.disabled : strings.memory.enabled,
       );
+    } catch (cause) {
+      setError(safeUserMessage(toClientError(cause)));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const changeKnowledgeMode = async (knowledge_mode: 'rag' | 'okf') => {
+    if (!settings || settings.knowledge_mode === knowledge_mode) return;
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      setSettings(await updateMemorySettings(controller, { knowledge_mode }));
+      setMessage(strings.memory.knowledgeModeUpdated);
     } catch (cause) {
       setError(safeUserMessage(toClientError(cause)));
     } finally {
@@ -326,7 +343,10 @@ export function MemoryScreen() {
         {/* Master Memory Settings Card */}
         <MemorySettingsCard
           enabled={Boolean(settings?.enabled)}
+          knowledgeMode={settings?.knowledge_mode ?? 'rag'}
+          okfAvailable={Boolean(settings?.okf_available)}
           loading={!settings}
+          onKnowledgeModeChange={changeKnowledgeMode}
           onToggle={toggleMemory}
           saving={saving}
         />
@@ -390,10 +410,7 @@ export function MemoryScreen() {
         ) : null}
 
         {visibleState === 'empty' ? (
-          <MemoryEmptyState
-            testID="memory-empty"
-            text={strings.memory.empty}
-          />
+          <MemoryEmptyState testID="memory-empty" text={strings.memory.empty} />
         ) : null}
 
         {/* Memory Items Stack */}

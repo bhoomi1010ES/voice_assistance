@@ -33,6 +33,9 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(512), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     memory_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    knowledge_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="rag", server_default="rag"
+    )
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
     locale: Mapped[str] = mapped_column(String(16), nullable=False, default="en")
     memory_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
@@ -48,6 +51,7 @@ class User(Base):
         Index("ix_users_email_unique", "email", unique=True),
         Index("ix_users_status", "status"),
         CheckConstraint("status IN ('active', 'disabled')", name="ck_users_status"),
+        CheckConstraint("knowledge_mode IN ('rag', 'okf')", name="ck_users_knowledge_mode"),
         CheckConstraint("memory_generation >= 0", name="ck_users_memory_generation"),
     )
 

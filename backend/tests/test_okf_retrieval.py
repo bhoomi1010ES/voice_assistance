@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import Settings
+from app.okf.query_plan import plan_okf_query
 from app.okf.retrieval import OkfRetrievalService, _canonical_term_pattern
 from app.okf.types import KnowledgeDisposition, KnowledgeRequest
 
@@ -93,3 +94,57 @@ async def test_master_off_never_queries_okf_tables() -> None:
     assert result.status == KnowledgeDisposition.UNAVAILABLE
     assert result.degraded_reason == "okf_disabled"
     session.scalar.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("candidate_names", "identities", "expected_count"),
+    [
+        ([], [], None),
+        ([], ["red-bird"], 0),
+        (["red-bird"], ["red-bird"], 1),
+        (["redbird"], ["red-bird", "redbird"], 1),
+        (["red-bird"], ["red-bird", "redb-ird"], 0),
+        (["red-bird"] * 3, ["red-bird"], 0),
+        (["red-bird"], ["red-bird", "redb-ird", "re-dbird"], 0),
+    ],
+)
+async def test_joined_project_lookup_rejects_collisions_and_truncated_candidates(
+    candidate_names: list[str], identities: list[str], expected_count: int | None
+) -> None:
+    session = AsyncMock()
+    candidates = [uuid.uuid4() for _ in candidate_names]
+    identity_result = MagicMock()
+    identity_result.all.return_value = identities
+    candidate_result = MagicMock()
+    candidate_result.all.return_value = candidates
+    session.scalars.side_effect = [identity_result, candidate_result]
+    request = _request(query="What framework does my Redbird project use?")
+
+    result = await OkfRetrievalService(_settings())._joined_project_concept_ids(
+        session, request=request, plan=plan_okf_query(request.query), candidate_limit=2
+    )
+
+    if expected_count is None:
+        assert result is None
+    else:
+        assert len(result) == expected_count
+    if expected_count:
+        assert result == (candidates[0],)
+    if not identities or len(identities) > 2 or identities == ["red-bird", "redb-ird"]:
+        assert session.scalars.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_joined_lookup_does_not_expand_general_fact_queries() -> None:
+    session = AsyncMock()
+    session.scalars.return_value = MagicMock()
+    session.scalars.return_value.all.return_value = []
+    request = _request(query="What do I know about Redbird?")
+
+    result = await OkfRetrievalService(_settings())._matching_concept_ids(
+        session, request=request, plan=plan_okf_query(request.query)
+    )
+
+    assert result == ()
+    session.execute.assert_not_awaited()

@@ -83,6 +83,7 @@ def test_okf_domain_transactions_are_versioned_isolated_and_idempotent() -> None
         assert upgrade.returncode == 0, upgrade.stderr
         asyncio.run(_exercise_domain(test_url))
         asyncio.run(_exercise_worker(test_url))
+        asyncio.run(_exercise_joined_project_names(test_url))
         asyncio.run(_exercise_scoped_worker(test_url))
     finally:
         asyncio.run(_drop_database(source_url, database_name))
@@ -1347,6 +1348,136 @@ async def _exercise_scoped_worker(url: URL) -> None:
         await engine.dispose()
 
 
+async def _exercise_joined_project_names(url: URL) -> None:
+    engine = create_async_engine(url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings = Settings(
+        _env_file=None,
+        okf_enabled=True,
+        okf_sync_enabled=True,
+        okf_shadow_reads=False,
+        okf_retrieval_timeout_ms=300,
+    )
+    service = OkfKnowledgeService(settings=settings)
+    retrieval = OkfRetrievalService(settings)
+    lifecycle = OkfLifecycleService()
+    now = datetime.now(UTC)
+    owner, other_owner, empty_owner = [uuid.uuid4() for _ in range(3)]
+    sessions = {user_id: uuid.uuid4() for user_id in (owner, other_owner, empty_owner)}
+    red_bird_id = uuid.uuid4()
+    other_memory_id = uuid.uuid4()
+
+    async def retrieve(query: str, *, user_id: uuid.UUID = owner):
+        async with factory() as db:
+            return await retrieval.retrieve(
+                db, KnowledgeRequest(user_id=user_id, query=query, now=now)
+            )
+
+    async def add_project(db, user_id, subject, predicate, value, memory_id=None):
+        memory_id = memory_id or uuid.uuid4()
+        await _add_project_memory(
+            db,
+            now=now,
+            user_id=user_id,
+            session_id=sessions[user_id],
+            memory_id=memory_id,
+            subject=subject,
+            predicate=predicate,
+            value=value,
+        )
+        await service.sync_memory(db, user_id=user_id, memory_id=memory_id)
+
+    try:
+        async with factory() as db:
+            async with db.begin():
+                for user_id, session_id in sessions.items():
+                    await _add_owner_session(
+                        db,
+                        now=now,
+                        user_id=user_id,
+                        device_id=uuid.uuid4(),
+                        auth_session_id=uuid.uuid4(),
+                        session_id=session_id,
+                    )
+                await add_project(db, owner, "Red Bird", "framework", "Flask", red_bird_id)
+                await add_project(db, owner, "Redbird Archive", "framework", "FastAPI")
+                await add_project(db, owner, "Cedar Delta", "database", "PostgreSQL")
+                await add_project(db, owner, "Ember Wave", "framework", "FastAPI")
+                await add_project(db, owner, "Em Berwave", "database", "SQLite")
+                await add_project(
+                    db, other_owner, "Redb Ird", "framework", "Django", other_memory_id
+                )
+
+        for name in ("Red Bird", "Redbird", "REDBIRD", "Red-Bird"):
+            result = await retrieve(f"What framework does my {name} project use?")
+            assert result.status == KnowledgeDisposition.CONTINUE_WITH_EVIDENCE
+            assert {item.canonical_key for item in result.evidence} == {
+                "projects/red-bird",
+                "projects/red-bird/framework",
+            }
+            assert all(item.source_memory_ids == (red_bird_id,) for item in result.evidence)
+            assert any(item.display_text == "Flask" for item in result.evidence)
+
+        for query in (
+            "What framework does my Redbir project use?",
+            "What framework does my Redwood project use?",
+            "What framework does my RedbirdArchives project use?",
+            "What database does my Redbird project use?",
+            "What framework does my CedarDelta project use?",
+            # Both identities compact to emberwave, even though only one has a framework.
+            "What framework does my Emberwave project use?",
+        ):
+            result = await retrieve(query)
+            assert result.status == KnowledgeDisposition.NO_RESULT, (query, result)
+            assert not result.evidence
+
+        foreign_result = await retrieve(
+            "What framework does my Redbird project use?", user_id=other_owner
+        )
+        assert foreign_result.status == KnowledgeDisposition.CONTINUE_WITH_EVIDENCE
+        assert all(item.source_memory_ids == (other_memory_id,) for item in foreign_result.evidence)
+        empty_result = await retrieve(
+            "What framework does my Redbird project use?", user_id=empty_owner
+        )
+        assert empty_result.status == KnowledgeDisposition.NO_RESULT
+
+        # An exact saved identity takes priority over an inferred joined spelling.
+        exact_id = uuid.uuid4()
+        async with factory() as db:
+            async with db.begin():
+                await add_project(db, owner, "Redbird", "framework", "Starlette", exact_id)
+        exact_result = await retrieve("What framework does my Redbird project use?")
+        assert all(item.source_memory_ids == (exact_id,) for item in exact_result.evidence)
+        assert any(item.display_text == "Starlette" for item in exact_result.evidence)
+        spaced_result = await retrieve("What framework does my Red Bird project use?")
+        assert all(item.source_memory_ids == (red_bird_id,) for item in spaced_result.evidence)
+
+        # Deletion and session exclusion still block the new lookup path.
+        async with factory() as db:
+            async with db.begin():
+                await lifecycle.remove_memory_source(db, user_id=owner, memory_id=exact_id)
+                memory = await db.get(MemoryItem, exact_id)
+                memory.status = "deleted"
+                await lifecycle.remove_memory_source(db, user_id=owner, memory_id=red_bird_id)
+                memory = await db.get(MemoryItem, red_bird_id)
+                memory.status = "deleted"
+        deleted_result = await retrieve("What framework does my Redbird project use?")
+        assert deleted_result.status == KnowledgeDisposition.NO_RESULT
+        async with factory() as db:
+            async with db.begin():
+                voice_session = await db.get(VoiceSession, sessions[other_owner])
+                voice_session.client_metadata = {"memory_excluded": True}
+                await lifecycle.exclude_session(
+                    db, user_id=other_owner, session_id=sessions[other_owner]
+                )
+        excluded_result = await retrieve(
+            "What framework does my Redbird project use?", user_id=other_owner
+        )
+        assert excluded_result.status == KnowledgeDisposition.NO_RESULT
+    finally:
+        await engine.dispose()
+
+
 async def _add_owner_session(
     db,
     *,
@@ -1446,16 +1577,19 @@ async def _add_project_memory(
     user_id: uuid.UUID,
     session_id: uuid.UUID,
     memory_id: uuid.UUID,
+    subject: str = "Voice Assistant",
+    predicate: str = "framework",
+    value: str = "FastAPI",
 ) -> None:
     db.add(
         MemoryItem(
             id=memory_id,
             user_id=user_id,
-            content="The Voice Assistant project uses FastAPI.",
+            content=f"The {subject} project {predicate} is {value}.",
             memory_type="project",
-            subject="Voice Assistant",
-            predicate="framework",
-            object_json={"value": "FastAPI"},
+            subject=subject,
+            predicate=predicate,
+            object_json={"value": value},
             confidence=0.9,
             salience=0.8,
             source_kind="explicit_tool",

@@ -174,6 +174,35 @@ def test_memory_settings_crud_and_delete_all(resource_client) -> None:
     settings = client.get("/memories/settings", headers=headers)
     assert settings.status_code == 200
     assert settings.json()["enabled"] is True
+    assert settings.json()["knowledge_mode"] == "rag"
+    assert settings.json()["okf_available"] is True
+
+    selected_okf = client.patch(
+        "/memories/settings", headers=headers, json={"knowledge_mode": "okf"}
+    )
+    assert selected_okf.status_code == 200, selected_okf.text
+    assert selected_okf.json()["knowledge_mode"] == "okf"
+    assert client.get("/memories/settings", headers=headers).json()["knowledge_mode"] == "okf"
+
+    client.app.state.settings = client.app.state.settings.model_copy(
+        update={"okf_enabled": False, "okf_sync_enabled": False}
+    )
+    unavailable_settings = client.get("/memories/settings", headers=headers)
+    assert unavailable_settings.status_code == 200
+    assert unavailable_settings.json()["okf_available"] is False
+    rejected_okf = client.patch(
+        "/memories/settings", headers=headers, json={"knowledge_mode": "okf"}
+    )
+    assert rejected_okf.status_code == 409
+    assert rejected_okf.json()["detail"]["code"] == "KNOWLEDGE_MODE_UNAVAILABLE"
+    client.app.state.settings = client.app.state.settings.model_copy(
+        update={"okf_enabled": True, "okf_sync_enabled": True}
+    )
+    selected_rag = client.patch(
+        "/memories/settings", headers=headers, json={"knowledge_mode": "rag"}
+    )
+    assert selected_rag.status_code == 200
+    assert selected_rag.json()["knowledge_mode"] == "rag"
 
     created = client.post(
         "/memories",
@@ -188,7 +217,7 @@ def test_memory_settings_crud_and_delete_all(resource_client) -> None:
     assert created.status_code == 201, created.text
     memory_id = created.json()["id"]
     assert created.json()["memory_type"] == "preference"
-    assert client.get("/memories/settings", headers=headers).json()["version"] == 1
+    assert client.get("/memories/settings", headers=headers).json()["version"] == 3
     edited = client.patch(
         f"/memories/{memory_id}",
         headers=headers,
@@ -196,7 +225,7 @@ def test_memory_settings_crud_and_delete_all(resource_client) -> None:
     )
     assert edited.status_code == 200, edited.text
     memory_id = edited.json()["id"]
-    assert client.get("/memories/settings", headers=headers).json()["version"] == 2
+    assert client.get("/memories/settings", headers=headers).json()["version"] == 4
     assert (
         client.get("/memories/search", params={"query": "green tea"}, headers=headers).status_code
         == 200
@@ -208,12 +237,14 @@ def test_memory_settings_crud_and_delete_all(resource_client) -> None:
         json={"enabled": False, "timezone": "Asia/Kolkata"},
     )
     assert excluded.status_code == 200
-    assert excluded.json()["version"] == 3
+    assert excluded.json()["version"] == 5
     assert excluded.json() == {
         "enabled": False,
+        "knowledge_mode": "rag",
+        "okf_available": True,
         "timezone": "Asia/Kolkata",
         "locale": "en",
-        "version": 3,
+        "version": 5,
     }
     assert (
         client.post(
@@ -241,7 +272,7 @@ def test_memory_settings_crud_and_delete_all(resource_client) -> None:
         ).status_code
         == 204
     )
-    assert client.get("/memories/settings", headers=headers).json()["version"] == 4
+    assert client.get("/memories/settings", headers=headers).json()["version"] == 6
     assert client.get(f"/memories/{memory_id}", headers=headers).status_code == 404
 
 

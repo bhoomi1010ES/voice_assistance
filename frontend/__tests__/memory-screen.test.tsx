@@ -221,6 +221,8 @@ test('disabled memory keeps review/delete available and prevents search', async 
     .mockResolvedValueOnce(
       response(200, {
         enabled: false,
+        knowledge_mode: 'rag',
+        okf_available: false,
         timezone: 'UTC',
         locale: 'en',
         version: 1,
@@ -251,6 +253,8 @@ test('enabled memory can be explicitly saved from the memory screen', async () =
     .mockResolvedValueOnce(
       response(200, {
         enabled: true,
+        knowledge_mode: 'rag',
+        okf_available: true,
         timezone: 'UTC',
         locale: 'en',
         version: 0,
@@ -281,6 +285,64 @@ test('enabled memory can be explicitly saved from the memory screen', async () =
   expect(
     renderer.root.findByProps({ testID: 'memory-item-content' }).props.children,
   ).toBe(saved.content);
+  await act(async () => {
+    renderer.unmount();
+  });
+});
+
+test('knowledge mode is shown and saved as an account memory preference', async () => {
+  const updatedSettings = {
+    enabled: true,
+    knowledge_mode: 'okf',
+    okf_available: true,
+    timezone: 'UTC',
+    locale: 'en',
+    version: 2,
+  };
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(response(200, tokenResponse))
+    .mockResolvedValueOnce(
+      response(200, {
+        enabled: true,
+        knowledge_mode: 'rag',
+        okf_available: true,
+        timezone: 'UTC',
+        locale: 'en',
+        version: 1,
+      }),
+    )
+    .mockResolvedValueOnce(response(200, []))
+    .mockResolvedValueOnce(response(200, updatedSettings));
+  const { renderer } = await renderMemory(fetchImpl);
+
+  expect(
+    renderer.root.findByProps({ testID: 'knowledge-mode-rag' }),
+  ).toBeTruthy();
+  expect(
+    renderer.root.findByProps({ testID: 'knowledge-mode-okf' }).props.disabled,
+  ).toBe(false);
+
+  await act(async () => {
+    await renderer.root
+      .findByProps({ testID: 'knowledge-mode-okf' })
+      .props.onPress();
+  });
+
+  expect(fetchImpl).toHaveBeenCalledWith(
+    expect.stringContaining('/memories/settings'),
+    expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ knowledge_mode: 'okf' }),
+    }),
+  );
+  expect(
+    renderer.root.findByProps({ testID: 'knowledge-mode-okf' }).props
+      .accessibilityState,
+  ).toMatchObject({
+    selected: true,
+  });
+
   await act(async () => {
     renderer.unmount();
   });

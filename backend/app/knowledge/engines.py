@@ -173,14 +173,16 @@ def configured_engines(
     *,
     rag_service: MemoryRetrievalService | None,
     okf_service: OkfRetrievalService,
+    knowledge_mode: str | None = None,
 ) -> tuple[KnowledgeEngine, ...]:
-    """Build the validated engine set; RAG remains the only default engine."""
+    """Build engines for the configured default or an owner-selected mode."""
 
-    if settings.knowledge_mode == "rag":
+    selected_mode = knowledge_mode or settings.knowledge_mode
+    if selected_mode == "rag":
         if rag_service is None:
             raise ValueError("rag_engine_missing")
         return (RagKnowledgeEngine(rag_service, timeout_ms=settings.knowledge_rag_timeout_ms),)
-    if settings.knowledge_mode == "okf":
+    if selected_mode == "okf":
         return (OkfKnowledgeEngine(okf_service),)
     if rag_service is None:
         return (

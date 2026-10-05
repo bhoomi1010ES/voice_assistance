@@ -186,7 +186,7 @@ class Settings(BaseSettings):
     memory_final_context_count: int = Field(default=8, ge=1, le=32)
     memory_rrf_k: int = Field(default=60, ge=1, le=1000)
     memory_context_max_chars: int = Field(default=12_000, ge=512, le=100_000)
-    memory_policy_version: str = "phase6-explicit-v1"
+    memory_policy_version: str = "phase6-explicit-v2"
     memory_min_confidence: float = Field(default=0.80, ge=0, le=1)
     memory_min_salience: float = Field(default=0.20, ge=0, le=1)
     # The configured BGE reranker returns a bounded confidence score. Values

@@ -1,4 +1,4 @@
-﻿# OKF-6 Step 3 - Memory Sync Blocker Assessment
+# OKF-6 Step 3 - Memory Sync Blocker Assessment
 
 **Overall result: INCOMPLETE. Stopped before modifying memory or starting physical voice testing.**
 
@@ -84,7 +84,7 @@ No OKF record or provenance link can be claimed. Since no mutation was submitted
 
 To continue under the current requirements, the application needs an authorized, validated identity-preserving update workflow that retains the source session/provenance and enqueues OKF synchronization for the same source row. No such workflow exists in the inspected backend. Once that workflow is available, the memory can be updated through it, and the worker/job/provenance checks can be completed before any physical voice test.
 
-The exact first voice question remains: **“What do you remember about my project?”** No voice turn was performed or counted. This is not an OKF-6 acceptance result; at least 16 valid physical voice turns with completed RAG/shadow pairs are still required.
+The exact first voice question remains: **â€œWhat do you remember about my project?â€** No voice turn was performed or counted. This is not an OKF-6 acceptance result; at least 16 valid physical voice turns with completed RAG/shadow pairs are still required.
 
 ### Todo
 
@@ -97,7 +97,7 @@ The exact first voice question remains: **“What do you remember about my proje
 
 ---
 
-## Current Step 3 recheck — 2026-10-01 17:55 PDT (2026-10-02 00:55 UTC)
+## Current Step 3 recheck â€” 2026-10-01 17:55 PDT (2026-10-02 00:55 UTC)
 
 This addendum preserves the earlier 14:53 PDT assessment above. This recheck did not modify `.env`, application code, or database rows. Database queries were read-only. No Step 3 physical voice turn was solicited or counted because the synchronization prerequisite failed.
 
@@ -126,7 +126,7 @@ Read-only PostgreSQL inspection found no pending, running, retry-wait, or dead-l
 
 ### Physical test status
 
-- Exact requested question: “What do you remember about my project?”
+- Exact requested question: â€œWhat do you remember about my project?â€
 - Test time, session ID, and turn ID: none for this Step 3 preflight; no test was solicited or counted.
 - RAG retrieval, transcript, answer, and same-turn OKF shadow evidence: unavailable for this preflight.
 - Prior Step 1 and Step 2 physical results remain separate evidence and are not reused as a Step 3 RAG/shadow pair.
@@ -151,7 +151,7 @@ Read-only PostgreSQL inspection found no pending, running, retry-wait, or dead-l
 
 ### Current result and next action
 
-**INCOMPLETE — stop before the physical test.** Configuration and backend readiness pass. The earliest confirmed gate failure is that the known Orion source lacks the `subject` and `predicate` required for OKF mapping, so no eligible sync job or provenance exists. The worker's live state also remains unknown. Do not create or edit database rows manually. Resume only after an authorized supported workflow produces an eligible source tied to an included session, its sync job completes, provenance is verified, and current worker status is observable. Then rerun this preflight before asking for the physical voice test. OKF-6 still requires at least 16 valid physical RAG/shadow pairs; this addendum does not count any.
+**INCOMPLETE â€” stop before the physical test.** Configuration and backend readiness pass. The earliest confirmed gate failure is that the known Orion source lacks the `subject` and `predicate` required for OKF mapping, so no eligible sync job or provenance exists. The worker's live state also remains unknown. Do not create or edit database rows manually. Resume only after an authorized supported workflow produces an eligible source tied to an included session, its sync job completes, provenance is verified, and current worker status is observable. Then rerun this preflight before asking for the physical voice test. OKF-6 still requires at least 16 valid physical RAG/shadow pairs; this addendum does not count any.
 
 ### Recheck todo
 
@@ -161,3 +161,106 @@ Read-only PostgreSQL inspection found no pending, running, retry-wait, or dead-l
 - [ ] Establish an authorized supported path to provide the required structured fields while retaining eligible source provenance.
 - [ ] Verify current worker running status and successful synchronization/provenance for the source.
 - [ ] Rerun the preflight; request the physical voice test only if all gates pass.
+
+
+---
+
+## Current recheck â€” 2026-10-05
+
+
+- Effective settings: `KNOWLEDGE_MODE=rag`, `OKF_ENABLED=true`, `OKF_SYNC_ENABLED=true`, `OKF_SHADOW_READS=true`, one allowlisted owner, 75 ms OKF timeout, `in_process` worker, router `off`, cohort `0`.
+- PostgreSQL, Redis, and `/ready` were healthy. The configured allowlisted owner exists, is active, has the `OKF` test alias, and has memory enabled. No active voice session for that owner had activity in the prior 30 minutes.
+- Read-only database counts for the allowlisted owner: 7 active memories; 0 with structured fields accepted by the OKF mapper; 1 completed sync job; 0 OKF concepts; 0 provenance links. The 7 active memories had 7 RAG chunks, all 7 with embeddings and FTS entries.
+- Database migration head is `0020_user_knowledge_mode`; some prior OKF evidence cites `0019` and must be refreshed in a new run.
+- Historical physical shadow evidence remains blocked: 2 valid pairs had 50% OKF correctness, and the later positive-query preflight had RAG `no_result`. No new physical turn was attempted in this recheck.
+
+Two implementation gaps are resolved in code. `/ready` now reports `dependencies.okf_sync_worker`, reports `ready` only while the configured in-process worker task is alive, and returns 503 if sync is enabled but the worker is missing. Also, memory policy `phase6-explicit-v2` recognizes only an explicit project-memory form (for example, â€œRemember that the Willow Beacon project framework is Fernâ€), stores the project subject, allowlisted predicate, and scalar value as structured fields, and carries those fields through the confirmed voice-save path. Existing `phase6-explicit-v1` jobs retain their old extraction behavior. Ruff passed; 91 focused API/memory/shadow/selector/report/config tests passed.
+
+The backend was restarted with the previously approved process-local 300 ms OKF timeout; the `.env` default remains 75 ms. `/ready` reports ready and the in-process OKF worker ready. No memory, sync-job, concept, provenance, or voice-session rows were written or modified.
+
+**Current OKF-6 result: STILL BLOCKED pending a human physical preflight and cohort.** Do not count this recheck as an acceptance pair. The allowlisted test account needs a fresh included Android voice session. Speak and confirm one explicit synthetic project memory using the versioned save form above, then ask â€œWhat framework does the Willow Beacon project use?â€ Verify that RAG returns the labeled value and the async shadow completes with provenance before collecting the required 16 valid pairs.
+
+## User-reported Android preflight and read-only verification - 2026-10-05 12:11 PDT
+
+The user reports speaking the requested synthetic project-memory statement in Android and receiving the correct answer to the positive retrieval question. Treat the user-visible RAG result as user-reported evidence; no transcript, session identifier, or turn identifier was supplied.
+
+A content-free, read-only database check scoped to the configured disposable shadow owner found:
+
+- Six active memory rows created during the last 30 minutes; four contain structured project fields and represent four unique facts (no duplicate structured tuple rows).
+- Six RAG chunks for those rows; all six have embeddings and full-text indexes.
+- Six sync jobs for these rows, all `completed`; eight provenance links and eight owner-scoped OKF concepts exist.
+- `KNOWLEDGE_MODE=rag`, OKF shadow and sync are enabled, and the live `/ready` endpoint reports the in-process sync worker ready.
+
+The current backend configures shadow observations on the process console. No current-run console capture or retained log file was available to correlate the user's retrieval turn with a completed same-turn shadow observation. Therefore the physical interaction is user-reported, the source synchronization/indexing checks pass, and the paired shadow status remains **UNKNOWN**. This turn is not counted as a valid RAG/shadow acceptance pair. Earlier observed 50% OKF correctness across two pairs also remains historical and unremediated.
+
+### Updated todo
+
+- [x] User performed the synthetic Android memory save and positive retrieval and reports the correct user-visible answer.
+- [x] Verify recent memory structure, uniqueness, RAG chunk/embedding/FTS indexing, completed sync jobs, provenance, and live worker status without printing content or identifiers.
+- [x] Record that current-run shadow correlation is unavailable rather than claiming a paired pass.
+- [ ] Retain/capture the process-console `okf.shadow.read` completion event correlated to the same retrieval turn.
+- [ ] Collect at least 16 valid physical RAG/shadow pairs and complete the planned privacy/lifecycle and latency checks before OKF-6 acceptance.
+
+## Guided physical preflight attempt - STT mismatch - 2026-10-05
+
+The user reported that the Android answer was that the Wilbur Picon project's framework was "new." Read-only inspection of the allowlisted owner's latest persisted turn confirms the final user transcript was "What framework does the window pick on project use?" The assistant response referenced the Wilbur Picon project and "new." There is no active source for the intended Willow Beacon/Fern fact. Four prior explicit-save attempts produced structured project entries with speech-recognition-distorted subjects and values. This explains why the retrieval answer did not match the intended label; it is a failed preflight and is not counted as a valid RAG/shadow pair.
+
+No same-turn `okf.shadow.read` console event was supplied or retained, so shadow status for this attempt remains **UNKNOWN**. Stop this cohort until the four accidental synthetic project entries are removed through the app's supported Memory delete flow and a simple-word source has been saved and checked. Do not edit database rows manually.
+
+### Updated todo
+
+- [x] Run one guided physical positive query on RAG-authoritative mode.
+- [x] Inspect the persisted transcript and structured test sources read-only.
+- [x] Mark the mismatch as a failed, unpaired preflight; do not count it toward 16 pairs.
+- [ ] Delete the four speech-recognition-distorted synthetic project entries through Settings > Memory and verify their OKF removal.
+- [ ] Save a replacement using short familiar words (proposed: "Remember that the Red Bird project framework is Flask.") and verify the persisted transcript/source before querying.
+- [ ] Capture the matching completed shadow event from Terminal 1, then proceed one labeled case at a time.
+
+## Guided simple-word source verification - 2026-10-05
+
+The user spoke and approved the replacement synthetic memory. The persisted Android transcript was "Remember that the Red Bird Project framework is flask." The assistant confirmed the save. A content-free, read-only database check found one active structured source with subject `Red Bird`, predicate `framework`, and scalar value `flask`; its single RAG chunk has an embedding, its OKF sync job is `completed`, and two active provenance links exist. The four earlier misheard project entries are no longer active. `/ready` reports PostgreSQL, Redis, memory providers, and the in-process OKF worker ready. No `.env` change was made.
+
+The save/sync preflight passes. No retrieval query has been run for this source yet, so RAG correctness and the same-turn shadow event are still pending and this is not an acceptance pair.
+
+### Updated todo
+
+- [x] Remove the four speech-recognition-distorted synthetic project entries through the supported Memory UI flow.
+- [x] Save a short, familiar-word project statement and verify the persisted transcript and structured source.
+- [x] Verify RAG chunk embedding, completed OKF synchronization, provenance, and worker readiness.
+- [ ] Ask the matching positive retrieval question and verify the transcript, correct RAG answer, and completed same-turn `okf.shadow.read` event before counting a pair.
+
+## Guided simple-word retrieval result - 2026-10-05
+
+The latest physical retrieval turn is persisted with user transcript "Thank you. Thank you. What framework does Redbird use? Thank you." and assistant answer "Red Bird uses Flask." The source label is Flask, so the user-visible RAG answer is correct despite harmless ASR variation of "Red Bird" to "Redbird." The turn is correlated in the database; the structured shadow event is still not captured in the evidence record. Keep this as **RAG-correct / shadow-pending**, not a valid paired acceptance sample, until the matching console event confirms `shadow_status=completed`.
+
+### Updated todo
+
+- [x] Verify the physical query transcript and correct user-visible RAG answer against the synthetic source.
+- [ ] Capture the matching console JSON event (`event=okf.shadow.read`) for this turn and verify `shadow_status=completed` before counting the pair.
+
+## Guided retrieval attempt - router route mismatch - 2026-10-05
+
+The user reports that Android answered with a request to disambiguate "Redbird" despite the active Red Bird/framework/Flask memory. The persisted transcript is "What framework does Redbird use?" The current live settings snapshot is `KNOWLEDGE_MODE=rag`, `ROUTER_MODE=on`, and `ROUTER_COHORT_PERCENT=100`; `/ready` also reports router mode `on`. Deterministic route-rule checks classify this wording as `GENERAL_LLM`, while "What framework am I using in my Red Bird project?" classifies as `MEMORY_QUERY`. Under the current mode, the first wording bypasses the memory-query branch, which explains the unrelated clarification response. This attempt fails preflight and is not a RAG/shadow pair.
+
+No code or `.env` change was made. Continue only with an explicitly memory-shaped query. If the next voice transcript differs materially from the target wording, stop and correct it before using the answer as a sample.
+
+### Updated todo
+
+- [x] Compare the user-visible wrong answer with the active saved source.
+- [x] Verify live router mode/cohort and reproduce the transcript classification with routing rules.
+- [x] Mark the general-route attempt as failed; do not count it as a RAG/shadow pair.
+- [ ] Ask the supported wording "What framework am I using in my Red Bird project?" and verify it reaches `MEMORY_QUERY`, returns Flask from RAG, and has a completed same-turn shadow event.
+
+## Guided retrieval failure and lexical diagnostic - 2026-10-05
+
+The user reports that the memory-shaped voice query still received "I don't have a saved memory that answers that." The persisted transcript is "What framework am I using in my Redbird project?" Routing rules classify it as `MEMORY_QUERY`, so this was not the previous general-route bypass. A read-only local RAG diagnostic returned `NO_RESULT` for that exact transcript despite the active Red Bird/framework/Flask source. The transcript contains one token `Redbird`, while the source subject is two tokens `Red Bird`; strict all-term FTS and the dense-only named-project anchor therefore cannot ground the source. This is a RAG query-normalization/anchor mismatch. The turn fails and is not counted as a RAG/shadow pair.
+
+A read-only local RAG diagnostic for the simpler phrase "What did I tell you my project framework is?" classifies it as `MEMORY_QUERY` and returns the expected source through FTS. This diagnostic did not call the physical voice/LLM path and is not acceptance evidence. Keep the 75 ms shadow deadline in mind; a live shadow timeout invalidates the pair.
+
+### Updated todo
+
+- [x] Confirm the failed voice transcript, router route, and active source.
+- [x] Reproduce the no-result in local RAG and identify the joined-vs-separated project-name mismatch.
+- [x] Verify an easy alternate phrase is accepted by the router and retrieves the expected source locally.
+- [ ] Run that exact alternate phrase physically and verify the correct assistant answer plus same-turn completed shadow event.
+- [ ] Do not count any query with a RAG no-result or missing/timed-out shadow event toward the 16-pair cohort.

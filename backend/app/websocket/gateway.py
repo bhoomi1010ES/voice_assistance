@@ -2472,23 +2472,7 @@ class VoiceGateway:
 
             if not self.cancel_guard.can_emit(response_id):
                 return {"status": "cancelled"}
-            if (
-                self.settings.knowledge_mode == "rag"
-                and self.settings.memory_retrieval_mode != "inject"
-            ):
-                text = (
-                    "Saved memory lookup is turned off."
-                    if self.settings.memory_retrieval_mode == "off"
-                    else "Saved memory lookup isn't enabled for answers yet."
-                )
-                await self._emit_routed_final_text(
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    response_id=response_id,
-                    text=text,
-                    route=RouteName.MEMORY_QUERY,
-                )
-                return {"status": "completed", "executed_tool_names": []}
+            knowledge_mode = self.settings.knowledge_mode
             try:
                 if await self._memory_excluded_for_session():
                     text = "I can't access saved memories in this session right now."
@@ -2504,6 +2488,11 @@ class VoiceGateway:
                     memory_enabled = await self.db.scalar(
                         select(User.memory_enabled).where(User.id == self.principal.user_id)
                     )
+                    owner_knowledge_mode = await self.db.scalar(
+                        select(User.knowledge_mode).where(User.id == self.principal.user_id)
+                    )
+                if owner_knowledge_mode in {"rag", "okf"}:
+                    knowledge_mode = owner_knowledge_mode
                 if memory_enabled is not True:
                     text = "Saved memory is turned off for this account."
                     await self._emit_routed_final_text(
@@ -2525,9 +2514,23 @@ class VoiceGateway:
                 )
                 return {"status": "completed", "executed_tool_names": []}
 
+            if knowledge_mode == "rag" and self.settings.memory_retrieval_mode != "inject":
+                text = (
+                    "Saved memory lookup is turned off."
+                    if self.settings.memory_retrieval_mode == "off"
+                    else "Saved memory lookup isn't enabled for answers yet."
+                )
+                await self._emit_routed_final_text(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    text=text,
+                    route=RouteName.MEMORY_QUERY,
+                )
+                return {"status": "completed", "executed_tool_names": []}
             websocket_app = getattr(getattr(self, "websocket", None), "app", None)
             memory_service = getattr(getattr(websocket_app, "state", None), "memory_service", None)
-            if memory_service is None and self.settings.knowledge_mode == "rag":
+            if memory_service is None and knowledge_mode == "rag":
                 text = "I couldn't check your saved memories right now."
                 await self._emit_routed_final_text(
                     session_id=session_id,
@@ -2538,13 +2541,14 @@ class VoiceGateway:
                 )
                 return {"status": "completed", "executed_tool_names": []}
 
-            if self.settings.knowledge_mode in {"okf", "combined"}:
+            if knowledge_mode == "okf":
                 return await self._dispatch_selected_knowledge(
                     session_id=session_id,
                     turn_id=turn_id,
                     response_id=response_id,
                     transcript=transcript,
                     rag_service=memory_service,
+                    knowledge_mode=knowledge_mode,
                 )
 
             def trace_memory_stage(
@@ -5856,6 +5860,8 @@ class VoiceGateway:
             memory_enabled = await self._memory_user_enabled()
         if not memory_enabled:
             return None
+        if await self._memory_user_knowledge_mode() == "okf":
+            return None
 
         def trace_retrieval_stage(stage: str, duration_ms: float, metadata: dict[str, Any]) -> None:
             ended_ns = time.perf_counter_ns()
@@ -5927,6 +5933,15 @@ class VoiceGateway:
             ).text
             or None
         )
+
+    async def _memory_user_knowledge_mode(self) -> str | None:
+        try:
+            async with self.db.begin_nested():
+                return await self.db.scalar(
+                    select(User.knowledge_mode).where(User.id == self.principal.user_id)
+                )
+        except SQLAlchemyError:
+            return None
 
     def _schedule_okf_shadow_read(
         self,
@@ -6011,6 +6026,7 @@ class VoiceGateway:
         response_id: uuid.UUID,
         transcript: str,
         rag_service,
+        knowledge_mode: str = "okf",
     ) -> dict[str, Any]:
         """Run opt-in OKF/COMBINED only for routed MEMORY_QUERY turns."""
 
@@ -6032,11 +6048,12 @@ class VoiceGateway:
             cancellation_check=not self.cancel_guard.can_emit(response_id),
         )
         selector = KnowledgeSelector(
-            self.settings.knowledge_mode,
+            knowledge_mode,
             configured_engines(
                 self.settings,
                 rag_service=rag_service,
                 okf_service=OkfRetrievalService(self.settings),
+                knowledge_mode=knowledge_mode,
             ),
         )
         started = time.perf_counter()

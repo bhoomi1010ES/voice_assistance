@@ -303,7 +303,10 @@ class MemoryJobWorker:
                 and (voice_session.client_metadata or {}).get("memory_excluded") is True
             ):
                 return
-        candidates = extract_explicit_candidates(message.content)
+        candidates = extract_explicit_candidates(
+            message.content,
+            policy_version=job.policy_version,
+        )
         for candidate in candidates:
             safe = validate_candidate(candidate, message.content)
             await self.writer.write_candidate(

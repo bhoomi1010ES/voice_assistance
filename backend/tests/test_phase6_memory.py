@@ -44,6 +44,7 @@ from app.memory.types import (
     MemoryType,
     build_memory_query_plan,
 )
+from app.okf.policy import map_memory_to_proposal
 from app.schemas import MemoryCreateRequest
 from app.services.auth import AuthPrincipal
 
@@ -100,6 +101,65 @@ def test_explicit_memory_call_is_grounded_deterministic_and_typed() -> None:
         "predicate": "preference",
     }
     assert extract_explicit_tool_candidate("I prefer early morning meetings.") is None
+
+
+def test_versioned_explicit_project_memory_produces_okf_mappable_fields() -> None:
+    from app.memory.extraction import (
+        LEGACY_MEMORY_POLICY_VERSION,
+        STRUCTURED_PROJECT_MEMORY_POLICY_VERSION,
+    )
+
+    utterance = "Remember that the Willow Beacon project framework is Fern."
+    candidate = extract_explicit_tool_candidate(utterance)
+
+    assert candidate is not None
+    assert candidate.memory_type is MemoryType.PROJECT
+    assert candidate.subject == "Willow Beacon"
+    assert candidate.predicate == "framework"
+    assert candidate.object_json == {"name": "Fern"}
+    automatic = extract_explicit_candidates(
+        utterance,
+        policy_version=STRUCTURED_PROJECT_MEMORY_POLICY_VERSION,
+    )
+    assert len(automatic) == 1
+    assert automatic[0].object_json == {"name": "Fern"}
+
+    call = build_explicit_memory_save_call(utterance, turn_id=uuid.uuid4())
+    assert call is not None
+    assert call.arguments["object_json"] == {"name": "Fern"}
+
+    source = SimpleNamespace(
+        status="active",
+        memory_type=candidate.memory_type.value,
+        subject=candidate.subject,
+        predicate=candidate.predicate,
+        object_json=candidate.object_json,
+        content=candidate.content,
+        confidence=1.0,
+        valid_from=None,
+        valid_to=None,
+        id=uuid.uuid4(),
+    )
+    proposal = map_memory_to_proposal(source)
+    assert proposal is not None
+    assert proposal.canonical_key == "projects/willow-beacon/framework"
+    assert proposal.value_json == {"name": "Fern"}
+
+    legacy = extract_explicit_tool_candidate(
+        utterance,
+        policy_version=LEGACY_MEMORY_POLICY_VERSION,
+    )
+    legacy_automatic = extract_explicit_candidates(
+        utterance,
+        policy_version=LEGACY_MEMORY_POLICY_VERSION,
+    )
+    assert legacy is not None
+    assert legacy.memory_type is MemoryType.FACT
+    assert legacy.subject is None
+    assert legacy.object_json is None
+    assert len(legacy_automatic) == 1
+    assert legacy_automatic[0].subject is None
+    assert legacy_automatic[0].object_json is None
 
 
 def test_explicit_memory_call_rejects_sensitive_or_implicit_content() -> None:
@@ -599,7 +659,13 @@ async def test_confirmed_memory_save_carries_turn_session_and_source_message(
 
     result = await memory_save_handler(
         context,
-        MemorySaveArguments(content="I prefer jasmine tea", memory_type=MemoryType.PREFERENCE),
+        MemorySaveArguments(
+            content="The Willow Beacon project framework is Fern",
+            memory_type=MemoryType.PROJECT,
+            subject="Willow Beacon",
+            predicate="framework",
+            object_json={"name": "Fern"},
+        ),
     )
 
     assert result == {"memory_id": str(saved_memory_id), "created": True}
@@ -607,6 +673,7 @@ async def test_confirmed_memory_save_carries_turn_session_and_source_message(
     assert call.kwargs["source_message_id"] == source_message_id
     assert call.kwargs["source_turn_id"] == context.turn_id
     assert call.kwargs["source_session_id"] == context.session_id
+    assert call.kwargs["candidate"].object_json == {"name": "Fern"}
 
 
 @pytest.mark.asyncio

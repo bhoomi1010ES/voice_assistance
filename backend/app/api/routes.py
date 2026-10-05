@@ -31,6 +31,24 @@ async def ready(request: Request) -> JSONResponse:
         **dependency_status,
         "dependencies": dict(dependency_status.get("dependencies", {})),
     }
+    settings = getattr(request.app.state, "settings", None)
+    if settings is not None and settings.okf_enabled and settings.okf_sync_enabled:
+        if settings.okf_worker_mode == "in_process":
+            worker = getattr(request.app.state, "okf_worker", None)
+            worker_running = bool(worker is not None and worker.running)
+            result["dependencies"]["okf_sync_worker"] = {
+                "enabled": True,
+                "mode": "in_process",
+                "status": "ready" if worker_running else "not_ready",
+            }
+            if not worker_running:
+                result["status"] = "not_ready"
+        else:
+            result["dependencies"]["okf_sync_worker"] = {
+                "enabled": True,
+                "mode": "standalone",
+                "status": "external",
+            }
     llm_status = request.app.state.llm_service.readiness()
     if llm_status["enabled"]:
         result["dependencies"]["llm"] = llm_status

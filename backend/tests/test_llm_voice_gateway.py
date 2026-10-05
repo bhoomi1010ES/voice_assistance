@@ -1323,6 +1323,92 @@ async def test_legacy_router_modes_never_enter_okf_selector(router_mode: str) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "disposition",
+    ["direct_answer", "continue_with_evidence", "no_result", "unavailable"],
+)
+async def test_okf_gateway_dispatch_uses_real_selector_and_emits_grounded_result(
+    monkeypatch, disposition: str
+) -> None:
+    from app.okf.retrieval import OkfRetrievalService
+    from app.okf.types import KnowledgeDisposition, KnowledgeResult, OkfEvidence
+
+    gateway, outbound = _direct_gateway()
+    gateway.settings = gateway.settings.model_copy(update={"okf_enabled": True})
+    source_id = uuid.uuid4()
+    evidence = (
+        (
+            OkfEvidence(
+                concept_id=uuid.uuid4(),
+                assertion_id=uuid.uuid4(),
+                concept_type="project",
+                canonical_key="projects/red-bird/framework",
+                display_text="Flask",
+                status="active",
+                source_memory_ids=(source_id,),
+            ),
+        )
+        if disposition in {"direct_answer", "continue_with_evidence"}
+        else ()
+    )
+    calls = []
+
+    async def retrieve(_service, db, request):
+        calls.append((db, request))
+        return KnowledgeResult(
+            engine="okf",
+            status=KnowledgeDisposition(disposition),
+            evidence=evidence,
+            duration_ms=1.0,
+        )
+
+    # Exercise the gateway's lazy imports, selector, adapter and final emission.
+    # Stub only the database retrieval boundary, not the dispatch method.
+    monkeypatch.setattr(OkfRetrievalService, "retrieve", retrieve)
+    response_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    turn_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+    transcript = "What framework does my Red Bird project use?"
+
+    result = await gateway._dispatch_selected_knowledge(
+        session_id=session_id,
+        turn_id=turn_id,
+        response_id=response_id,
+        transcript=transcript,
+        rag_service=None,
+        knowledge_mode="okf",
+    )
+
+    assert len(calls) == 1
+    db, request = calls[0]
+    assert db is gateway.db
+    assert request.user_id == gateway.principal.user_id
+    assert request.session_id == session_id
+    assert request.query == transcript
+    if disposition == "continue_with_evidence":
+        assert result["status"] == "continue_with_memory_evidence"
+        assert "Flask" in result["memory_context"]
+        assert result["memory_evidence_ids"] == (source_id,)
+        assert outbound == []
+    else:
+        assert result["status"] == "completed"
+        expected_text = {
+            "direct_answer": "I have this saved: Flask",
+            "no_result": "I don't have a saved memory that answers that.",
+            "unavailable": "I couldn't check your saved memories right now.",
+        }[disposition]
+        final = outbound[-1]
+        assert final["type"] == "assistant.text.final"
+        assert final["text"] == expected_text
+        assert final["session_id"] == str(session_id)
+        assert final["turn_id"] == str(turn_id)
+        assert final["response_id"] == str(response_id)
+        if disposition == "direct_answer":
+            assert result["memory_evidence_ids"] == [str(source_id)]
+
+
+@pytest.mark.asyncio
 async def test_canary_memory_query_enters_selected_knowledge_path() -> None:
     gateway, _outbound = _direct_gateway()
     gateway.settings = gateway.settings.model_copy(

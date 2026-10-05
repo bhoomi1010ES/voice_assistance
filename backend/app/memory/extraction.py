@@ -38,6 +38,18 @@ _ROUTINE = re.compile(
     r"^(?:i\s+usually\s+.+|every\s+\w+\s+i\s+.+)$",
     re.IGNORECASE,
 )
+_PROJECT_ATTRIBUTE = re.compile(
+    r"^(?P<subject>(?:the\s+)?[a-z0-9][\w\s'-]{0,120}?)\s+project(?:'s)?\s+"
+    r"(?P<predicate>framework|database|embedding\s+model|language|repository|status|vector\s+store)\s+"
+    r"(?:is|uses|runs|stores)\s+(?P<value>.+)$",
+    re.IGNORECASE,
+)
+_PROJECT_PREDICATES = {
+    "embedding model": "embedding_model",
+    "vector store": "vector_store",
+}
+LEGACY_MEMORY_POLICY_VERSION = "phase6-explicit-v1"
+STRUCTURED_PROJECT_MEMORY_POLICY_VERSION = "phase6-explicit-v2"
 _REJECTED_PREFIX = re.compile(
     r"^(?:don['’]t|do\s+not|never)\s+remember\b|^forget\b|^please\s+forget\b"
     r"|^(?:create|make|add|set|schedule|remind)\b|^save\s+this\s+task\b"
@@ -51,7 +63,11 @@ _TEMPORARY_MARKER = re.compile(
 )
 
 
-def extract_explicit_candidates(text: str) -> tuple[ExtractionCandidate, ...]:
+def extract_explicit_candidates(
+    text: str,
+    *,
+    policy_version: str = STRUCTURED_PROJECT_MEMORY_POLICY_VERSION,
+) -> tuple[ExtractionCandidate, ...]:
     """Extract only explicit, source-grounded memory requests.
 
     Automatic inference from ordinary conversation is intentionally deferred to
@@ -104,6 +120,7 @@ def extract_explicit_candidates(text: str) -> tuple[ExtractionCandidate, ...]:
             or nominal_preference is not None
             or preferred_attribute is not None
         ),
+        allow_structured_project=(policy_version == STRUCTURED_PROJECT_MEMORY_POLICY_VERSION),
     )
     try:
         validated = validate_candidate(candidate, normalized)
@@ -114,7 +131,11 @@ def extract_explicit_candidates(text: str) -> tuple[ExtractionCandidate, ...]:
     return (validated,)
 
 
-def extract_explicit_tool_candidate(text: str) -> ExtractionCandidate | None:
+def extract_explicit_tool_candidate(
+    text: str,
+    *,
+    policy_version: str = STRUCTURED_PROJECT_MEMORY_POLICY_VERSION,
+) -> ExtractionCandidate | None:
     """Build a grounded candidate only for an explicit remember/save command."""
 
     normalized = " ".join(text.split())
@@ -123,7 +144,10 @@ def extract_explicit_tool_candidate(text: str) -> ExtractionCandidate | None:
     explicit_match = _EXPLICIT.match(normalized) or _EXPLICIT_SAVE.match(normalized)
     if explicit_match is None:
         return None
-    candidate = _candidate_from_content(explicit_match.group(1).strip().rstrip("."))
+    candidate = _candidate_from_content(
+        explicit_match.group(1).strip().rstrip("."),
+        allow_structured_project=(policy_version == STRUCTURED_PROJECT_MEMORY_POLICY_VERSION),
+    )
     try:
         return validate_candidate(candidate, normalized)
     except ValueError:
@@ -134,13 +158,17 @@ def _candidate_from_content(
     content: str,
     *,
     prefer_plain_statement: bool = False,
+    allow_structured_project: bool = False,
 ) -> ExtractionCandidate:
     relationship = _RELATIONSHIP.match(content)
+    project_attribute = _PROJECT_ATTRIBUTE.match(content) if allow_structured_project else None
     preference = _PREFERENCE.match(content)
     nominal_preference = _PREFERENCE_NOMINAL.match(content)
     preferred_attribute = _PREFERRED_ATTRIBUTE.match(content)
     memory_type = (
-        MemoryType.PREFERENCE
+        MemoryType.PROJECT
+        if project_attribute
+        else MemoryType.PREFERENCE
         if preference or nominal_preference or preferred_attribute or prefer_plain_statement
         else MemoryType.RELATIONSHIP
         if relationship
@@ -152,20 +180,33 @@ def _candidate_from_content(
         content=content,
         memory_type=memory_type,
         subject=(
-            "user"
+            project_attribute.group("subject").strip().removeprefix("the ").strip()
+            if project_attribute
+            else "user"
             if memory_type == MemoryType.PREFERENCE
             else relationship.group(1).strip()
             if relationship
             else None
         ),
         predicate=(
-            "preference"
+            _PROJECT_PREDICATES.get(
+                project_attribute.group("predicate").casefold(),
+                project_attribute.group("predicate").casefold(),
+            )
+            if project_attribute
+            else "preference"
             if memory_type == MemoryType.PREFERENCE
             else "relationship"
             if relationship
             else None
         ),
-        object_json={"value": relationship.group(2).strip()} if relationship else None,
+        object_json=(
+            {"name": project_attribute.group("value").strip().rstrip(".")}
+            if project_attribute
+            else {"value": relationship.group(2).strip()}
+            if relationship
+            else None
+        ),
         confidence=1.0,
         salience=0.8,
     )

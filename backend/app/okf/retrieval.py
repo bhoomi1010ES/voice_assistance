@@ -204,16 +204,48 @@ class OkfRetrievalService:
             conditions.append(OkfConcept.canonical_key.op("~")(_canonical_term_pattern(term)))
         candidate_limit = min(max(plan.limit * 10, 50), _MAX_CONCEPT_CANDIDATES)
         query_started_ns = time.perf_counter_ns()
-        base_ids = tuple(
-            (
-                await session.scalars(
-                    select(OkfConcept.id)
-                    .where(*conditions)
-                    .order_by(OkfConcept.canonical_key, OkfConcept.id)
-                    .limit(candidate_limit)
+        if plan.intent == "project" and plan.key_terms:
+            joined_ids = await self._joined_project_concept_ids(
+                session, request=request, plan=plan, candidate_limit=candidate_limit
+            )
+            if joined_ids is not None:
+                base_ids = joined_ids
+            else:
+                candidates = (
+                    await session.execute(
+                        select(
+                            OkfConcept.id,
+                            func.split_part(OkfConcept.canonical_key, "/", 2).label("project_name"),
+                        )
+                        .where(*conditions)
+                        .order_by(OkfConcept.canonical_key, OkfConcept.id)
+                        .limit(candidate_limit + 1)
+                    )
+                ).all()
+                # A complete spaced name must also be present. A surviving
+                # "Redbird Archive" cannot answer a forgotten "Redbird" query.
+                # Names can contain words the planner omits as grammar/type
+                # markers, such as the "A" in "Scoped Run A Project".
+                terms = set(re.findall(r"[a-z0-9]+", plan.normalized_query.casefold()))
+                terms.update(plan.key_terms)
+                base_ids = (
+                    tuple(
+                        row.id for row in candidates if set(row.project_name.split("-")) <= terms
+                    )
+                    if len(candidates) <= candidate_limit
+                    else ()
                 )
-            ).all()
-        )
+        else:
+            base_ids = tuple(
+                (
+                    await session.scalars(
+                        select(OkfConcept.id)
+                        .where(*conditions)
+                        .order_by(OkfConcept.canonical_key, OkfConcept.id)
+                        .limit(candidate_limit)
+                    )
+                ).all()
+            )
         _trace_stage(trace, "concept_candidate_query", query_started_ns, {"count": len(base_ids)})
         if not base_ids or not plan.project_expansion:
             return base_ids[: plan.limit * 5]
@@ -271,6 +303,68 @@ class OkfRetrievalService:
             trace, "parent_child_expansion", expansion_started_ns, {"count": len(expanded)}
         )
         return expanded
+
+    async def _joined_project_concept_ids(
+        self,
+        session: AsyncSession,
+        *,
+        request: KnowledgeRequest,
+        plan: OkfQueryPlan,
+        candidate_limit: int,
+    ) -> tuple[uuid.UUID, ...] | None:
+        """Resolve a joined name only when its complete project identity is unique."""
+
+        project_name = func.split_part(OkfConcept.canonical_key, "/", 2)
+        joined_name = func.replace(project_name, "-", "")
+        scope = [
+            OkfConcept.user_id == request.user_id,
+            OkfConcept.status.in_(("active", "contested")),
+            func.split_part(OkfConcept.canonical_key, "/", 1) == "projects",
+        ]
+        if plan.concept_types:
+            scope.append(OkfConcept.concept_type.in_(plan.concept_types))
+        # Resolve the identity before checking fields. Otherwise "Redbird"
+        # could match the word in "Redbird Archive", or a collision could be
+        # hidden simply because one project lacks the requested field.
+        identities = (
+            await session.scalars(
+                select(project_name)
+                .where(*scope, joined_name.in_(plan.key_terms))
+                .distinct()
+                .order_by(project_name)
+                .limit(candidate_limit + 1)
+            )
+        ).all()
+        if not identities:
+            return None
+        if len(identities) > candidate_limit:
+            return ()
+        exact_names = [name for name in identities if name in plan.key_terms]
+        if len(exact_names) == 1:
+            identity = exact_names[0]
+        elif len(identities) == 1:
+            identity = identities[0]
+        else:
+            return ()
+
+        conditions = [
+            or_(
+                OkfConcept.canonical_key.op("~")(_canonical_term_pattern(term)),
+                joined_name == term,
+            )
+            for term in plan.key_terms
+        ]
+        candidates = (
+            await session.scalars(
+                select(OkfConcept.id)
+                .where(*scope, project_name == identity, *conditions)
+                .order_by(OkfConcept.canonical_key, OkfConcept.id)
+                .limit(candidate_limit + 1)
+            )
+        ).all()
+        if len(candidates) > candidate_limit:
+            return ()
+        return tuple(candidates)
 
     async def _active_evidence(
         self,

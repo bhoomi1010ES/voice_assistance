@@ -150,6 +150,20 @@ async def test_combined_selector_keeps_okf_when_rag_adapter_is_not_configured() 
     assert selection.evidence_ids == (source_id,)
 
 
+def test_owner_selected_okf_builds_okf_engine_when_global_default_is_rag() -> None:
+    settings = Settings(_env_file=None, okf_enabled=True, knowledge_mode="rag")
+    okf_service = StubRetrievalService(None)
+
+    engines = configured_engines(
+        settings,
+        rag_service=None,
+        okf_service=okf_service,
+        knowledge_mode="okf",
+    )
+
+    assert tuple(engine.name for engine in engines) == ("okf",)
+
+
 @pytest.mark.asyncio
 async def test_selector_cancellation_prevents_engine_calls() -> None:
     rag = StubEngine("rag", _result("rag", KnowledgeDisposition.NO_RESULT))

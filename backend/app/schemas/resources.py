@@ -44,6 +44,7 @@ class MemorySearchRequest(StrictSchema):
 
 class MemorySettingsUpdateRequest(StrictSchema):
     enabled: bool | None = None
+    knowledge_mode: Literal["rag", "okf"] | None = None
     timezone: str | None = Field(default=None, min_length=1, max_length=64)
     locale: str | None = Field(default=None, min_length=2, max_length=16)
 
@@ -60,9 +61,11 @@ class MemorySettingsUpdateRequest(StrictSchema):
 
 
 class MemorySettingsResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     enabled: bool = Field(validation_alias="memory_enabled")
+    knowledge_mode: Literal["rag", "okf"]
+    okf_available: bool
     timezone: str
     locale: str
     version: int = Field(validation_alias="memory_version")

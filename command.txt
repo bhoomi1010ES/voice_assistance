@@ -3,6 +3,11 @@ Normal manual startup
 -----Terminal 1 — backend:
 cd C:\Users\lenovo\Desktop\voice_assistance\backend
 
+# Keep WSL alive so its Redis service stays reachable from Windows.
+$redisWslProcess = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'wsl.exe' -and $_.CommandLine -match 'Ubuntu.*sleep infinity' }
+if (-not $redisWslProcess) { Start-Process wsl.exe -ArgumentList '-d','Ubuntu','--exec','sleep','infinity' -WindowStyle Hidden }
+wsl -d Ubuntu -u root -- systemctl start redis-server
+
 ..\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir . --host 0.0.0.0 --port 8000
 
 
@@ -10,6 +15,7 @@ cd C:\Users\lenovo\Desktop\voice_assistance\backend
 cd C:\Users\lenovo\Desktop\voice_assistance\frontend
 
 adb devices -l
+adb reverse tcp:8000 tcp:8000
 adb reverse tcp:8081 tcp:8081
 npm.cmd start
 
@@ -17,20 +23,26 @@ npm.cmd start
 ------Terminal 3 — build, install, and launch:
 cd C:\Users\lenovo\Desktop\voice_assistance\frontend
 
-npm.cmd run android
+# Use a short Gradle cache path to avoid Ninja's Windows path-length limit.
+$env:GRADLE_USER_HOME = "$env:USERPROFILE\.gradle"
+npm.cmd run android -- --no-packager --active-arch-only
 
 ######Relaunch without rebuilding
+adb reverse tcp:8000 tcp:8000
+adb reverse tcp:8081 tcp:8081
 adb shell am force-stop com.voiceaipoc
 adb shell monkey -p com.voiceaipoc -c android.intent.category.LAUNCHER 1
 
 ##########Build and install APK manually
 cd C:\Users\lenovo\Desktop\voice_assistance\frontend\android
 
+$env:GRADLE_USER_HOME = "$env:USERPROFILE\.gradle"
 .\gradlew.bat assembleDebug
 
 cd C:\Users\lenovo\Desktop\voice_assistance
 
 adb install -r .\frontend\android\app\build\outputs\apk\debug\app-debug.apk
+adb reverse tcp:8000 tcp:8000
 adb reverse tcp:8081 tcp:8081
 adb shell monkey -p com.voiceaipoc -c android.intent.category.LAUNCHER 1
 
