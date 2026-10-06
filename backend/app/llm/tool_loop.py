@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
+import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+
+logger = logging.getLogger(__name__)
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -36,6 +40,57 @@ from app.services.device_time import DeviceTimeContext, format_local_time
 ToolHandler = Callable[["ToolExecutionContext", BaseModel], Awaitable[Any]]
 ToolArgumentNormalizer = Callable[["ToolExecutionContext", BaseModel], BaseModel]
 IdempotencyKey = tuple[uuid.UUID, uuid.UUID, str, str]
+
+
+def compute_argument_digest(arguments: BaseModel | Mapping[str, Any]) -> str:
+    """Compute deterministic SHA-256 digest of normalized tool arguments."""
+    if isinstance(arguments, BaseModel):
+        payload = arguments.model_dump(mode="json", exclude_unset=True)
+    elif isinstance(arguments, Mapping):
+        payload = dict(arguments)
+    else:
+        payload = {"value": str(arguments)}
+    payload = {k: v for k, v in payload.items() if v is not None}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class PlanningAuthorization:
+    """Action-bound authorization grant for a validated planning operation."""
+
+    user_id: uuid.UUID
+    session_id: uuid.UUID
+    turn_id: uuid.UUID
+    action_id: uuid.UUID
+    tool_name: str
+    argument_digest: str
+    target_id: uuid.UUID | None = None
+    target_revision: int | None = None
+    mode_state_version: int = 1
+    policy_version: str = "plan-v1"
+    expires_at_monotonic: float | None = None
+    plan_id: uuid.UUID | None = None
+
+
+@dataclass
+class PlannerBudget:
+    """Server-owned turn budget for batch planning execution."""
+
+    max_total_actions: int = 8
+    total_actions_executed: int = 0
+    max_wall_time_seconds: float = 30.0
+    start_time_monotonic: float = field(default_factory=time.monotonic)
+
+    def can_consume(self, tool_name: str) -> bool:
+        if self.total_actions_executed >= self.max_total_actions:
+            return False
+        if (time.monotonic() - self.start_time_monotonic) > self.max_wall_time_seconds:
+            return False
+        return True
+
+    def consume(self, tool_name: str) -> None:
+        self.total_actions_executed += 1
 
 
 @dataclass(frozen=True)
@@ -71,6 +126,8 @@ class ToolExecutionContext:
     ) = None
     memory_settings: Settings | None = None
     memory_service: Any | None = None
+    planning_grants: tuple[PlanningAuthorization, ...] = ()
+    planner_budget: PlannerBudget | None = None
 
 
 @dataclass(frozen=True)
@@ -259,6 +316,30 @@ class ToolExecutor:
         confirmed = call.tool_call_id in context.confirmed_tool_call_ids
         if context.confirmation_check is not None:
             confirmed = confirmed or context.confirmation_check(call)
+        authorized_by_plan = False
+        if context.planning_grants and tool.requires_confirmation:
+            arg_digest = compute_argument_digest(validated_arguments)
+            now_mono = time.monotonic()
+            for grant in context.planning_grants:
+                if (
+                    grant.user_id == context.user_id
+                    and grant.session_id == context.session_id
+                    and grant.turn_id == context.turn_id
+                    and grant.tool_name == call.name
+                    and grant.argument_digest == arg_digest
+                    and (grant.expires_at_monotonic is None or now_mono <= grant.expires_at_monotonic)
+                ):
+                    if grant.target_id is not None:
+                        arg_target = (
+                            getattr(validated_arguments, "task_id", None)
+                            or getattr(validated_arguments, "reminder_id", None)
+                            or getattr(validated_arguments, "plan_id", None)
+                        )
+                        if arg_target is not None and arg_target != grant.target_id:
+                            continue
+                    authorized_by_plan = True
+                    break
+        confirmed = confirmed or authorized_by_plan
         if tool.requires_confirmation and not confirmed:
             if context.confirmation_requested is not None:
                 try:
@@ -274,6 +355,7 @@ class ToolExecutor:
             return self._failure(call, "llm_tool_confirmation_required")
         if (
             tool.requires_confirmation
+            and not authorized_by_plan
             and context.confirmation_expires_at_monotonic is not None
             and time.monotonic() > context.confirmation_expires_at_monotonic
         ):
@@ -358,6 +440,13 @@ class ToolExecutor:
     ) -> bool:
         key = (context.user_id, context.turn_id, tool.name)
         async with self._turn_call_lock:
+            if context.planner_budget is not None:
+                if not context.planner_budget.can_consume(tool.name):
+                    return False
+                context.planner_budget.consume(tool.name)
+                count = self._turn_call_counts.get(key, 0)
+                self._turn_call_counts[key] = count + 1
+                return True
             count = self._turn_call_counts.get(key, 0)
             if count >= tool.max_calls_per_turn:
                 return False
@@ -392,6 +481,7 @@ class ToolExecutor:
         except LLMToolError as error:
             return self._failure(call, error.code)
         except Exception:  # noqa: BLE001 - tool failures become model-visible results
+            logger.exception("Tool handler crashed:")
             return self._failure(call, "llm_tool_execution_failed")
         finally:
             if context.tool_execution_finished is not None:
@@ -765,9 +855,11 @@ def create_default_tool_registry() -> ToolRegistry:
         handler=_current_date,
         read_only=True,
     )
+    from app.llm.plan_tools import register_plan_tools
     from app.llm.reminder_tools import register_reminder_tools
     from app.llm.task_tools import register_task_tools
 
     register_task_tools(registry)
     register_reminder_tools(registry)
+    register_plan_tools(registry)
     return registry

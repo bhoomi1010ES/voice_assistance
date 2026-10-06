@@ -28,7 +28,7 @@ _REFERENCE = re.compile(
 )
 _ACTION = re.compile(
     r"\b(?:i|we|our|me|let's|must|needs?|will|want|have|make|move|change|finish|finished|"
-    r"complete|completed|remind|cancel|delete|archive|undo|reassign|send|book)\b",
+    r"complete|completed|remind|cancel|delete|archive|undo|reassign|send|book|mark|reschedule|postpone)\b",
     re.I,
 )
 _ANCHOR = re.compile(r"\b(?:after|before|prior to|ahead of)\b", re.I)
@@ -38,9 +38,60 @@ _TEMPORAL = re.compile(
     re.I,
 )
 
+_PRONOUNS = frozenset(
+    {
+        "that",
+        "it",
+        "this",
+        "that task",
+        "the task",
+        "this task",
+        "that reminder",
+        "the reminder",
+        "this reminder",
+        "that one",
+        "the one",
+    }
+)
+
 
 def identity(text: str) -> str:
     return " ".join(re.findall(r"\w+", text.casefold()))
+
+
+def _is_pronoun_reference(text: str) -> bool:
+    cleaned = identity(text)
+    if cleaned in _PRONOUNS:
+        return True
+    return cleaned in {
+        "move that",
+        "move it",
+        "move this",
+        "mark it",
+        "mark that",
+        "mark this",
+        "mark it done",
+        "mark that done",
+        "mark this done",
+        "mark it complete",
+        "mark that complete",
+        "mark this complete",
+        "complete it",
+        "complete that",
+        "complete this",
+        "finish it",
+        "finish that",
+        "finish this",
+        "cancel it",
+        "cancel that",
+        "cancel this",
+        "delete it",
+        "delete that",
+        "delete this",
+        "reschedule it",
+        "reschedule that",
+        "reschedule this",
+    }
 
 
 def _plan_name(text: str) -> str:
@@ -83,6 +134,17 @@ def _task_title_matches(existing: str, proposed: str, source: str) -> bool:
         and core == proposed_words - neutral
         and existing_words <= _words(source)
         and proposed_words <= _words(source)
+    )
+
+
+def _reminder_title_matches(existing: str, proposed: str, source: str) -> bool:
+    if identity(existing) == identity(proposed):
+        return True
+    existing_words, proposed_words = _words(existing), _words(proposed)
+    return bool(
+        existing_words
+        and existing_words == proposed_words
+        and existing_words <= _words(source)
     )
 
 
@@ -498,24 +560,58 @@ def validate(
         )
         targets = snapshot.plans if kind == "plan" else snapshot.targets
         title = proposal.target_mention or proposal.title
-        matches = [
-            t
-            for t in targets
-            if t.kind == kind
-            and (
-                _plan_name(t.title) == _plan_name(title)
-                if kind == "plan"
-                else _task_title_matches(t.title, title, proposal.source.text)
-                if kind == "task"
-                else identity(t.title) == identity(title)
-            )
-            and (kind == "plan" or decision.plan_ordinal is None and t.plan_id == decision.plan_id)
-        ]
         update = (
             proposal.operation.startswith("UPDATE_")
             or proposal.operation == "COMPLETE_TASK"
             or proposal.operation in CONFIRMATION_OPERATIONS
         )
+        is_pronoun = (
+            _is_pronoun_reference(title)
+            or (proposal.target_mention is not None and _is_pronoun_reference(proposal.target_mention))
+            or (
+                update
+                and bool(
+                    re.search(
+                        r"\b(?:move|reschedule|postpone|mark|complete|finish|cancel|delete|archive)\s+(?:that|it|this)\b",
+                        proposal.source.text,
+                        re.I,
+                    )
+                )
+            )
+        )
+        scoped_candidates = [
+            t
+            for t in targets
+            if t.kind == kind
+            and (kind == "plan" or decision.plan_ordinal is None and t.plan_id == decision.plan_id)
+        ]
+        if is_pronoun:
+            matches = []
+            if snapshot.recent_receipt and snapshot.recent_receipt.saved_actions:
+                recent_ids = {
+                    str(a.get("id"))
+                    for a in snapshot.recent_receipt.saved_actions
+                    if a.get("id")
+                }
+                recent_matches = [t for t in scoped_candidates if str(t.id) in recent_ids]
+                if recent_matches:
+                    matches = recent_matches
+            if not matches:
+                matches = scoped_candidates
+        else:
+            matches = [
+                t
+                for t in targets
+                if t.kind == kind
+                and (
+                    _plan_name(t.title) == _plan_name(title)
+                    if kind == "plan"
+                    else _task_title_matches(t.title, title, proposal.source.text)
+                    if kind == "task"
+                    else _reminder_title_matches(t.title, title, proposal.source.text)
+                )
+                and (kind == "plan" or decision.plan_ordinal is None and t.plan_id == decision.plan_id)
+            ]
         if update:
             if len(matches) != 1 or not snapshot.complete:
                 decisions.append(
@@ -545,11 +641,16 @@ def validate(
             else:
                 decisions.append(decision.outcome("CLARIFY", "duplicate_schedule_conflict"))
             continue
+        normalized_title = (
+            " ".join(sorted(_words(proposal.title)))
+            if _words(proposal.title)
+            else identity(proposal.title)
+        )
         key = (
             proposal.operation,
             _plan_name(proposal.title)
             if proposal.operation == "CREATE_PLAN"
-            else identity(proposal.title),
+            else normalized_title,
             decision.plan_id,
             decision.plan_ordinal,
             at,

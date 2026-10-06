@@ -1000,6 +1000,7 @@ class VoiceModule(
             putDouble("connectionGeneration", connectionGeneration.toDouble())
             putString("event", eventType)
             putString("planningJson", eventPayload?.planningJson)
+            putString("planningActionsJson", eventPayload?.planningActionsJson)
             putString("requestEventId", eventPayload?.requestEventId)
             if (sessionId == null) putNull("sessionId") else putString("sessionId", sessionId)
             if (turnId == null) putNull("turnId") else putString("turnId", turnId)

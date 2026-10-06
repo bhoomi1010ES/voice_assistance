@@ -96,6 +96,7 @@ class VoiceWebSocketTransport(
 
     data class ServerEventPayload(
         val planningJson: String? = null,
+        val planningActionsJson: String? = null,
         val requestEventId: String? = null,
         val text: String? = null,
         val delta: String? = null,
@@ -1934,6 +1935,12 @@ class VoiceWebSocketTransport(
         }
         return ServerEventPayload(
             planningJson = json.optJSONObject("planning")?.toString()?.takeIf { it.length <= 4096 },
+            planningActionsJson = (
+                json.optJSONArray("actions")?.toString()
+                    ?: json.optJSONObject("actions")?.toString()
+                    ?: json.optJSONObject("receipt")?.toString()
+                    ?: json.optJSONArray("saved_actions")?.toString()
+            )?.takeIf { it.length <= 16384 },
             requestEventId = json.optStringOrNull("request_event_id")?.takeIf { it.length <= 128 },
             text = text,
             delta = delta,

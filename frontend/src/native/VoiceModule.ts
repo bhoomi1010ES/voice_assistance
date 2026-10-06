@@ -750,6 +750,7 @@ export type VoiceGatewayStatus = {
 
 export type VoiceGatewayEvent = {
   planningJson?: string | null;
+  planningActionsJson?: string | null;
   requestEventId?: string | null;
   connectionGeneration?: number;
   event: string;

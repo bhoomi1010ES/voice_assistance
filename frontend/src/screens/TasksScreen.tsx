@@ -15,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import { useAuth } from '../auth/AuthProvider';
+import { useVoiceSocket } from '../voice/VoiceSocketProvider';
 import { safeUserMessage, toClientError } from '../api/errors';
 import {
   ActionButton,
@@ -86,6 +87,7 @@ const EMPTY_REMINDER_DRAFT: ReminderDraft = {
 
 export function TasksScreen() {
   const { controller, profile } = useAuth();
+  const { planningReceiptVersion = 0, session = 'idle' } = useVoiceSocket();
   const { colors } = useAppTheme();
 
   const [page, setPage] = useState<Page>('tasks');
@@ -167,6 +169,18 @@ export function TasksScreen() {
   useEffect(() => {
     load().catch(() => undefined);
   }, [load]);
+
+  useEffect(() => {
+    if (planningReceiptVersion > 0) {
+      load(true).catch(() => undefined);
+    }
+  }, [planningReceiptVersion, load]);
+
+  useEffect(() => {
+    if (session === 'ready') {
+      load(true).catch(() => undefined);
+    }
+  }, [session, load]);
 
   const visibleTasks = useMemo(() => {
     if (taskFilter === 'completed') {

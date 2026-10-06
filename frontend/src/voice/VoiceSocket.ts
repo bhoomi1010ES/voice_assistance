@@ -26,7 +26,13 @@ import {
   VoiceGatewayEvent,
   VoiceGatewayStatus,
 } from '../native/VoiceModule';
-import { PlanningState, parsePlanningState } from '../plans/types';
+import {
+  PlanningActionReceipt,
+  PlanningReceiptPayload,
+  PlanningState,
+  parsePlanningReceipt,
+  parsePlanningState,
+} from '../plans/types';
 import { publicApiConfig } from '../config/environment';
 import {
   applyTranscriptEvent,
@@ -82,6 +88,7 @@ export const VOICE_SERVER_EVENT_TYPES = [
   'server.session.ready',
   'server.planning.state',
   'server.planning.error',
+  'server.planning.actions',
   'server.conversation.reset',
   'server.session.ending',
   'server.session.ended',
@@ -157,6 +164,9 @@ export type VoiceSocketSnapshot = {
   planning?: PlanningState | null;
   planningPending?: boolean;
   planningError?: string | null;
+  planningReceipts?: PlanningActionReceipt[];
+  recentPlanningReceipt?: PlanningReceiptPayload | null;
+  planningReceiptVersion: number;
   connectionGeneration: number;
   connection: VoiceConnectionState;
   session: VoiceSessionState;
@@ -274,6 +284,9 @@ const INITIAL_SNAPSHOT: VoiceSocketSnapshot = {
   planning: null,
   planningPending: false,
   planningError: null,
+  planningReceipts: [],
+  recentPlanningReceipt: null,
+  planningReceiptVersion: 0,
   session: 'idle',
   turn: 'idle',
   heartbeat: 'unknown',
@@ -418,6 +431,7 @@ const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
 
 export type NormalizedVoiceEvent = {
   planning?: PlanningState;
+  planningReceipt?: PlanningReceiptPayload;
   requestEventId?: string;
   connectionGeneration?: number;
   type: VoiceServerEventType;
@@ -478,6 +492,17 @@ export function normalizeVoiceGatewayEvent(
   if (rawType === 'server.planning.state' && !planning) {
     return null;
   }
+  const planningReceipt = parsePlanningReceipt(
+    record.planningReceipt ??
+      record.planning_receipt ??
+      record.receipt ??
+      record.actions ??
+      record.planningActionsJson ??
+      record.planning_actions_json,
+  );
+  if (rawType === 'server.planning.actions' && !planningReceipt) {
+    return null;
+  }
   const requestEventId = readString(
     record.requestEventId ?? record.request_event_id,
     128,
@@ -515,6 +540,7 @@ export function normalizeVoiceGatewayEvent(
     ),
     timestampMs,
     ...(planning ? { planning } : {}),
+    ...(planningReceipt ? { planningReceipt } : {}),
     ...(requestEventId ? { requestEventId } : {}),
     ...(transcript ? { transcript } : {}),
     ...(assistant ? { assistant } : {}),
@@ -1958,7 +1984,11 @@ export class VoiceSocket {
         break;
       case 'voice.connection.closed':
         this.clearPlanningRequest();
-        this.setSnapshot({ planning: null, planningPending: false });
+        this.setSnapshot({
+          planning: null,
+          planningPending: false,
+          recentPlanningReceipt: null,
+        });
         break;
       case 'server.planning.state':
         if (event.planning) {
@@ -1967,6 +1997,22 @@ export class VoiceSocket {
         if (event.requestEventId === this.planningRequestId) {
           this.clearPlanningRequest();
           this.setSnapshot({ planningPending: false });
+        }
+        break;
+      case 'server.planning.actions':
+        if (event.planningReceipt) {
+          const allActions = [
+            ...(this.snapshot.planningReceipts ?? []),
+            ...event.planningReceipt.savedActions,
+            ...event.planningReceipt.duplicateActions,
+            ...event.planningReceipt.failedActions,
+          ];
+          this.setSnapshot({
+            planningReceipts: allActions,
+            recentPlanningReceipt: event.planningReceipt,
+            planningReceiptVersion: (this.snapshot.planningReceiptVersion ?? 0) + 1,
+            planningError: null,
+          });
         }
         break;
       case 'server.planning.error':
@@ -2065,6 +2111,7 @@ export class VoiceSocket {
           transcriptMessages: [],
           transcriptError: null,
           session: 'ready',
+          recentPlanningReceipt: null,
         });
         break;
       case 'server.session.ending':

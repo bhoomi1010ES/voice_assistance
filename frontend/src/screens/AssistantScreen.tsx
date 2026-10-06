@@ -48,13 +48,17 @@ import { VoiceStatusView } from '../components/voice/VoiceStatusView';
 import { QuickActionChips } from '../components/voice/QuickActionChips';
 import { ToolConfirmationCard } from '../components/voice/ToolConfirmationCard';
 import { PlanningControls } from '../components/voice/PlanningControls';
+import { PlanningReceiptCard } from '../components/voice/PlanningReceiptCard';
+import { PlanDetailModal } from '../components/plans/PlanDetailModal';
+import { deleteTask } from '../tasks/api';
+import { PlanningActionReceipt } from '../plans/types';
 import {
   ConversationBubble,
   TranscriptBubble,
 } from '../components/voice/ConversationBubble';
 
 export function AssistantScreen() {
-  const { profile } = useAuth();
+  const { profile, controller } = useAuth();
   const socketState = useVoiceSocket();
   const { socket } = socketState;
   const { colors } = useAppTheme();
@@ -93,6 +97,25 @@ export function AssistantScreen() {
     profile?.name?.trim() ||
     profile?.email?.split('@')[0] ||
     strings.assistant.defaultName;
+
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [dismissedReceipt, setDismissedReceipt] = useState(false);
+
+  useEffect(() => {
+    if (socketState.recentPlanningReceipt) {
+      setDismissedReceipt(false);
+    }
+  }, [socketState.planningReceiptVersion, socketState.recentPlanningReceipt]);
+
+  const handleUndoAction = useCallback(
+    async (action: PlanningActionReceipt) => {
+      const targetId = action.targetId ?? action.id;
+      if (targetId) {
+        await deleteTask(controller, targetId);
+      }
+    },
+    [controller],
+  );
 
   useEffect(() => {
     socket.connect().catch(() => undefined);
@@ -320,7 +343,15 @@ export function AssistantScreen() {
           testID="voice-connection-status"
         />
 
-        <PlanningControls />
+        <PlanningControls onOpenPlanDetail={planId => setSelectedPlanId(planId)} />
+
+        <PlanningReceiptCard
+          receipt={
+            dismissedReceipt ? null : socketState.recentPlanningReceipt ?? null
+          }
+          onDismiss={() => setDismissedReceipt(true)}
+          onUndoAction={handleUndoAction}
+        />
 
         {/* Local conversation history notice */}
         {historyNoticeVisible ? (
@@ -616,6 +647,11 @@ export function AssistantScreen() {
           </Card>
         ) : null}
       </ScrollView>
+      <PlanDetailModal
+        planId={selectedPlanId}
+        visible={Boolean(selectedPlanId)}
+        onClose={() => setSelectedPlanId(null)}
+      />
     </Screen>
   );
 }

@@ -208,6 +208,7 @@ class VoiceGateway:
         tool_idempotency_store: ToolIdempotencyStore | None = None,
         confirmation_store: VoiceConfirmationStore | None = None,
         clock: Clock | None = None,
+        planning_executor: Any | None = None,
     ) -> None:
         self.websocket = websocket
         self.db = db
@@ -266,6 +267,20 @@ class VoiceGateway:
             websocket.app.state.infrastructure.redis,
             ttl_seconds=settings.voice_confirmation_ttl_seconds,
         )
+        if planning_executor is not None:
+            self.planning_executor = planning_executor
+        else:
+            from app.planning.executor import PlanningExecutor
+
+            self.planning_executor = getattr(app_state, "planning_executor", None)
+            if self.planning_executor is None:
+                self.planning_executor = PlanningExecutor(
+                    settings=settings,
+                    tool_executor=self.tool_loop.executor,
+                    confirmation_service=self.confirmation_store,
+                )
+                if app_state is not None:
+                    app_state.planning_executor = self.planning_executor
         self.owner = VoiceRegistryOwner(
             user_id=principal.user_id,
             device_id=principal.device_id,

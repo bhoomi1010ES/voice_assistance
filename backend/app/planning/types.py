@@ -79,6 +79,7 @@ class PlanningSnapshot:
     targets: tuple[Target, ...] = ()
     context: tuple[str, ...] = ()
     complete: bool = True
+    recent_receipt: PlanningReceipt | None = None
 
 
 @dataclass(frozen=True)
@@ -95,3 +96,32 @@ class Decision:
 
     def outcome(self, disposition: str, reason: str) -> Decision:
         return replace(self, disposition=disposition, reason=reason)
+
+
+@dataclass(frozen=True)
+class PlanningReceipt:
+    batch_id: UUID
+    plan_id: UUID | None = None
+    plan_name: str | None = None
+    saved_actions: tuple[dict[str, Any], ...] = ()
+    duplicate_actions: tuple[dict[str, Any], ...] = ()
+    pending_confirmations: tuple[dict[str, Any], ...] = ()
+    failed_actions: tuple[dict[str, Any], ...] = ()
+    clarifications: tuple[dict[str, Any], ...] = ()
+    has_changes: bool = False
+    text_summary: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "batch_id": str(self.batch_id),
+            "plan_id": str(self.plan_id) if self.plan_id else None,
+            "plan_name": self.plan_name,
+            "saved_actions": list(self.saved_actions),
+            "duplicate_actions": list(self.duplicate_actions),
+            "pending_confirmations": list(self.pending_confirmations),
+            "failed_actions": list(self.failed_actions),
+            "clarifications": list(self.clarifications),
+            "has_changes": self.has_changes,
+            "text_summary": self.text_summary,
+        }
+

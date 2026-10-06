@@ -11,7 +11,7 @@ from sqlalchemy import or_, select
 
 from app.llm.errors import LLMToolError, LLMToolTemporalResolutionError
 from app.llm.tool_loop import ToolExecutionContext, ToolRegistry
-from app.models import ConversationTurn, Task
+from app.models import ConversationTurn, Plan, Task
 from app.services.structured_reads import normalize_query_terms, resolve_local_day_bounds
 from app.services.task_due_dates import TaskDueDateResolutionError, resolve_task_due_at
 
@@ -28,6 +28,8 @@ class CreateTaskArguments(BaseModel):
     due_expression: StrictStr | None = Field(default=None, max_length=256)
     notes: StrictStr | None = Field(default=None, max_length=100_000)
     priority: Literal["low", "normal", "high", "urgent"] = "normal"
+    plan_id: uuid.UUID | None = None
+    planning_action_id: uuid.UUID | None = None
 
     @field_validator("title")
     @classmethod
@@ -48,12 +50,23 @@ class UpdateTaskArguments(BaseModel):
     priority: Literal["low", "normal", "high", "urgent"] | None = None
     due_at: datetime | None = None
     due_expression: StrictStr | None = Field(default=None, max_length=256)
+    plan_id: uuid.UUID | None = None
+    planning_action_id: uuid.UUID | None = None
+    expected_revision: int | None = None
 
 
 class CompleteTaskArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task_id: uuid.UUID
+    expected_revision: int | None = None
+
+
+class DeleteTaskArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: uuid.UUID
+    expected_revision: int | None = None
 
 
 class ListTasksArguments(BaseModel):
@@ -151,6 +164,12 @@ async def create_task_handler(
 ) -> dict[str, Any]:
     if context.db is None or not isinstance(arguments, CreateTaskArguments):
         raise LLMToolError("The task tool requires a database session.")
+    if arguments.plan_id is not None:
+        plan = await context.db.scalar(
+            select(Plan.id).where(Plan.id == arguments.plan_id, Plan.user_id == context.user_id)
+        )
+        if plan is None:
+            raise LLMToolError("plan_not_found")
     source_turn_id = None
     if hasattr(context.db, "scalar"):
         source_turn_id = await context.db.scalar(
@@ -161,6 +180,8 @@ async def create_task_handler(
         )
     task = Task(
         user_id=context.user_id,
+        plan_id=arguments.plan_id,
+        planning_action_id=arguments.planning_action_id,
         title=arguments.title,
         description=arguments.notes,
         priority=arguments.priority,
@@ -189,6 +210,16 @@ async def update_task_handler(
     )
     if task is None:
         raise LLMToolError("task_not_found")
+    if arguments.expected_revision is not None and task.revision != arguments.expected_revision:
+        raise LLMToolError("revision_conflict")
+    if "plan_id" in arguments.model_fields_set:
+        if arguments.plan_id is not None:
+            plan = await context.db.scalar(
+                select(Plan.id).where(Plan.id == arguments.plan_id, Plan.user_id == context.user_id)
+            )
+            if plan is None:
+                raise LLMToolError("plan_not_found")
+        task.plan_id = arguments.plan_id
     if arguments.title is not None:
         task.title = arguments.title
     if "notes" in arguments.model_fields_set:
@@ -221,6 +252,8 @@ async def complete_task_handler(
     )
     if task is None:
         raise LLMToolError("task_not_found")
+    if arguments.expected_revision is not None and task.revision != arguments.expected_revision:
+        raise LLMToolError("revision_conflict")
     task.status = "completed"
     task.completed_at = datetime.now(UTC)
     await context.db.flush()
@@ -268,6 +301,23 @@ async def list_tasks_handler(context: ToolExecutionContext, arguments: BaseModel
     return {"tasks": [_task_result(task) for task in tasks]}
 
 
+async def delete_task_handler(
+    context: ToolExecutionContext, arguments: BaseModel
+) -> dict[str, Any]:
+    if context.db is None or not isinstance(arguments, DeleteTaskArguments):
+        raise LLMToolError("The task tool requires a database session.")
+    task = await context.db.scalar(
+        select(Task).where(Task.id == arguments.task_id, Task.user_id == context.user_id)
+    )
+    if task is None:
+        raise LLMToolError("task_not_found")
+    if arguments.expected_revision is not None and task.revision != arguments.expected_revision:
+        raise LLMToolError("revision_conflict")
+    task.status = "cancelled"
+    await context.db.flush()
+    return {"task_id": str(task.id), "status": "cancelled"}
+
+
 def _task_result(task: Task) -> dict[str, Any]:
     return {
         "task_id": str(task.id),
@@ -279,6 +329,7 @@ def _task_result(task: Task) -> dict[str, Any]:
         "local_due_at": task.local_due_at.isoformat() if task.local_due_at is not None else None,
         "timezone": task.timezone,
         "timezone_source": task.timezone_source,
+        "plan_id": str(task.plan_id) if task.plan_id is not None else None,
     }
 
 
@@ -310,6 +361,16 @@ def register_task_tools(registry: ToolRegistry) -> None:
         description="Mark an owned task complete after confirmation.",
         arguments_model=CompleteTaskArguments,
         handler=complete_task_handler,
+        required_scopes=frozenset({"tasks:write"}),
+        read_only=False,
+        requires_confirmation=True,
+        max_calls_per_turn=1,
+    )
+    registry.register(
+        name="delete_task",
+        description="Cancel or delete an owned task after confirmation.",
+        arguments_model=DeleteTaskArguments,
+        handler=delete_task_handler,
         required_scopes=frozenset({"tasks:write"}),
         read_only=False,
         requires_confirmation=True,

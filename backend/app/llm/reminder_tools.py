@@ -11,7 +11,7 @@ from sqlalchemy import or_, select
 
 from app.llm.errors import LLMToolError, LLMToolTemporalResolutionError
 from app.llm.tool_loop import ToolExecutionContext, ToolRegistry
-from app.models import Reminder, Task
+from app.models import Plan, Reminder, Task
 from app.services.recurrence import RecurrenceResolutionError, validate_recurrence_rule
 from app.services.structured_reads import normalize_query_terms, resolve_local_day_bounds
 from app.services.task_due_dates import TaskDueDateResolutionError, resolve_task_due_at
@@ -27,6 +27,8 @@ class CreateReminderArguments(BaseModel):
     trigger_at: datetime | None = None
     trigger_expression: StrictStr | None = Field(default=None, max_length=256)
     task_id: uuid.UUID | None = None
+    plan_id: uuid.UUID | None = None
+    planning_action_id: uuid.UUID | None = None
     recurrence_rule: StrictStr | None = Field(default=None, max_length=512)
 
     @field_validator("title")
@@ -47,13 +49,17 @@ class UpdateReminderArguments(BaseModel):
     trigger_at: datetime | None = None
     trigger_expression: StrictStr | None = Field(default=None, max_length=256)
     task_id: uuid.UUID | None = None
+    plan_id: uuid.UUID | None = None
+    planning_action_id: uuid.UUID | None = None
     recurrence_rule: StrictStr | None = Field(default=None, max_length=512)
+    expected_revision: int | None = None
 
 
 class DeleteReminderArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reminder_id: uuid.UUID
+    expected_revision: int | None = None
 
 
 class ListRemindersArguments(BaseModel):
@@ -188,11 +194,19 @@ async def create_reminder_handler(
     if context.db is None or not isinstance(arguments, CreateReminderArguments):
         raise LLMToolError("The reminder tool requires a database session.")
     await _owned_task(context, arguments.task_id)
+    if arguments.plan_id is not None:
+        plan = await context.db.scalar(
+            select(Plan.id).where(Plan.id == arguments.plan_id, Plan.user_id == context.user_id)
+        )
+        if plan is None:
+            raise LLMToolError("plan_not_found")
     recurrence_rule = _normalize_recurrence(arguments.recurrence_rule)
     assert arguments.trigger_at is not None
     reminder = Reminder(
         user_id=context.user_id,
         task_id=arguments.task_id,
+        plan_id=arguments.plan_id,
+        planning_action_id=arguments.planning_action_id,
         title=arguments.title,
         body=arguments.body,
         trigger_at=arguments.trigger_at,
@@ -223,6 +237,8 @@ async def update_reminder_handler(
     )
     if reminder is None:
         raise LLMToolError("reminder_not_found")
+    if arguments.expected_revision is not None and reminder.revision != arguments.expected_revision:
+        raise LLMToolError("revision_conflict")
     recurrence_rule = (
         _normalize_recurrence(arguments.recurrence_rule)
         if recurrence_changed
@@ -235,9 +251,24 @@ async def update_reminder_handler(
         reminder.body = arguments.body
     if "task_id" in arguments.model_fields_set:
         reminder.task_id = arguments.task_id
-    should_reschedule = bool({"trigger_at", "trigger_expression"} & arguments.model_fields_set) or (
-        recurrence_changed and recurrence_rule is not None
+    if "plan_id" in arguments.model_fields_set:
+        if arguments.plan_id is not None:
+            plan = await context.db.scalar(
+                select(Plan.id).where(Plan.id == arguments.plan_id, Plan.user_id == context.user_id)
+            )
+            if plan is None:
+                raise LLMToolError("plan_not_found")
+        reminder.plan_id = arguments.plan_id
+    new_trigger_at = arguments.trigger_at if "trigger_at" in arguments.model_fields_set else None
+    has_trigger_expr = (
+        "trigger_expression" in arguments.model_fields_set
+        and arguments.trigger_expression is not None
     )
+    trigger_changed = has_trigger_expr or (
+        new_trigger_at is not None and new_trigger_at != reminder.trigger_at
+    )
+    recurrence_actually_changed = recurrence_changed and recurrence_rule != reminder.recurrence_rule
+    should_reschedule = trigger_changed or recurrence_actually_changed
     if should_reschedule:
         trigger_at = arguments.trigger_at or reminder.trigger_at
         if recurrence_rule is not None and trigger_at <= context.clock.now_utc():
@@ -276,6 +307,8 @@ async def delete_reminder_handler(
     )
     if reminder is None:
         raise LLMToolError("reminder_not_found")
+    if arguments.expected_revision is not None and reminder.revision != arguments.expected_revision:
+        raise LLMToolError("revision_conflict")
     reminder.status = "cancelled"
     reminder.next_attempt_at = None
     reminder.locked_at = None
@@ -337,6 +370,7 @@ def _reminder_result(reminder: Reminder) -> dict[str, Any]:
         "timezone": reminder.timezone,
         "timezone_source": reminder.timezone_source,
         "status": reminder.status,
+        "plan_id": str(reminder.plan_id) if reminder.plan_id is not None else None,
     }
 
 

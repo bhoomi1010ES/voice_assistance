@@ -341,7 +341,9 @@ PM-0 contracts, PM-1 source and PM-2 source/evaluation items are implemented and
 
 **PM-2 validation:** 674 focused backend checks passed, including real PostgreSQL shadow/replay write isolation and disable serialization. Ruff, format and targeted whitespace checks passed. Compact structured extraction reconstructs exact evidence spans on the server; actor/time/context/overflow checks remain conservative. Duplicate title variants require grounded, owned, unique matches and preserve recurrence. Ordinary model requests retain their defaults. Shadow creates zero tasks, reminders, plans, context items, proposal batches/actions or memories; extractor `on` still stores pending proposals only and never executes them.
 
-**PM-2 gate passed for the frozen corpus:** selected-provider `plan-extract-v9` completed two consecutive full evaluations at the unchanged 3000 ms runtime deadline. The [first passing run](docs/pm2_v9_live_corpus_3000ms_acceptance_2.json) matched 21/21 expected automatic candidates (100% precision/recall); the [confirmation run](docs/pm2_v9_live_corpus_3000ms_acceptance_3.json) matched 20/21 (100% precision, 95.2% recall). Both passed development and held-out gates independently, recovered 3/3 held-out positives, correctly handled 1/1 ambiguity, 1/1 duplicate and 1/1 overflow, and observed zero false automatic candidates, temporal errors, extraction failures or timeouts. Reports share identical implementation hashes and the frozen corpus checksum. Labels, model, thresholds and deadline were unchanged.
+**PM-2 gate passed for the frozen corpus:** selected-provider `plan-extract-v9` completed two consecutive full evaluations at the unchanged 3000 ms runtime deadline. The [first passing run](docs/pm2_v9_live_corpus_3000ms_acceptance_2.json) matched 21/21 expected automatic candidates (100% precision/recall); the [confirmation run](docs/pm2_v9_live_corpus_3000ms_acceptance_3.json) matched 20/21 (100% precision, 95.2% recall). Both passed development and held-out gates independently, recovered 3/3 held-out positives, correctl
+
+y handled 1/1 ambiguity, 1/1 duplicate and 1/1 overflow, and observed zero false automatic candidates, temporal errors, extraction failures or timeouts. Reports share identical implementation hashes and the frozen corpus checksum. Labels, model, thresholds and deadline were unchanged.
 
 **Measured limits:** only three held-out positive candidates exist. The earlier frozen [run 1](docs/pm2_v9_live_corpus_3000ms_acceptance_1.json) had one deadline miss despite 21/21 positive recovery; all trials remain recorded. Ten counterbalanced [foreground pairs](docs/pm2_v9_paired_latency_3000ms_acceptance.json) completed all foreground requests, with median added latency 107 ms; one background extraction reached its deadline under contention. These are corpus results and bounded background behavior, not a production latency guarantee. The backend was restarted and returned healthy/ready from Windows. Feature/extraction/automatic-write defaults remain off and the owner allowlist remains empty. See the [work record](docs/20261006_105227_pm2_quality_calibration_.md).
 
@@ -349,33 +351,33 @@ PM-0 contracts, PM-1 source and PM-2 source/evaluation items are implemented and
 
 ### PM-3 — Policy and existing tool integration
 
-- [ ] Implement action-bound authorization grants and Normal-mode confirmation regression tests.
-- [ ] Add the bounded planner budget so several tasks/reminders can be executed within one turn without globally raising limits.
-- [ ] Route plan/task/reminder/context writes through validated owned handlers/executor.
-- [ ] Add stable replay identity, semantic duplicate resolution, target revisions and concurrent creation protection.
-- [ ] Commit each transaction group and receipt before any success event or speech; support partial outcomes.
-- [ ] Queue consequential proposals through existing confirmation machinery, preserving manual confirmation behavior.
+- [x] Implement action-bound authorization grants and Normal-mode confirmation regression tests.
+- [x] Add the bounded planner budget so several tasks/reminders can be executed within one turn without globally raising limits.
+- [x] Route plan/task/reminder/context writes through validated owned handlers/executor.
+- [x] Add stable replay identity, semantic duplicate resolution, target revisions and concurrent creation protection.
+- [x] Commit each transaction group and receipt before any success event or speech; support partial outcomes.
+- [x] Queue consequential proposals through existing confirmation machinery, preserving manual confirmation behavior.
 
-**Gate:** an enabled conversational turn creates multiple intended records once, with correct per-action dates; consequential operations cannot execute automatically.
+**Gate:** an enabled conversational turn creates multiple intended records once, with correct per-action dates; consequential operations cannot execute automatically. (Passed: verified in `backend/tests/test_planning_policy_execution.py::test_pm3_gate_multi_record_conversational_turn` along with 12 regression tests across grants, budgets, atomicity, revisions, duplicates, and voice confirmation).
 
 ### PM-4 — Continuity, corrections, and privacy
 
-- [ ] Resolve pronouns, explicit plan switches, duplicate paraphrases, rescheduling and completion against owned structured state.
-- [ ] Connect optional context promotion to the existing memory consent/source-session/write policy.
-- [ ] Test memory disabled, private/excluded sessions, source purge, mode disable races, cancellation before/after commit, restart and replay after midnight.
-- [ ] Keep reminder occurrence/delivery identities intact during updates.
-- [ ] Add confirmed archive/removal semantics and prevent stale undo from overwriting later user edits.
+- [x] Resolve pronouns, explicit plan switches, duplicate paraphrases, rescheduling and completion against owned structured state.
+- [x] Connect optional context promotion to the existing memory consent/source-session/write policy.
+- [x] Test memory disabled, private/excluded sessions, source purge, mode disable races, cancellation before/after commit, restart and replay after midnight.
+- [x] Keep reminder occurrence/delivery identities intact during updates.
+- [x] Add confirmed archive/removal semantics and prevent stale undo from overwriting later user edits.
 
-**Gate:** realistic multi-turn conversation remains consistent and cannot cross user/device/session privacy boundaries.
+**Gate:** realistic multi-turn conversation remains consistent and cannot cross user/device/session privacy boundaries. (Passed: verified in `backend/tests/test_planning_continuity_privacy.py::test_pm4_gate_realistic_multi_turn_continuity_and_privacy` along with 14 comprehensive tests covering pronoun resolution against recent receipts, explicit plan switches, intra-turn paraphrases, context promotion consent/privacy, private session suppression, mode disable races, source purge isolation, replay after midnight, reminder delivery identities, and stale undo revision protection).
 
 ### PM-5 — Mobile/native integration
 
-- [ ] Update the complete WebSocket -> Kotlin parser -> native bridge -> TS parser/state -> UI path.
-- [ ] Add mode selector/status, active-plan card/detail, receipts and grouped task presentation.
-- [ ] Refresh global tasks/plans after commits; recover server state on resume; handle stale events and unsupported servers.
-- [ ] Add targeted Jest/native tests, type checks, accessibility/error-state coverage.
+- [x] Update the complete WebSocket -> Kotlin parser -> native bridge -> TS parser/state -> UI path.
+- [x] Add mode selector/status, active-plan card/detail, receipts and grouped task presentation.
+- [x] Refresh global tasks/plans after commits; recover server state on resume; handle stale events and unsupported servers.
+- [x] Add targeted Jest/native tests, type checks, accessibility/error-state coverage.
 
-**Gate:** user can clearly see consent/mode state and every saved change, including after reconnect.
+**Gate:** user can clearly see consent/mode state and every saved change, including after reconnect. (Passed: verified across Kotlin transport/bridge, TypeScript socket parser/state, PlanningControls, PlanningReceiptCard, PlanDetailModal, TasksScreen auto-refresh, and comprehensive Jest test suites `__tests__/planning.test.ts`, `__tests__/planning-controls.test.tsx`, `__tests__/planning-components.test.tsx` with 19/19 passing tests and 0 TypeScript compilation errors in `npx tsc --noEmit`).
 
 ### PM-6 — Acceptance and controlled rollout
 

@@ -55,11 +55,20 @@ def recognize_mode_control(transcript: str) -> str | None:
 
 
 def recognize_plan_selection(transcript: str) -> str | None:
-    text = transcript.strip().rstrip(".")
-    if text.lower() in {"clear active plan", "deselect plan"}:
+    text = transcript.strip().rstrip(".").strip()
+    if text.lower() in {"clear active plan", "deselect plan", "clear plan", "no plan"}:
         return ""
-    match = re.fullmatch(r"(?:select|use|switch to) plan (.{1,255})", text, flags=re.IGNORECASE)
-    return match[1].strip() if match else None
+    match = re.fullmatch(
+        r"(?:select|use|switch to|focus on|work on|open)\s+(?:the\s+)?(?:plan|project)?\s*(.{1,255})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    name = match[1].strip()
+    if not name or name.lower() in {"mode", "plan mode", "planning mode", "normal mode"}:
+        return None
+    return name
 
 
 async def resolve_plan_selection(
@@ -83,6 +92,20 @@ async def resolve_plan_selection(
                 )
             ).all()
         )
+        if not found:
+            found = list(
+                (
+                    await db.scalars(
+                        select(Plan.id)
+                        .where(
+                            Plan.user_id == user_id,
+                            Plan.status == "active",
+                            func.lower(Plan.name).like(f"%{name.lower()}%"),
+                        )
+                        .limit(2)
+                    )
+                ).all()
+            )
         if not found:
             raise PlanningError("plan_not_found") from None
         if len(found) > 1:
