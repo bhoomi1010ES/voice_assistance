@@ -108,7 +108,17 @@ async def claim(db, settings, principal, session_id, turn_id, transcript, now_ut
             at = getattr(row, scheduled)
             if at is not None and at.tzinfo is None:
                 at = at.replace(tzinfo=UTC)  # SQLite test shim; PostgreSQL returns aware instants.
-            targets.append(Target(row.id, kind, row.title, row.plan_id, row.revision, at))
+            targets.append(
+                Target(
+                    row.id,
+                    kind,
+                    row.title,
+                    row.plan_id,
+                    row.revision,
+                    at,
+                    getattr(row, "recurrence_rule", None),
+                )
+            )
     context = []
     if state.active_plan_id:
         rows = (

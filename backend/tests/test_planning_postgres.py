@@ -7,18 +7,23 @@ CREATE SCHEMA permission. This creates/drops only a randomly named test schema.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import MetaData, text
+from sqlalchemy import MetaData, func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.core.config import Settings
 from app.models import (
     AuthSession,
     ConversationTurn,
     Device,
+    MemoryItem,
+    Message,
     Plan,
     PlanContextItem,
     PlanningAction,
@@ -29,6 +34,7 @@ from app.models import (
     User,
     VoiceSession,
 )
+from app.planning.observer import PlanningObserver
 from app.planning.service import PlanningError, change_state, execution_barrier
 from app.services.auth import AuthPrincipal
 
@@ -49,6 +55,8 @@ async def test_postgres_disable_commit_barrier():
         AuthSession,
         VoiceSession,
         ConversationTurn,
+        Message,
+        MemoryItem,
         Plan,
         PlanContextItem,
         PlanningSession,
@@ -94,6 +102,91 @@ async def test_postgres_disable_commit_barrier():
                 db, principal, session_id, expected_version=1, enabled=True, mode="plan"
             )
             await db.commit()
+            turn_id = uuid.uuid4()
+            transcript = "I need the report Friday."
+            db.add(
+                ConversationTurn(
+                    id=turn_id,
+                    session_id=session_id,
+                    user_id=principal.user_id,
+                    turn_number=1,
+                    status="committed",
+                )
+            )
+            await db.flush()
+            db.add(
+                Message(turn_id=turn_id, user_id=principal.user_id, role="user", content=transcript)
+            )
+            await db.commit()
+
+        class SyntheticLLM:
+            enabled = True
+            requests = 0
+
+            async def stream(self, request):
+                self.requests += 1
+                assert request.allowed_tools == ()
+                yield SimpleNamespace(
+                    event_type="text_delta",
+                    delta=json.dumps(
+                        {
+                            "actions": [
+                                {
+                                    "op": "task",
+                                    "clause": 0,
+                                    "title": "Report",
+                                    "time": "Friday",
+                                    "actor": "user",
+                                    "plan": None,
+                                }
+                            ],
+                            "overflow": False,
+                        }
+                    ),
+                )
+                yield SimpleNamespace(
+                    event_type="response_completed", finish_reason="stop", text=None
+                )
+
+        llm = SyntheticLLM()
+        observer = PlanningObserver(
+            Settings(
+                _env_file=None,
+                plan_mode_enabled=True,
+                plan_extraction_mode="shadow",
+                plan_test_user_ids=(principal.user_id,),
+                plan_extraction_timeout_ms=3000,
+            ),
+            llm,
+            factory,
+        )
+        kwargs = dict(
+            principal=principal,
+            session_id=session_id,
+            turn_id=turn_id,
+            transcript=transcript,
+            now_utc=datetime(2026, 10, 6, 19, tzinfo=UTC),
+            timezone="America/Los_Angeles",
+        )
+        await observer.observe(**kwargs)
+        await observer.observe(**kwargs)
+        assert llm.requests == 1
+        async with factory() as db:
+            for model in (
+                Task,
+                Reminder,
+                Plan,
+                PlanContextItem,
+                PlanningBatch,
+                PlanningAction,
+                MemoryItem,
+            ):
+                assert await db.scalar(select(func.count()).select_from(model)) == 0
+            turn = await db.get(ConversationTurn, turn_id)
+            marker = turn.metadata_json["planning_observation"]
+            assert marker["status"] == "validated" and marker["outcomes"] == {"AUTO": 1}
+            assert "Report" not in json.dumps(marker) and "Friday" not in json.dumps(marker)
+
         entered, release, acknowledged = asyncio.Event(), asyncio.Event(), asyncio.Event()
         order = []
 

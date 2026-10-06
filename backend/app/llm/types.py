@@ -82,6 +82,8 @@ class LLMRequest(BaseModel):
     allowed_tools: tuple[LLMToolDefinition, ...] = ()
     tool_choice: LLMToolChoice = "auto"
     max_output_tokens: int = Field(ge=1, le=16_384)
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] | None = None
+    output_schema: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_named_tool_choice(self) -> LLMRequest:

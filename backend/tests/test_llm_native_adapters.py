@@ -77,7 +77,11 @@ async def _collect(provider, request: LLMRequest):
 
 
 @pytest.mark.asyncio
-async def test_openai_responses_maps_native_text_usage_and_request_shape() -> None:
+@pytest.mark.parametrize("effort", [None, "none"])
+@pytest.mark.parametrize("structured", [False, True])
+async def test_openai_responses_maps_native_text_usage_and_request_shape(
+    effort, structured
+) -> None:
     captured: dict = {}
     body = (
         'data: {"type":"response.output_text.delta","delta":"Hello"}\n\n'
@@ -97,12 +101,39 @@ async def test_openai_responses_maps_native_text_usage_and_request_shape() -> No
         _settings("openai", "https://api.openai.com/v1"),
         client=client,
     )
-    events = await _collect(provider, _request())
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+    events = await _collect(
+        provider,
+        _request().model_copy(
+            update={
+                "reasoning_effort": effort,
+                "output_schema": schema if structured else None,
+            }
+        ),
+    )
     await client.aclose()
 
     assert captured["url"] == "https://api.openai.com/v1/responses"
     assert captured["headers"]["authorization"] == "Bearer test-placeholder-key"
     assert captured["body"]["store"] is False
+    if effort is None:
+        assert "reasoning" not in captured["body"]
+    else:
+        assert captured["body"]["reasoning"] == {"effort": effort}
+    if structured:
+        assert captured["body"]["text"]["format"] == {
+            "type": "json_schema",
+            "name": "structured_response",
+            "strict": True,
+            "schema": schema,
+        }
+    else:
+        assert "text" not in captured["body"]
     assert captured["body"]["instructions"] == "Answer briefly."
     assert captured["body"]["input"][0]["role"] == "user"
     assert [event.delta for event in events if event.event_type == "text_delta"] == ["Hello"]
@@ -136,9 +167,7 @@ def test_openai_responses_serializes_plain_assistant_history_as_output_text() ->
         },
         {
             "role": "assistant",
-            "content": [
-                {"type": "output_text", "text": "Hello! How can I help?"}
-            ],
+            "content": [{"type": "output_text", "text": "Hello! How can I help?"}],
         },
         {
             "role": "user",

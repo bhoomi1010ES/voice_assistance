@@ -109,7 +109,12 @@ class PlanningObserver:
                     max_actions=self.settings.plan_max_actions_per_turn,
                     max_tokens=self.settings.llm_max_output_tokens,
                 )
-                decisions = validate(envelope, transcript, snapshot)
+                decisions = validate(
+                    envelope,
+                    transcript,
+                    snapshot,
+                    max_actions=self.settings.plan_max_actions_per_turn,
+                )
                 metrics = {
                     "status": "validated",
                     "candidate_count": len(decisions),

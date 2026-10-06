@@ -233,6 +233,161 @@ def test_context_requires_plan_and_duplicates_do_not_change_schedule():
     )
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_new_plan_children_do_not_inherit_previous_active_plan(explicit):
+    child = "I need NewProject backend Friday." if explicit else "I need the backend Friday."
+    text = f"We're starting NewProject. {child} The backend uses FastAPI."
+    parent = proposal(
+        text,
+        "NewProject",
+        None,
+        "CREATE_PLAN",
+        actor="team",
+        classification="PROJECT",
+        source=span(text, "We're starting NewProject."),
+        plan_mention="NewProject",
+    )
+    task = proposal(
+        text,
+        "Backend",
+        source=span(text, child),
+        plan_mention="NewProject" if explicit else None,
+    )
+    context = proposal(
+        text,
+        "FastAPI",
+        None,
+        "ADD_PLAN_CONTEXT",
+        actor="context",
+        classification="INFORMATION",
+        source=span(text, "The backend uses FastAPI."),
+    )
+    # Providers may return clauses out of order; ordinals follow validated source order.
+    result = decisions(text, task, parent, context)
+    assert [d.disposition for d in result] == ["AUTO", "AUTO", "AUTO"]
+    assert result[0].plan_id is None and result[0].plan_ordinal is None
+    assert all(d.plan_id is None and d.plan_ordinal == 0 for d in result[1:])
+    assert SNAPSHOT.active_plan_id == PLAN
+
+
+def test_multiple_new_plans_require_explicit_child_grouping():
+    text = "We're starting Alpha. We're starting Beta. I need the backend Friday."
+    parents = [
+        proposal(
+            text,
+            title,
+            None,
+            "CREATE_PLAN",
+            actor="team",
+            classification="PROJECT",
+            source=span(text, f"We're starting {title}."),
+        )
+        for title in ("Alpha", "Beta")
+    ]
+    task = proposal(text, "Backend", source=span(text, "I need the backend Friday."))
+    result = decisions(text, *parents, task)
+    assert [d.disposition for d in result] == ["AUTO", "AUTO", "CLARIFY"]
+    assert result[2].reason == "ambiguous_plan"
+
+
+def test_duplicate_nonactive_plan_does_not_group_children_into_old_active_plan():
+    text = "We're starting NewProject. I need the backend Friday."
+    parent = proposal(
+        text,
+        "NewProject",
+        None,
+        "CREATE_PLAN",
+        actor="team",
+        classification="PROJECT",
+        source=span(text, "We're starting NewProject."),
+    )
+    task = proposal(text, "Backend", source=span(text, "I need the backend Friday."))
+    existing = Target(uuid.uuid4(), "plan", "NewProject", None, 1)
+    result = decisions(
+        text, parent, task, snapshot=replace(SNAPSHOT, plans=(*SNAPSHOT.plans, existing))
+    )
+    assert result[0].reason == "duplicate"
+    assert result[1].disposition == "CLARIFY" and result[1].reason == "ambiguous_plan"
+
+
+def test_new_plan_child_update_cannot_target_existing_ungrouped_task():
+    text = "We're starting NewProject. Make the report Thursday."
+    parent = proposal(
+        text,
+        "NewProject",
+        None,
+        "CREATE_PLAN",
+        actor="team",
+        classification="PROJECT",
+        source=span(text, "We're starting NewProject."),
+    )
+    update = proposal(
+        text,
+        temporal="Thursday",
+        operation="UPDATE_TASK",
+        source=span(text, "Make the report Thursday."),
+    )
+    ungrouped = Target(uuid.uuid4(), "task", "Report", None, 2)
+    result = decisions(text, parent, update, snapshot=replace(SNAPSHOT, targets=(ungrouped,)))
+    assert result[1].disposition == "CLARIFY" and result[1].reason == "missing_target"
+
+
+def test_plan_identity_preserves_punctuation_in_duplicates_and_targets():
+    text = "We're starting App-A. We're starting App A."
+    actions = [
+        proposal(
+            text,
+            title,
+            None,
+            "CREATE_PLAN",
+            actor="team",
+            classification="PROJECT",
+            source=span(text, f"We're starting {title}."),
+        )
+        for title in ("App-A", "App A")
+    ]
+    assert [d.disposition for d in decisions(text, *actions)] == ["AUTO", "AUTO"]
+    text = "I need to archive App-A."
+    targets = tuple(Target(uuid.uuid4(), "plan", title, None, 2) for title in ("App-A", "App A"))
+    result = decisions(
+        text,
+        proposal(text, "App-A", None, "ARCHIVE_PLAN"),
+        snapshot=replace(SNAPSHOT, plans=targets),
+    )[0]
+    assert result.disposition == "CONFIRM" and result.target_id == targets[0].id
+
+
+def test_reminder_duplicates_compare_recurrence_and_batch_conflicts_clarify():
+    text = "Remind me to write the report every day at 4 PM."
+    recurring = proposal(
+        text,
+        temporal="every day at 4 PM",
+        operation="CREATE_REMINDER",
+        recurrence="FREQ=DAILY",
+        recurrence_source=span(text, "every day"),
+    )
+    at = decisions(text, recurring)[0].scheduled_at
+    one_time = Target(uuid.uuid4(), "reminder", "Report", PLAN, 1, at)
+    assert (
+        decisions(text, recurring, snapshot=replace(SNAPSHOT, targets=(one_time,)))[0].reason
+        == "duplicate_schedule_conflict"
+    )
+    daily = replace(one_time, recurrence_rule="FREQ=DAILY")
+    assert (
+        decisions(text, recurring, snapshot=replace(SNAPSHOT, targets=(daily,)))[0].reason
+        == "duplicate"
+    )
+    text += " Remind me to write the report today at 4 PM."
+    single = proposal(
+        text,
+        temporal="today at 4 PM",
+        operation="CREATE_REMINDER",
+        source=span(text, "Remind me to write the report today at 4 PM."),
+    )
+    result = decisions(text, recurring, single)
+    assert [d.reason for d in result] == ["duplicate_schedule_conflict"] * 2
+
+
 class FakeLLM:
     enabled = True
 
@@ -267,14 +422,210 @@ async def test_extraction_uses_shared_service_once_without_mutation_tools():
     assert len(llm.requests) == 1 and request.allowed_tools == () and request.tool_choice == "none"
     assert request.max_output_tokens == 1024
     context = json.loads(request.messages[0].content)
-    assert context["source_clauses"] == [
-        {"start": 0, "length": 21, "text": "What tasks do I have?"}
-    ]
-    for word in context["word_offsets"]:
-        assert (
-            context["final_transcript"][word["start"] : word["start"] + word["length"]]
-            == word["text"]
-        )
+    assert context["clauses"] == ["What tasks do I have?"]
+    assert str(OWNER) not in request.messages[0].content
+
+
+def test_compact_wire_reconstructs_unicode_offsets_and_keeps_clause_actors_independent():
+    from app.planning.wire import source_clauses
+
+    text = (
+        "Monday I need the café draft, Tuesday we have a review, "
+        "and by Friday I want the project ready."
+    )
+    clauses = source_clauses(text)
+    assert len(clauses) == 3
+    wire = {
+        "actions": [
+            ["task", 0, "café draft", "Monday", "user"],
+            ["task", 2, "project", "by Friday", "user"],
+        ]
+    }
+    envelope = parse_envelope(json.dumps(wire), 8, clauses=clauses)
+    result = validate(envelope, text, SNAPSHOT)
+    assert [d.disposition for d in result] == ["AUTO", "AUTO"]
+    for p in envelope.actions:
+        assert text[p.source.start : p.source.start + p.source.length] == p.source.text
+        assert text[p.temporal.start : p.temporal.start + p.temporal.length] == p.temporal.text
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        ["task", True, "report", "Friday", "user"],
+        ["task", 50, "report", "Friday", "user"],
+        ["task", 0, "report", "Thursday", "user"],
+        ["task", 0, "report", "Friday", "user", {"user_id": str(OWNER)}],
+        ["send", 0, "report", "Friday", "user"],
+        ["task", 0, "report", "Friday", "user", {}, "extra"],
+    ],
+)
+def test_compact_wire_rejects_invalid_coordinates_extra_fields_or_external_ops(row):
+    from app.planning.wire import source_clauses
+
+    clauses = source_clauses("I need the report Friday.")
+    with pytest.raises(ExtractionError, match="malformed_output"):
+        parse_envelope(json.dumps({"actions": [row]}), 8, clauses=clauses)
+
+
+def test_compact_wire_cannot_crop_negation_or_select_ambiguous_temporal_evidence():
+    from app.planning.wire import source_clauses
+
+    text = "I don't need the report Friday."
+    wire = {"actions": [["task", 0, "report", "Friday", "user"]]}
+    result = validate(
+        parse_envelope(json.dumps(wire), 8, clauses=source_clauses(text)), text, SNAPSHOT
+    )
+    assert result[0].disposition == "NO_ACTION"
+    text = "I need the report Friday and the draft Friday."
+    with pytest.raises(ExtractionError, match="malformed_output"):
+        parse_envelope(json.dumps(wire), 8, clauses=source_clauses(text))
+
+
+def test_compact_wire_derives_only_grounded_simple_recurrence():
+    from app.planning.wire import source_clauses
+
+    text = "Remind me to write the report every day at 4 PM."
+    wire = {"actions": [["reminder", 0, "report", "every day at 4 PM", "user"]]}
+    envelope = parse_envelope(json.dumps(wire), 8, clauses=source_clauses(text))
+    assert envelope.actions[0].recurrence == "FREQ=DAILY"
+    assert validate(envelope, text, SNAPSHOT)[0].disposition == "AUTO"
+    wire["actions"][0][3] = "4 PM"
+    envelope = parse_envelope(json.dumps(wire), 8, clauses=source_clauses(text))
+    assert validate(envelope, text, SNAPSHOT)[0].reason == "missing_temporal_modifier"
+
+
+def test_structured_object_wire_is_grounded_and_rejects_extra_authority():
+    from app.planning.wire import source_clauses
+
+    text = "I need a report Friday."
+    row = {
+        "op": "task",
+        "clause": 0,
+        "title": "Report",
+        "time": "Friday",
+        "actor": "user",
+        "details": None,
+    }
+    envelope = parse_envelope(json.dumps({"actions": [row]}), 8, clauses=source_clauses(text))
+    assert validate(envelope, text, SNAPSHOT)[0].disposition == "AUTO"
+    row["owner"] = str(OWNER)
+    with pytest.raises(ExtractionError, match="malformed_output"):
+        parse_envelope(json.dumps({"actions": [row]}), 8, clauses=source_clauses(text))
+
+
+def test_structured_schema_reserves_context_actor_for_context_operations():
+    from app.planning.wire import output_schema
+
+    action = output_schema(8)["properties"]["actions"]["items"]
+    assert action["properties"]["actor"]["enum"] == ["user", "team", "third_party"]
+    # Independently reject a provider that ignores the strict output schema.
+    text = "I need a report Friday."
+    assert decisions(text, proposal(text, actor="context"))[0].reason == "invalid_actor"
+
+
+@pytest.mark.parametrize("actor", ["user", "team", "third_party"])
+async def test_flat_wire_context_role_is_server_owned_and_preserves_third_party_suppression(actor):
+    from app.planning.wire import source_clauses
+
+    text = "The project uses FastAPI."
+    row = dict(op="context", clause=0, title="FastAPI", time=None, actor=actor, plan=None)
+    envelope = parse_envelope(json.dumps({"actions": [row]}), 8, clauses=source_clauses(text))
+    result = validate(envelope, text, SNAPSHOT)[0]
+    assert result.disposition == ("NO_ACTION" if actor == "third_party" else "AUTO")
+    assert envelope.actions[0].content == text
+    row["plan"] = "Absent plan"
+    if actor != "third_party":
+        envelope = parse_envelope(json.dumps({"actions": [row]}), 8, clauses=source_clauses(text))
+        assert validate(envelope, text, SNAPSHOT)[0].reason == "ungrounded_plan"
+
+
+@pytest.mark.parametrize("expression", ["by Wednesday", "on Wednesday"])
+def test_deadline_prepositions_keep_the_exact_date(expression):
+    text = f"We need the report {expression}."
+    result = decisions(text, proposal(text, temporal=expression, actor="team"))[0]
+    assert result.disposition == "AUTO"
+    assert result.scheduled_at.isoformat() == "2026-10-08T06:59:00+00:00"
+
+
+def test_task_intention_cannot_become_new_plan_or_duplicate_context():
+    text = "I want to start the backend tomorrow."
+    p = proposal(text, "Backend", "tomorrow", "CREATE_PLAN")
+    assert decisions(text, p)[0].reason == "missing_project_intent"
+    p = proposal(text, "Backend", "tomorrow", "CREATE_TASK")
+    assert decisions(text, p)[0].disposition == "AUTO"
+    text = "I need to finish the API Monday."
+    p = proposal(
+        text, "API", None, "ADD_PLAN_CONTEXT", actor="context", classification="INFORMATION"
+    )
+    assert decisions(text, p)[0].reason == "action_is_not_context"
+
+
+def test_inflected_obligation_is_a_real_duplicate_decision():
+    text = "The presentation still needs to be prepared by Friday."
+    p = proposal(text, "Presentation", "by Friday", actor="team")
+    at = datetime(2026, 10, 10, 6, 59, tzinfo=UTC)
+    target = Target(uuid.uuid4(), "task", "Presentation", PLAN, 2, at)
+    result = decisions(text, p, snapshot=replace(SNAPSHOT, targets=(target,)))[0]
+    assert result.disposition == "NO_ACTION" and result.reason == "duplicate"
+
+
+def test_collapsed_enumeration_cannot_bypass_the_operation_bound():
+    text = "I need to prepare report, draft and presentation."
+    p = proposal(text, "Report", None)
+    result = validate(Envelope(actions=[p]), text, SNAPSHOT, max_actions=2)
+    assert result[0].disposition == "CLARIFY" and result[0].reason == "action_overflow"
+    text = "I don't need to prepare report, draft and presentation."
+    p = proposal(text, "Report", None)
+    result = validate(Envelope(actions=[p]), text, SNAPSHOT, max_actions=2)
+    assert result[0].disposition == "NO_ACTION"
+
+
+def test_duplicate_title_variants_require_grounded_owned_unique_match():
+    text = "The presentation still needs to be prepared by Friday."
+    p = proposal(text, "Presentation", "by Friday", actor="team")
+    at = datetime(2026, 10, 10, 6, 59, tzinfo=UTC)
+    target = Target(uuid.uuid4(), "task", "Prepare presentation", PLAN, 2, at)
+    result = decisions(text, p, snapshot=replace(SNAPSHOT, targets=(target,)))[0]
+    assert result.reason == "duplicate" and result.target_id == target.id
+    second = replace(target, id=uuid.uuid4(), title="Presentation")
+    assert (
+        decisions(text, p, snapshot=replace(SNAPSHOT, targets=(target, second)))[0].disposition
+        == "CLARIFY"
+    )
+    different = replace(target, title="Review presentation")
+    result = decisions(text, p, snapshot=replace(SNAPSHOT, targets=(different,)))[0]
+    assert result.target_id is None and result.reason != "duplicate"
+
+
+@pytest.mark.parametrize(
+    "model,expected",
+    [
+        ("gpt-5.6-luna", "none"),
+        ("gpt-5.6-terra", "none"),
+        ("gpt-5.6-sol", "none"),
+        ("gpt-6-astra", None),
+    ],
+)
+async def test_planning_effort_hint_is_only_for_documented_models(model, expected):
+    llm = FakeLLM('{"actions":[]}')
+    llm.provider_info = SimpleNamespace(
+        provider="openai",
+        api_family="openai_responses",
+        configured_model=model,
+        capabilities=SimpleNamespace(structured_text_output=True),
+    )
+    await extract(
+        llm,
+        SNAPSHOT,
+        uuid.uuid4(),
+        "I need a report Friday.",
+        timeout_ms=100,
+        max_actions=8,
+        max_tokens=1024,
+    )
+    assert llm.requests[0].reasoning_effort == expected
+    assert (llm.requests[0].output_schema is not None) == (expected == "none")
 
 
 @pytest.fixture
@@ -336,7 +687,23 @@ def observer_parts(data, mode="shadow", **llm_options):
         plan_test_user_ids=(principal.user_id,),
         plan_extraction_timeout_ms=100,
     )
-    llm = FakeLLM(json.dumps({"actions": [proposal(text).model_dump()]}), **llm_options)
+    llm = FakeLLM(
+        json.dumps(
+            {
+                "actions": [
+                    {
+                        "op": "task",
+                        "clause": 0,
+                        "title": "Report",
+                        "time": "Friday",
+                        "actor": "user",
+                        "plan": None,
+                    }
+                ]
+            }
+        ),
+        **llm_options,
+    )
     observer = PlanningObserver(config, llm, factory)
     kwargs = dict(
         principal=principal,
@@ -513,6 +880,9 @@ async def test_evaluation_replay_is_not_live_quality_and_metrics_count_false_act
     assert report["overall"]["candidate_precision"] == 1
     assert report["overall"]["candidate_recall"] == 1
     assert not report["overall"]["quality_gate_met"]
+    assert not report["full_corpus_gate_met"]
+    assert report["runtime_timeout_ms"] is None
+    assert all(len(value) == 64 for value in report["implementation_sha256"].values())
     assert report["overall"]["duplicate_decisions"] == {"expected": 1, "correct": 1}
     row = {
         "counts": {
@@ -530,3 +900,12 @@ async def test_evaluation_replay_is_not_live_quality_and_metrics_count_false_act
     assert summary["candidate_precision"] == 0.5 and summary["candidate_recall"] == 0.5
     assert summary["false_actions"] == 1 and summary["timeout_rate"] == 1
     assert not summary["quality_gate_met"]
+    row["counts"] = {
+        "expected_auto": 1,
+        "correct_auto": 1,
+        "proposed_auto": 1,
+        "requests": 1,
+        "expected_duplicates": 1,
+        "correct_duplicates": 0,
+    }
+    assert not summarize([row], kind="live_provider")["quality_gate_met"]

@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.planning.policy import PlanningConsent
 
-EXTRACTOR_VERSION = "plan-extract-v2"
+EXTRACTOR_VERSION = "plan-extract-v9"
 MAX_TRANSCRIPT_CHARS = 8192
 MAX_OUTPUT_CHARS = 16384
 
@@ -66,6 +66,7 @@ class Target:
     plan_id: UUID | None
     revision: int
     scheduled_at: datetime | None = None
+    recurrence_rule: str | None = None
 
 
 @dataclass(frozen=True)

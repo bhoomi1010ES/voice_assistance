@@ -46,6 +46,7 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
         return LLMCapabilities(
             streaming=True,
             text_generation=True,
+            structured_text_output=True,
             tool_calling=True,
             usage_reporting=True,
             cancellation=True,
@@ -84,9 +85,7 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
                                 "call_id": tool_call.tool_call_id,
                                 "name": tool_call.name,
                                 "arguments": tool_call.arguments_json
-                                or json.dumps(
-                                    tool_call.arguments or {}, separators=(",", ":")
-                                ),
+                                or json.dumps(tool_call.arguments or {}, separators=(",", ":")),
                             }
                         )
                 continue
@@ -104,6 +103,17 @@ class OpenAIResponsesProvider(OpenAIChatProvider):
             "stream": True,
             "store": False,
         }
+        if request.reasoning_effort is not None:
+            payload["reasoning"] = {"effort": request.reasoning_effort}
+        if request.output_schema is not None:
+            payload["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "structured_response",
+                    "strict": True,
+                    "schema": request.output_schema,
+                }
+            }
         if request.allowed_tools:
             # Stateless Responses tool loops must receive encrypted reasoning
             # items so they can be replayed with the function output.

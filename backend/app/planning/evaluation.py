@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import statistics
 import time
@@ -29,6 +30,26 @@ from app.planning.types import EXTRACTOR_VERSION, Envelope, PlanningSnapshot, Pr
 
 DEFAULT_CORPUS = Path(__file__).resolve().parents[2] / "tests/fixtures/planning/conversations.json"
 OWNER = uuid.UUID("00000000-0000-0000-0000-000000000101")
+
+
+def implementation_fingerprint():
+    """Bind measurements to source bytes without exposing local configuration."""
+    app = Path(__file__).resolve().parents[1]
+    paths = (
+        "planning/extraction.py",
+        "planning/wire.py",
+        "planning/resolution.py",
+        "planning/types.py",
+        "planning/observer.py",
+        "planning/repository.py",
+        "planning/policy.py",
+        "planning/service.py",
+        "planning/evaluation.py",
+        "llm/service.py",
+        "llm/types.py",
+        "llm/providers/openai_responses.py",
+    )
+    return {path: hashlib.sha256((app / path).read_bytes()).hexdigest() for path in paths}
 
 
 def _id(text):
@@ -180,11 +201,15 @@ def summarize(rows, *, kind):
             and auto == totals["correct_auto"]
             and not totals["temporal_errors"]
             and not totals["failures"]
+            and totals["correct_ambiguity"] == totals["expected_ambiguity"]
+            and totals["correct_duplicates"] == totals["expected_duplicates"]
+            and totals["correct_batch_clarifications"] == totals["expected_batch_clarifications"]
         ),
     }
 
 
 async def evaluate(corpus, *, llm=None, settings=None, split="all"):
+    started_at = datetime.now(UTC).isoformat()
     rows = []
     for case in corpus["cases"]:
         if split != "all" and case["split"] != split:
@@ -200,6 +225,7 @@ async def evaluate(corpus, *, llm=None, settings=None, split="all"):
                     label.get("reason") == "ambiguous_target" for label in labels
                 ),
                 expected_duplicates=sum(label.get("reason") == "duplicate" for label in labels),
+                expected_batch_clarifications=int(turn.get("batch_outcome") == "CLARIFY"),
             )
             text = turn["transcript"]
             eligible = (
@@ -228,8 +254,22 @@ async def evaluate(corpus, *, llm=None, settings=None, split="all"):
                         )
                     else:
                         envelope = Envelope(actions=[label_proposal(label) for label in labels])
-                    resolved = validate(envelope, text, snapshot)
+                    resolved = validate(
+                        envelope,
+                        text,
+                        snapshot,
+                        max_actions=settings.plan_max_actions_per_turn if settings else 8,
+                    )
                     status, reason = "validated", ""
+                    if (
+                        turn.get("batch_outcome") == "CLARIFY"
+                        and resolved
+                        and all(
+                            d.disposition == "CLARIFY" and d.reason == "action_overflow"
+                            for d in resolved
+                        )
+                    ):
+                        counts["correct_batch_clarifications"] += 1
                 except TimeoutError:
                     status, reason = "failed", "timeout"
                     counts["timeouts"] += 1
@@ -266,9 +306,13 @@ async def evaluate(corpus, *, llm=None, settings=None, split="all"):
                         counts["temporal_errors"] += 1
                 if same and decision.disposition == "AUTO":
                     counts["correct_auto"] += 1
-                if same and label.get("reason") == "ambiguous_target":
+                if (
+                    same
+                    and label.get("reason") == "ambiguous_target"
+                    and decision.reason == "ambiguous_target"
+                ):
                     counts["correct_ambiguity"] += 1
-                if same and label.get("reason") == "duplicate":
+                if same and label.get("reason") == "duplicate" and decision.reason == "duplicate":
                     counts["correct_duplicates"] += 1
                 counts["correct_dispositions"] += same
             # Ephemeral prior receipts simulate only corpus continuity, never DB writes.
@@ -284,6 +328,7 @@ async def evaluate(corpus, *, llm=None, settings=None, split="all"):
                         decision.plan_id,
                         1,
                         decision.scheduled_at,
+                        decision.proposal.recurrence,
                     )
                     snapshot = replace(snapshot, targets=(*snapshot.targets, target))
             rows.append(
@@ -297,23 +342,38 @@ async def evaluate(corpus, *, llm=None, settings=None, split="all"):
                     "counts": dict(counts),
                     "duration_ms": round((time.perf_counter() - started) * 1000, 3),
                     "outcomes": dict(Counter(d.disposition for d in resolved)),
+                    "validation_reasons": dict(Counter(d.reason for d in resolved)),
                 }
             )
     kind = "live_provider" if llm else "labeled_proposal_replay"
+    overall = summarize(rows, kind=kind)
+    splits = {
+        name: summarize([r for r in rows if r["split"] == name], kind=kind)
+        for name in ("development", "held_out")
+    }
     return {
         "evaluation_kind": kind,
+        "started_at_utc": started_at,
+        "evaluated_split": split,
+        "runtime_timeout_ms": settings.plan_extraction_timeout_ms if settings else None,
         "extractor_version": EXTRACTOR_VERSION,
+        "implementation_sha256": implementation_fingerprint(),
+        "corpus_sha256": hashlib.sha256(
+            json.dumps(corpus, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        ).hexdigest(),
         "policy_version": corpus["policy_version"],
         "corpus_version": corpus["schema_version"],
         "matching_policy": (
             "Same operation, overlapping evidence, normalized title core, exact expected times; "
             "one-to-one matching. Concise titles allowed; combined deliverables rejected."
         ),
-        "overall": summarize(rows, kind=kind),
-        "splits": {
-            name: summarize([r for r in rows if r["split"] == name], kind=kind)
-            for name in ("development", "held_out")
-        },
+        "overall": overall,
+        "splits": splits,
+        "full_corpus_gate_met": bool(
+            split == "all"
+            and overall["quality_gate_met"]
+            and all(summary["quality_gate_met"] for summary in splits.values())
+        ),
         "observations": rows,
         "limitations": (
             "Small synthetic corpus. Replay is not model precision. No foreground latency "
@@ -350,7 +410,14 @@ async def _main(args):
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         print(
-            json.dumps({"evaluation_kind": result["evaluation_kind"], "overall": result["overall"]})
+            json.dumps(
+                {
+                    "evaluation_kind": result["evaluation_kind"],
+                    "runtime_timeout_ms": result["runtime_timeout_ms"],
+                    "full_corpus_gate_met": result["full_corpus_gate_met"],
+                    "overall": result["overall"],
+                }
+            )
         )
     finally:
         if llm:

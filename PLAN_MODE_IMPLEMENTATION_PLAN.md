@@ -1,7 +1,7 @@
 # Conversational Plan Mode implementation plan
 
-**Verified:** 2026-10-05, America/Los_Angeles.  
-**Status:** PM-0 contracts/baseline, PM-1 source and PM-2 shadow extraction/evaluation are implemented on 2026-10-05. The PM-2 live quality gate is not met; PM-3 onward remain pending. Live database/native acceptance is not established. See the [frozen PM-0 contract](docs/PLAN_MODE_CONTRACT_V1.md), [implementation-start baseline](docs/20261005_172513_pm0_baseline.json), [PM-1 work record](docs/20261005_171305_pm1_durable_planning_mode_.md) and [PM-2 work record](docs/20261005_185028_pm2_shadow_extraction_.md).
+**Verified:** 2026-10-06, America/Los_Angeles.
+**Status:** PM-0 contracts/baseline, PM-1 source and PM-2 shadow extraction/evaluation are implemented. PM-2 passed the frozen live corpus gate on 2026-10-06 at the unchanged 3000 ms deadline in two consecutive full runs. Local PostgreSQL shadow-write isolation and disable serialization are verified. PM-3 onward and full native/automatic-execution acceptance remain pending; planning defaults remain disabled. See the [frozen PM-0 contract](docs/PLAN_MODE_CONTRACT_V1.md), [implementation-start baseline](docs/20261005_172513_pm0_baseline.json), [PM-1 work record](docs/20261005_171305_pm1_durable_planning_mode_.md) and [PM-2 calibration/acceptance record](docs/20261006_105227_pm2_quality_calibration_.md).
 **Scope:** The conversational Plan Mode described in the supplied `Pasted text.txt`.  
 **Parent plan:** [implementation.md](implementation.md). Related boundaries: [router plan](plan.md) and [OKF plan](OKF_IMPLEMENTATION_PLAN.md).
 
@@ -316,7 +316,7 @@ PM-0 contracts, PM-1 source and PM-2 source/evaluation items are implemented and
 
 **Gate:** behavior is concrete and reviewable; all planning defaults preserve current behavior.
 
-**PM-0 validation:** 423 focused backend tests passed, one optional PostgreSQL test skipped; Ruff checks passed. The corpus freezes 53 conversations/55 turns (13 held-out conversations) and 12 lifecycle cases with a versioned checksum manifest. Defaults perform no extraction or automatic writes; the new policy computes eligibility only and is not an executor grant. Local `.env` is unchanged. Its existing OKF shadow/knowledge-mode conflict prevents startup configuration acceptance and is recorded in the baseline. PM-2 accuracy/latency and PM-3 execution acceptance remain pending. See the [PM-0 work record](docs/20261005_173845_pm0_contracts_baseline_.md).
+**PM-0 validation:** 423 focused backend tests passed, one optional PostgreSQL test skipped; Ruff checks passed. The corpus freezes 53 conversations/55 turns (13 held-out conversations) and 12 lifecycle cases with a versioned checksum manifest. Defaults perform no extraction or automatic writes; the new policy computes eligibility only and is not an executor grant. Local `.env` is unchanged. At that review, its OKF shadow/knowledge-mode conflict blocked startup acceptance and was recorded in the baseline. PM-2 accuracy/latency and PM-3 execution acceptance were pending then; see the updated PM-2 acceptance below. See the [PM-0 work record](docs/20261005_173845_pm0_contracts_baseline_.md).
 
 ### PM-1 — Durable schema and mode controls
 
@@ -327,7 +327,7 @@ PM-0 contracts, PM-1 source and PM-2 source/evaluation items are implemented and
 
 **Gate:** UI and voice can select a persistent session mode; this phase performs no inferred organizational writes.
 
-**PM-1 validation:** 345 focused backend tests passed, 51 focused Jest tests passed, TypeScript/ESLint/Prettier/Ruff checks passed. The optional real PostgreSQL barrier test was skipped because `PLAN_MODE_TEST_DATABASE_URL` is unset. Migration `0021_planning_foundation` is prepared, not applied to a live database. `PLAN_MODE_ENABLED` defaults to false; local `.env` was not changed. Android runtime verification remains pending.
+**PM-1 validation:** 345 focused backend tests passed, 51 focused Jest tests passed, TypeScript/ESLint/Prettier/Ruff checks passed. The optional PostgreSQL barrier test was skipped at the initial PM-1 review. On 2026-10-06, migration `0021_planning_foundation` was applied to local PostgreSQL, and the real disable barrier plus PM-2 shadow/replay isolation passed in a disposable test schema. `PLAN_MODE_ENABLED` defaults to false; local `.env` was not changed. Android runtime verification remains pending.
 
 ### PM-2 — Extraction and validation in shadow
 
@@ -339,11 +339,13 @@ PM-0 contracts, PM-1 source and PM-2 source/evaluation items are implemented and
 
 **Gate:** grounded proposals are accurate enough for the defined corpus; no shadow-created task/reminder/memory exists.
 
-**PM-2 validation:** 586 focused backend tests passed, one optional PostgreSQL test skipped; Ruff/format/whitespace checks passed. Shadow creates no organizational/proposal rows or memories; only privacy-filtered observation metadata is retained. Extractor `on` stores pending proposals only, never executes them. Labeled proposal replay validated 21/21 automatic labels and both ambiguity/duplicate cases; this is not model accuracy.
+**PM-2 validation:** 674 focused backend checks passed, including real PostgreSQL shadow/replay write isolation and disable serialization. Ruff, format and targeted whitespace checks passed. Compact structured extraction reconstructs exact evidence spans on the server; actor/time/context/overflow checks remain conservative. Duplicate title variants require grounded, owned, unique matches and preserve recurrence. Ordinary model requests retain their defaults. Shadow creates zero tasks, reminders, plans, context items, proposal batches/actions or memories; extractor `on` still stores pending proposals only and never executes them.
 
-**PM-2 gate remains open:** the final selected-provider v2 trial at a diagnostic 15-second bound matched 10/10 emitted automatic candidates but only 10/21 expected candidates (47.6% recall), clarified 1/1 ambiguous targets and missed 1/1 duplicate decisions. No timeouts or unmatched automatic candidates were observed; two extraction failures remained. The held-out split matched 3/3 positive candidates, an insufficiently broad sample to override the overall failure. Earlier v1 trials at the unchanged 3-second default had high timeout rates. Three paired foreground measurements found median added latency about 50 ms with substantial noise. No extraction/auto defaults or local `.env` values were enabled or changed. See the [work record](docs/20261005_185028_pm2_shadow_extraction_.md) and [final live report](docs/pm2_live_provider_15000ms_final.json).
+**PM-2 gate passed for the frozen corpus:** selected-provider `plan-extract-v9` completed two consecutive full evaluations at the unchanged 3000 ms runtime deadline. The [first passing run](docs/pm2_v9_live_corpus_3000ms_acceptance_2.json) matched 21/21 expected automatic candidates (100% precision/recall); the [confirmation run](docs/pm2_v9_live_corpus_3000ms_acceptance_3.json) matched 20/21 (100% precision, 95.2% recall). Both passed development and held-out gates independently, recovered 3/3 held-out positives, correctly handled 1/1 ambiguity, 1/1 duplicate and 1/1 overflow, and observed zero false automatic candidates, temporal errors, extraction failures or timeouts. Reports share identical implementation hashes and the frozen corpus checksum. Labels, model, thresholds and deadline were unchanged.
 
-- [ ] Calibrate extraction/grounding/duplicate behavior and meet the overall live corpus gate before execution rollout; obtain acceptance at the intended runtime deadline.
+**Measured limits:** only three held-out positive candidates exist. The earlier frozen [run 1](docs/pm2_v9_live_corpus_3000ms_acceptance_1.json) had one deadline miss despite 21/21 positive recovery; all trials remain recorded. Ten counterbalanced [foreground pairs](docs/pm2_v9_paired_latency_3000ms_acceptance.json) completed all foreground requests, with median added latency 107 ms; one background extraction reached its deadline under contention. These are corpus results and bounded background behavior, not a production latency guarantee. The backend was restarted and returned healthy/ready from Windows. Feature/extraction/automatic-write defaults remain off and the owner allowlist remains empty. See the [work record](docs/20261006_105227_pm2_quality_calibration_.md).
+
+- [x] Calibrate extraction/grounding/duplicate behavior and meet the overall live corpus gate before execution rollout; obtain acceptance at the intended runtime deadline.
 
 ### PM-3 — Policy and existing tool integration
 
@@ -420,4 +422,4 @@ Release requirements include zero observed unauthorized/destructive/external act
 
 ## 15. Completion definition
 
-The feature is complete when a user can explicitly enable Plan Mode, speak actionable plans naturally, receive accurate saved tasks/reminders and organized context without repeated organizational confirmation, correct the same plan across turns, and disable the mode reliably. All writes must remain owned, grounded, audited, replay-safe and governed by the operation-specific confirmation policy. PM-0 contracts/baseline, PM-1 source and PM-2 source/evaluation are implemented. PM-2's quality gate, PM-3 onward and live database/native acceptance remain pending.
+The feature is complete when a user can explicitly enable Plan Mode, speak actionable plans naturally, receive accurate saved tasks/reminders and organized context without repeated organizational confirmation, correct the same plan across turns, and disable the mode reliably. All writes must remain owned, grounded, audited, replay-safe and governed by the operation-specific confirmation policy. PM-0 contracts/baseline, PM-1 source and PM-2 shadow extraction/evaluation are implemented. PM-2 passed its frozen corpus gate at 3000 ms; real PostgreSQL shadow isolation and disable serialization also pass. PM-3 onward, automatic execution and full native/end-to-end acceptance remain pending.

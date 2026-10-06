@@ -27,7 +27,7 @@ _REFERENCE = re.compile(
     r"\b(?:said|says|tutorial|document|sample|example|quote|according to)\b", re.I
 )
 _ACTION = re.compile(
-    r"\b(?:i|we|our|me|let's|must|need|will|want|have|make|move|change|finish|finished|"
+    r"\b(?:i|we|our|me|let's|must|needs?|will|want|have|make|move|change|finish|finished|"
     r"complete|completed|remind|cancel|delete|archive|undo|reassign|send|book)\b",
     re.I,
 )
@@ -47,6 +47,15 @@ def _plan_name(text: str) -> str:
     return " ".join(text.strip().casefold().split())
 
 
+def _recurrence_identity(rule: str | None) -> str | None:
+    if not rule:
+        return None
+    try:
+        return validate_recurrence_rule(rule)
+    except RecurrenceResolutionError:
+        return rule
+
+
 def _words(text: str) -> set[str]:
     words = set()
     for word in re.findall(r"\w+", text.casefold()):
@@ -59,6 +68,22 @@ def _words(text: str) -> set[str]:
             word = word[:-1]
         words.add(word)
     return words
+
+
+def _task_title_matches(existing: str, proposed: str, source: str) -> bool:
+    if identity(existing) == identity(proposed):
+        return True
+    existing_words, proposed_words = _words(existing), _words(proposed)
+    # Permit concise/inflected titles only when the source supports BOTH titles.
+    # Different work verbs cannot be silently merged through a shared noun.
+    neutral = {"prepare", "finish", "complete", "write", "start"}
+    core = existing_words - neutral
+    return bool(
+        core
+        and core == proposed_words - neutral
+        and existing_words <= _words(source)
+        and proposed_words <= _words(source)
+    )
 
 
 def _valid_span(span: Span, transcript: str) -> bool:
@@ -125,6 +150,10 @@ def resolve_time(
         r"\bnext week\b", expression, re.I
     ):
         return None, zone, "missing_temporal_modifier"
+    if re.search(r"\bevery\b|\bdaily\b|\bweekly\b", proposal.source.text, re.I) and not re.search(
+        r"\bevery\b|\bdaily\b|\bweekly\b", expression, re.I
+    ):
+        return None, zone, "missing_temporal_modifier"
     if not expression:
         if has_temporal_expression(proposal.source.text) or _TEMPORAL.search(proposal.source.text):
             return None, zone, "missing_temporal_evidence"
@@ -185,6 +214,7 @@ def resolve_time(
     cleaned = expression.casefold().strip()
     # Explicit IANA zones/known spoken aliases are resolved separately.
     cleaned = re.sub(r"\b[A-Za-z]+/[A-Za-z_]+(?:/[A-Za-z_]+)?\b", "", expression).casefold().strip()
+    cleaned = re.sub(r"^(?:by|on)\s+", "", cleaned)
     if not cleaned:
         return None, zone, "missing_time"
     matched = re.fullmatch(grammar, cleaned, re.I)
@@ -233,12 +263,18 @@ def resolve_time(
 
 
 def validate(
-    envelope: Envelope, transcript: str, snapshot: PlanningSnapshot
+    envelope: Envelope, transcript: str, snapshot: PlanningSnapshot, *, max_actions: int = 8
 ) -> tuple[Decision, ...]:
     decisions: list[Decision] = []
     seen: set[tuple] = set()
-    for proposal in envelope.actions:
-        decision = Decision(proposal, "AUTO", "grounded", plan_id=snapshot.active_plan_id)
+    # Resource grouping follows the conversation, not the model's array order.
+    for proposal in sorted(envelope.actions, key=lambda action: action.source.start):
+        decision = Decision(
+            proposal,
+            "AUTO",
+            "grounded",
+            plan_id=None if proposal.operation == "CREATE_PLAN" else snapshot.active_plan_id,
+        )
 
         spans = [s for s in (proposal.source, proposal.temporal, proposal.recurrence_source) if s]
         if any(not _valid_span(s, transcript) for s in spans) or any(
@@ -292,6 +328,20 @@ def validate(
             re.I,
         ):
             decisions.append(decision.outcome("NO_ACTION", "missing_project_intent"))
+            continue
+        if proposal.operation == "CREATE_PLAN" and re.search(
+            r"\b(?:want|need|needs|have)\s+to\s+(?:start|launch|begin)\b",
+            proposal.source.text,
+            re.I,
+        ):
+            decisions.append(decision.outcome("NO_ACTION", "missing_project_intent"))
+            continue
+        if proposal.operation == "ADD_PLAN_CONTEXT" and re.search(
+            r"\b(?:needs?|must|want|remind)\b|\bwill\s+(?:finish|prepare|complete|deliver)\b",
+            proposal.source.text,
+            re.I,
+        ):
+            decisions.append(decision.outcome("DENY", "action_is_not_context"))
             continue
         if proposal.classification == "INFORMATION" and proposal.operation != "ADD_PLAN_CONTEXT":
             decisions.append(decision.outcome("NO_ACTION", "information_only"))
@@ -347,22 +397,65 @@ def validate(
         ):
             decisions.append(decision.outcome("NO_ACTION", "historical_evidence"))
             continue
+        created = [
+            i
+            for i, d in enumerate(decisions)
+            if d.proposal.operation == "CREATE_PLAN" and d.disposition == "AUTO"
+        ]
         if proposal.plan_mention:
-            if identity(proposal.plan_mention) not in identity(proposal.source.text):
+            if _plan_name(proposal.plan_mention) not in _plan_name(proposal.source.text):
                 decisions.append(decision.outcome("DENY", "ungrounded_plan"))
                 continue
-            matches = [
-                p
-                for p in snapshot.plans
-                if _plan_name(p.title) == _plan_name(proposal.plan_mention)
-            ]
-            if len(matches) != 1:
+            if proposal.operation == "CREATE_PLAN":
+                if _plan_name(proposal.plan_mention) != _plan_name(proposal.title):
+                    decisions.append(decision.outcome("DENY", "ungrounded_plan"))
+                    continue
+            else:
+                new_matches = [
+                    i
+                    for i in created
+                    if _plan_name(decisions[i].proposal.title) == _plan_name(proposal.plan_mention)
+                ]
+                if len(new_matches) == 1:
+                    decision = replace(decision, plan_id=None, plan_ordinal=new_matches[0])
+                else:
+                    matches = [
+                        p
+                        for p in snapshot.plans
+                        if _plan_name(p.title) == _plan_name(proposal.plan_mention)
+                    ]
+                    if new_matches or len(matches) != 1:
+                        decisions.append(decision.outcome("CLARIFY", "ambiguous_plan"))
+                        continue
+                    decision = replace(decision, plan_id=matches[0].id)
+                    if decision.plan_id != snapshot.active_plan_id:
+                        decisions.append(decision.outcome("CLARIFY", "unloaded_plan_context"))
+                        continue
+        elif proposal.operation != "CREATE_PLAN" and created:
+            if len(created) != 1:
                 decisions.append(decision.outcome("CLARIFY", "ambiguous_plan"))
                 continue
-            decision = replace(decision, plan_id=matches[0].id)
-            if decision.plan_id != snapshot.active_plan_id:
-                decisions.append(decision.outcome("CLARIFY", "unloaded_plan_context"))
-                continue
+            decision = replace(decision, plan_id=None, plan_ordinal=created[0])
+        if (
+            not proposal.plan_mention
+            and proposal.operation != "CREATE_PLAN"
+            and any(
+                d.proposal.operation == "CREATE_PLAN"
+                and d.disposition != "AUTO"
+                and not (
+                    d.reason == "duplicate"
+                    and any(
+                        p.id == snapshot.active_plan_id
+                        and _plan_name(p.title) == _plan_name(d.proposal.title)
+                        for p in snapshot.plans
+                    )
+                )
+                for d in decisions
+            )
+        ):
+            # An unresolved new project cannot silently fall back to the old plan.
+            decisions.append(decision.outcome("CLARIFY", "ambiguous_plan"))
+            continue
         if proposal.operation == "CREATE_PLAN":
             matches = [
                 p for p in snapshot.plans if _plan_name(p.title) == _plan_name(proposal.title)
@@ -375,17 +468,13 @@ def validate(
                     )
                 )
                 continue
-        if decision.plan_id is None and proposal.operation != "CREATE_PLAN":
-            created = [
-                i
-                for i, d in enumerate(decisions)
-                if d.proposal.operation == "CREATE_PLAN" and d.disposition == "AUTO"
-            ]
-            if len(created) == 1:
-                decision = replace(decision, plan_ordinal=created[0])
-            elif proposal.operation == "ADD_PLAN_CONTEXT":
-                decisions.append(decision.outcome("CLARIFY", "missing_plan"))
-                continue
+        if (
+            decision.plan_id is None
+            and decision.plan_ordinal is None
+            and proposal.operation == "ADD_PLAN_CONTEXT"
+        ):
+            decisions.append(decision.outcome("CLARIFY", "missing_plan"))
+            continue
         at, zone, reason = (
             resolve_time(proposal, snapshot)
             if proposal.operation not in {"COMPLETE_TASK", "ADD_PLAN_CONTEXT"}
@@ -413,8 +502,14 @@ def validate(
             t
             for t in targets
             if t.kind == kind
-            and identity(t.title) == identity(title)
-            and (kind == "plan" or t.plan_id == decision.plan_id)
+            and (
+                _plan_name(t.title) == _plan_name(title)
+                if kind == "plan"
+                else _task_title_matches(t.title, title, proposal.source.text)
+                if kind == "task"
+                else identity(t.title) == identity(title)
+            )
+            and (kind == "plan" or decision.plan_ordinal is None and t.plan_id == decision.plan_id)
         ]
         update = (
             proposal.operation.startswith("UPDATE_")
@@ -434,7 +529,12 @@ def validate(
             )
         elif proposal.operation in {"CREATE_TASK", "CREATE_REMINDER"} and matches:
             target = matches[0]
-            if len(matches) == 1 and target.scheduled_at == at:
+            if (
+                len(matches) == 1
+                and target.scheduled_at == at
+                and _recurrence_identity(target.recurrence_rule)
+                == _recurrence_identity(proposal.recurrence)
+            ):
                 decisions.append(
                     replace(
                         decision.outcome("NO_ACTION", "duplicate"),
@@ -447,10 +547,13 @@ def validate(
             continue
         key = (
             proposal.operation,
-            identity(proposal.title),
+            _plan_name(proposal.title)
+            if proposal.operation == "CREATE_PLAN"
+            else identity(proposal.title),
             decision.plan_id,
             decision.plan_ordinal,
             at,
+            _recurrence_identity(proposal.recurrence),
         )
         if key in seen:
             decisions.append(decision.outcome("NO_ACTION", "duplicate"))
@@ -465,12 +568,30 @@ def validate(
     # Conflicting updates to the same identity must not appear independently actionable.
     original = tuple(decisions)
     for index, decision in enumerate(original):
+        if decision.proposal.operation in {"CREATE_TASK", "CREATE_REMINDER"} and any(
+            d.proposal.operation == decision.proposal.operation
+            and identity(d.proposal.title) == identity(decision.proposal.title)
+            and d.plan_id == decision.plan_id
+            and d.plan_ordinal == decision.plan_ordinal
+            and d.disposition == "AUTO"
+            and decision.disposition == "AUTO"
+            and (
+                d.scheduled_at != decision.scheduled_at
+                or _recurrence_identity(d.proposal.recurrence)
+                != _recurrence_identity(decision.proposal.recurrence)
+            )
+            for i, d in enumerate(original)
+            if i != index
+        ):
+            decisions[index] = decision.outcome("CLARIFY", "duplicate_schedule_conflict")
         if decision.target_id and any(
             d.target_id == decision.target_id
             and d.disposition in {"AUTO", "CONFIRM"}
             and (
                 d.proposal.operation != decision.proposal.operation
                 or d.scheduled_at != decision.scheduled_at
+                or _recurrence_identity(d.proposal.recurrence)
+                != _recurrence_identity(decision.proposal.recurrence)
             )
             for i, d in enumerate(original)
             if i != index
@@ -478,4 +599,20 @@ def validate(
             decisions[index] = replace(
                 decision, disposition="CLARIFY", reason="contradictory_actions"
             )
+    # A provider cannot bypass the operation bound by folding an explicit list
+    # into a single title. Count only direct, validated personal/team obligations.
+    for decision in decisions:
+        if decision.disposition != "AUTO" or decision.proposal.operation != "CREATE_TASK":
+            continue
+        enumeration = re.match(
+            r"\s*(?:I|we)\s+needs?\s+to\s+(?:do|finish|prepare|complete|write|deliver)\s+(.+)",
+            decision.proposal.source.text,
+            re.I,
+        )
+        if (
+            enumeration
+            and "," in enumeration[1]
+            and len(re.split(r",\s*|\s+and\s+", enumeration[1])) > max_actions
+        ):
+            return tuple(d.outcome("CLARIFY", "action_overflow") for d in decisions)
     return tuple(decisions)
