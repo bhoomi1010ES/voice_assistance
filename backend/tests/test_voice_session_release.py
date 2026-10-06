@@ -55,6 +55,7 @@ def _shutdown_gateway(*, finalize_error: Exception | None = None) -> VoiceGatewa
         finalize.side_effect = finalize_error
     gateway.persistence = SimpleNamespace(finalize_session=finalize)
     gateway._send = AsyncMock()
+    gateway._revoke_planning = AsyncMock()
     gateway._close_stt_turn = AsyncMock()
     gateway._finalize_active_turn = AsyncMock()
     gateway._cancel_stt_finalize_task = AsyncMock()
@@ -105,6 +106,7 @@ async def test_session_end_releases_registry_immediately() -> None:
         SessionEndMessage(type="client.session.end", reason="user_stopped")
     )
 
+    gateway._revoke_planning.assert_awaited_once()
     gateway.registry.release.assert_awaited()
     assert gateway._closing.is_set()
     assert gateway._registry_released is True

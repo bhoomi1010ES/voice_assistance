@@ -1,0 +1,18 @@
+{
+  "schema_version": "plan-lifecycle-v1",
+  "policy_version": "plan-v1",
+  "cases": [
+    {"event": "new_session", "initial_mode": "normal", "expected_mode": "normal", "consent_retained": false, "saved_resources_retained": true},
+    {"event": "supported_same_session_resume", "initial_mode": "plan", "expected_mode": "plan", "consent_retained": true, "saved_resources_retained": true},
+    {"event": "disconnect_within_resume_grace", "initial_mode": "plan", "expected_mode": "plan", "consent_retained": true, "client_can_authorize_while_disconnected": false, "saved_resources_retained": true},
+    {"event": "disable", "initial_mode": "plan", "expected_mode": "normal", "consent_retained": false, "version_increments": true, "pending_planner_cancelled": true, "saved_resources_retained": true},
+    {"event": "reset", "initial_mode": "plan", "expected_mode": "normal", "consent_retained": false, "saved_resources_retained": true},
+    {"event": "end", "initial_mode": "plan", "expected_mode": "normal", "consent_retained": false, "saved_resources_retained": true},
+    {"event": "timeout", "initial_mode": "plan", "expected_mode": "normal", "consent_retained": false, "saved_resources_retained": true},
+    {"event": "logout", "initial_mode": "plan", "expected_mode": "normal", "consent_retained": false, "saved_resources_retained": true},
+    {"event": "device_or_auth_revoked", "initial_mode": "plan", "expected_mode": "normal", "consent_retained": false, "saved_resources_retained": true},
+    {"event": "expired_resume", "initial_mode": "plan", "expected_mode": "normal", "consent_retained": false, "saved_resources_retained": true},
+    {"event": "private_session_enabled", "initial_mode": "plan", "expected_mode": "normal", "consent_retained": false, "saved_resources_retained": true},
+    {"event": "source_content_purge", "initial_mode": "normal", "expected_mode": "normal", "consent_retained": false, "extraction_evidence_retained": false, "saved_resources_retained": true}
+  ]
+}

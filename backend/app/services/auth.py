@@ -452,6 +452,9 @@ class AuthService:
                 metadata={"session_id": str(principal.session_id), "reason": "logout"},
                 request=request,
             )
+        from app.planning.service import revoke_auth_state
+
+        await revoke_auth_state(session, principal.user_id, principal.session_id)
         await session.commit()
 
     async def revoke_session(
@@ -479,6 +482,9 @@ class AuthService:
                 metadata={"session_id": str(session_id), "reason": "user_request"},
                 request=request,
             )
+        from app.planning.service import revoke_auth_state
+
+        await revoke_auth_state(session, principal.user_id, session_id)
         await session.commit()
         return True
 
@@ -510,7 +516,10 @@ class AuthService:
                 )
             ).all()
         )
+        from app.planning.service import revoke_auth_state
+
         for auth_session in associated_sessions:
+            await revoke_auth_state(session, principal.user_id, auth_session.id)
             auth_session.revoked_at = now
             record_audit(
                 session,

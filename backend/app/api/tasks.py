@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 
 from app.api.dependencies import DatabaseSessionDependency, get_current_principal
+from app.api.plans import commit_revision, conflict, validate_group
 from app.core.clock import SystemClock
 from app.models import Task, User
 from app.schemas import TaskCreateRequest, TaskResponse, TaskUpdateRequest
@@ -60,8 +61,10 @@ async def create_task(
         due_at = await _normalize_due_at(payload.due_at, timezone_name=timezone_name)
     except TaskDueDateResolutionError as error:
         raise temporal_error(error) from error
+    await validate_group(session, principal.user_id, payload.plan_id)
     task = Task(
         user_id=principal.user_id,
+        plan_id=payload.plan_id,
         title=payload.title,
         description=payload.description,
         status="pending",
@@ -85,6 +88,7 @@ async def list_tasks(
     priority: str | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     before: datetime | None = None,
+    plan_id: uuid.UUID | None = None,
 ) -> list[Task]:
     query = (
         select(Task)
@@ -92,6 +96,8 @@ async def list_tasks(
         .order_by(Task.created_at.desc(), Task.id.desc())
         .limit(limit)
     )
+    if plan_id is not None:
+        query = query.where(Task.plan_id == plan_id)
     if status_filter is not None:
         query = query.where(Task.status == status_filter)
     if priority is not None:
@@ -141,6 +147,11 @@ async def update_task(
             resource_id=task_id,
         )
         raise not_found()
+    if payload.expected_revision is not None and task.revision != payload.expected_revision:
+        raise conflict()
+    if "plan_id" in payload.model_fields_set:
+        await validate_group(session, principal.user_id, payload.plan_id)
+        task.plan_id = payload.plan_id
     timezone_name = payload.timezone or task.timezone or await _user_timezone(session, principal)
     try:
         due_at = (
@@ -160,13 +171,11 @@ async def update_task(
         task.priority = payload.priority
     task.timezone = timezone_name
     task.due_at = due_at
-    task.local_due_at = (
-        due_at.astimezone(ZoneInfo(timezone_name)) if due_at is not None else None
-    )
+    task.local_due_at = due_at.astimezone(ZoneInfo(timezone_name)) if due_at is not None else None
     if payload.timezone is not None:
         task.timezone_source = "explicit"
     _set_completed_at(task, payload.status)
-    await session.commit()
+    await commit_revision(session)
     await session.refresh(task)
     return task
 
@@ -191,7 +200,7 @@ async def complete_task(
         raise not_found()
     task.status = "completed"
     task.completed_at = datetime.now(UTC)
-    await session.commit()
+    await commit_revision(session)
     await session.refresh(task)
     return task
 

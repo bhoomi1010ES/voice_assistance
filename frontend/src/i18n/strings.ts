@@ -1,4 +1,18 @@
 export const strings = {
+  planning: {
+    normal: 'Normal mode',
+    plan: 'Plan mode',
+    on: 'Plan Mode is on',
+    unavailable: 'Planning state unavailable',
+    pending: 'Waiting for server acknowledgement…',
+    foundationNotice:
+      'Planning mode is ready. Automatic tasks and reminders are not available yet.',
+    noPlan: 'No active plan',
+    selectPlan: 'Select plan',
+    refreshPlans: 'Refresh plans',
+    loading: 'Loading plans…',
+    loadError: 'Plans could not be loaded. Try refreshing.',
+  },
   appName: 'Voice Assistant',
   bootstrap: {
     loading: 'Starting Voice Assistant…',

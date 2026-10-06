@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.memory.repository import MemoryRepository
 from app.models import ConversationTurn, Message, VoiceSession
+from app.planning.service import revoke_session_state
 from app.services.auth import AuthPrincipal
 
 
@@ -46,6 +47,7 @@ class VoicePersistence:
         session_id: uuid.UUID,
         *,
         reconnect_grace_seconds: int,
+        active_stale_after_seconds: int | None = None,
     ) -> VoiceSession | None:
         result = await db.execute(
             select(VoiceSession)
@@ -64,7 +66,15 @@ class VoicePersistence:
             session.status == "disconnected"
             and session.ended_at is not None
             and (utc_now() - session.ended_at).total_seconds() > reconnect_grace_seconds
+        ) or (
+            session.status == "active"
+            and active_stale_after_seconds is not None
+            and (utc_now() - session.last_activity_at).total_seconds() > active_stale_after_seconds
         ):
+            await revoke_session_state(db, principal.user_id, session_id)
+            session.status = "timed_out"
+            session.close_reason = "resume_expired"
+            session.ended_at = utc_now()
             return None
         session.status = "active"
         session.ended_at = None
@@ -105,6 +115,7 @@ class VoicePersistence:
 
         ended_at = utc_now()
         for session in sessions:
+            await revoke_session_state(db, principal.user_id, session.id)
             session.status = "disconnected"
             session.ended_at = ended_at
             session.last_activity_at = ended_at
@@ -230,16 +241,21 @@ class VoicePersistence:
         error_count: int,
     ) -> VoiceSession | None:
         voice_session = await db.scalar(
-            select(VoiceSession).where(
+            select(VoiceSession)
+            .where(
                 VoiceSession.id == session_id,
                 VoiceSession.user_id == principal.user_id,
                 VoiceSession.device_id == principal.device_id,
                 VoiceSession.auth_session_id == principal.session_id,
             )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         if voice_session is None or voice_session.ended_at is not None:
             return voice_session
 
+        if status != "disconnected":
+            await revoke_session_state(db, principal.user_id, session_id)
         voice_session.status = status
         voice_session.ended_at = utc_now()
         voice_session.last_activity_at = voice_session.ended_at
@@ -273,6 +289,7 @@ class VoicePersistence:
                 VoiceSession.device_id == principal.device_id,
                 VoiceSession.auth_session_id == principal.session_id,
             )
+            .execution_options(populate_existing=True)
         )
         if turn is None:
             return None

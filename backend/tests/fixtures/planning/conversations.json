@@ -1,0 +1,2022 @@
+{
+  "schema_version": "plan-fixtures-v1",
+  "policy_version": "plan-v1",
+  "description": "Synthetic human-authored labels, not extraction outputs or measured accuracy. Freeze held_out before tuning. AUTO means eligible after all server gates, never authorization by a model.",
+  "cases": [
+    {
+      "id": "supplied_xyz",
+      "split": "development",
+      "tags": [
+        "supplied",
+        "multi_action",
+        "context",
+        "actor"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": null,
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "We're starting XYZ. The backend will use FastAPI and PostgreSQL. I need the initial backend running tomorrow. The presentation and report must be ready Friday. We have a client meeting Friday at 4 PM.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_PLAN",
+              "disposition": "AUTO",
+              "title": "XYZ",
+              "actor": "team",
+              "source": {
+                "start": 0,
+                "length": 19,
+                "text": "We're starting XYZ."
+              }
+            },
+            {
+              "operation": "ADD_PLAN_CONTEXT",
+              "disposition": "AUTO",
+              "title": "FastAPI and PostgreSQL",
+              "actor": "context",
+              "source": {
+                "start": 20,
+                "length": 44,
+                "text": "The backend will use FastAPI and PostgreSQL."
+              }
+            },
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Initial backend",
+              "actor": "user",
+              "local_at": "2026-10-06T23:59:00",
+              "utc_at": "2026-10-07T06:59:00Z",
+              "source": {
+                "start": 65,
+                "length": 44,
+                "text": "I need the initial backend running tomorrow."
+              },
+              "temporal_source": {
+                "start": 100,
+                "length": 8,
+                "text": "tomorrow"
+              }
+            },
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Presentation",
+              "actor": "team",
+              "local_at": "2026-10-09T23:59:00",
+              "utc_at": "2026-10-10T06:59:00Z",
+              "source": {
+                "start": 110,
+                "length": 49,
+                "text": "The presentation and report must be ready Friday."
+              },
+              "temporal_source": {
+                "start": 152,
+                "length": 6,
+                "text": "Friday"
+              }
+            },
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Report",
+              "actor": "team",
+              "local_at": "2026-10-09T23:59:00",
+              "utc_at": "2026-10-10T06:59:00Z",
+              "source": {
+                "start": 110,
+                "length": 49,
+                "text": "The presentation and report must be ready Friday."
+              },
+              "temporal_source": {
+                "start": 152,
+                "length": 6,
+                "text": "Friday"
+              }
+            },
+            {
+              "operation": "CREATE_REMINDER",
+              "disposition": "AUTO",
+              "title": "Client meeting",
+              "actor": "team",
+              "local_at": "2026-10-09T16:00:00",
+              "utc_at": "2026-10-09T23:00:00Z",
+              "source": {
+                "start": 160,
+                "length": 40,
+                "text": "We have a client meeting Friday at 4 PM."
+              },
+              "temporal_source": {
+                "start": 185,
+                "length": 14,
+                "text": "Friday at 4 PM"
+              }
+            }
+          ]
+        }
+      ],
+      "notes": "No setup tasks from technology context; one meeting reminder at event time."
+    },
+    {
+      "id": "technology_only",
+      "split": "development",
+      "tags": [
+        "information",
+        "no_invented_tasks"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "The backend uses FastAPI.",
+          "expected_actions": [
+            {
+              "operation": "ADD_PLAN_CONTEXT",
+              "disposition": "AUTO",
+              "title": "FastAPI",
+              "actor": "context",
+              "source": {
+                "start": 0,
+                "length": 25,
+                "text": "The backend uses FastAPI."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reference",
+      "split": "development",
+      "tags": [
+        "reference",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "The tutorial says to configure PostgreSQL.",
+          "expected_actions": []
+        }
+      ]
+    },
+    {
+      "id": "tentative",
+      "split": "development",
+      "tags": [
+        "intention",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I'm thinking about starting a project.",
+          "expected_actions": []
+        }
+      ]
+    },
+    {
+      "id": "concrete_intention",
+      "split": "development",
+      "tags": [
+        "intention",
+        "positive"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I want to start the backend tomorrow.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Start backend",
+              "actor": "user",
+              "local_at": "2026-10-06T23:59:00",
+              "source": {
+                "start": 0,
+                "length": 37,
+                "text": "I want to start the backend tomorrow."
+              },
+              "temporal_source": {
+                "start": 28,
+                "length": 8,
+                "text": "tomorrow"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "commitment",
+      "split": "development",
+      "tags": [
+        "commitment",
+        "positive"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "We need to finish the backend by Wednesday.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Finish backend",
+              "actor": "team",
+              "local_at": "2026-10-07T23:59:00",
+              "source": {
+                "start": 0,
+                "length": 43,
+                "text": "We need to finish the backend by Wednesday."
+              },
+              "temporal_source": {
+                "start": 33,
+                "length": 9,
+                "text": "Wednesday"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "negated",
+      "split": "development",
+      "tags": [
+        "negation",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I don't need to finish the report Friday.",
+          "expected_actions": []
+        }
+      ]
+    },
+    {
+      "id": "historical",
+      "split": "development",
+      "tags": [
+        "historical",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I finished a backend last year.",
+          "expected_actions": []
+        }
+      ]
+    },
+    {
+      "id": "quoted",
+      "split": "development",
+      "tags": [
+        "quote",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Alice said, \"I need to finish the report Friday.\"",
+          "expected_actions": []
+        }
+      ]
+    },
+    {
+      "id": "hypothetical",
+      "split": "development",
+      "tags": [
+        "hypothetical",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "If we started XYZ, we would need a report Friday.",
+          "expected_actions": []
+        }
+      ]
+    },
+    {
+      "id": "question",
+      "split": "development",
+      "tags": [
+        "question",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Should I finish the report Friday?",
+          "expected_actions": []
+        }
+      ]
+    },
+    {
+      "id": "third_party",
+      "split": "development",
+      "tags": [
+        "actor",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Alice might finish her report Friday.",
+          "expected_actions": []
+        }
+      ]
+    },
+    {
+      "id": "read_only",
+      "split": "development",
+      "tags": [
+        "query",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "What tasks do I have?",
+          "expected_actions": []
+        }
+      ]
+    },
+    {
+      "id": "undated_task",
+      "split": "development",
+      "tags": [
+        "undated",
+        "positive"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I need to write the report.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Write report",
+              "actor": "user",
+              "source": {
+                "start": 0,
+                "length": 27,
+                "text": "I need to write the report."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ambiguous_time",
+      "split": "development",
+      "tags": [
+        "temporal",
+        "clarify"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "We have a meeting Friday at 4.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_REMINDER",
+              "disposition": "CLARIFY",
+              "title": "Meeting",
+              "actor": "team",
+              "reason": "ambiguous_time",
+              "source": {
+                "start": 0,
+                "length": 30,
+                "text": "We have a meeting Friday at 4."
+              },
+              "temporal_source": {
+                "start": 18,
+                "length": 11,
+                "text": "Friday at 4"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "after_lunch",
+      "split": "development",
+      "tags": [
+        "temporal",
+        "unsupported_anchor"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I need to finish the report after lunch.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "CLARIFY",
+              "title": "Finish report",
+              "actor": "user",
+              "reason": "unsupported_anchor",
+              "source": {
+                "start": 0,
+                "length": 40,
+                "text": "I need to finish the report after lunch."
+              },
+              "temporal_source": {
+                "start": 28,
+                "length": 11,
+                "text": "after lunch"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "before_meeting",
+      "split": "development",
+      "tags": [
+        "temporal",
+        "unsupported_anchor"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I need the report before the meeting.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "CLARIFY",
+              "title": "Report",
+              "actor": "user",
+              "reason": "unsupported_anchor",
+              "source": {
+                "start": 0,
+                "length": 37,
+                "text": "I need the report before the meeting."
+              },
+              "temporal_source": {
+                "start": 18,
+                "length": 18,
+                "text": "before the meeting"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "offset_not_discarded",
+      "split": "development",
+      "tags": [
+        "temporal",
+        "unsupported_offset"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I need the report three days before Friday.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "CLARIFY",
+              "title": "Report",
+              "actor": "user",
+              "reason": "unsupported_offset",
+              "source": {
+                "start": 0,
+                "length": 43,
+                "text": "I need the report three days before Friday."
+              },
+              "temporal_source": {
+                "start": 18,
+                "length": 24,
+                "text": "three days before Friday"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "next_week_range",
+      "split": "development",
+      "tags": [
+        "temporal",
+        "clarify"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I need to write the report next week.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "CLARIFY",
+              "title": "Write report",
+              "actor": "user",
+              "reason": "date_range",
+              "source": {
+                "start": 0,
+                "length": 37,
+                "text": "I need to write the report next week."
+              },
+              "temporal_source": {
+                "start": 27,
+                "length": 9,
+                "text": "next week"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "multi_date",
+      "split": "development",
+      "tags": [
+        "temporal",
+        "multi_action"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Monday I need to finish the API, Tuesday we have the client review, and by Friday I want the project ready.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Finish API",
+              "actor": "user",
+              "local_at": "2026-10-05T23:59:00",
+              "source": {
+                "start": 0,
+                "length": 31,
+                "text": "Monday I need to finish the API"
+              },
+              "temporal_source": {
+                "start": 0,
+                "length": 6,
+                "text": "Monday"
+              }
+            },
+            {
+              "operation": "CREATE_REMINDER",
+              "disposition": "CLARIFY",
+              "title": "Client review",
+              "actor": "team",
+              "reason": "missing_time",
+              "source": {
+                "start": 33,
+                "length": 33,
+                "text": "Tuesday we have the client review"
+              },
+              "temporal_source": {
+                "start": 33,
+                "length": 7,
+                "text": "Tuesday"
+              }
+            },
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Project ready",
+              "actor": "user",
+              "local_at": "2026-10-09T23:59:00",
+              "source": {
+                "start": 72,
+                "length": 35,
+                "text": "by Friday I want the project ready."
+              },
+              "temporal_source": {
+                "start": 75,
+                "length": 6,
+                "text": "Friday"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "correction",
+      "split": "development",
+      "tags": [
+        "correction",
+        "revision"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": [
+          {
+            "ref": "presentation_1",
+            "kind": "task",
+            "title": "Presentation",
+            "plan": "XYZ",
+            "revision": 3,
+            "status": "pending"
+          }
+        ]
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Actually, make the presentation Thursday.",
+          "expected_actions": [
+            {
+              "operation": "UPDATE_TASK",
+              "disposition": "AUTO",
+              "title": "Presentation",
+              "actor": "user",
+              "local_at": "2026-10-08T23:59:00",
+              "target_ref": "presentation_1",
+              "target_revision": 3,
+              "source": {
+                "start": 0,
+                "length": 41,
+                "text": "Actually, make the presentation Thursday."
+              },
+              "temporal_source": {
+                "start": 32,
+                "length": 8,
+                "text": "Thursday"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ambiguous_target",
+      "split": "development",
+      "tags": [
+        "correction",
+        "ambiguous_target"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": [
+          {
+            "ref": "presentation_1",
+            "kind": "task",
+            "title": "Presentation",
+            "plan": "XYZ",
+            "revision": 3,
+            "status": "pending"
+          },
+          {
+            "ref": "presentation_2",
+            "kind": "task",
+            "title": "Presentation",
+            "plan": "XYZ",
+            "revision": 3,
+            "status": "pending"
+          }
+        ]
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Actually, make the presentation Thursday.",
+          "expected_actions": [
+            {
+              "operation": "UPDATE_TASK",
+              "disposition": "CLARIFY",
+              "title": "Presentation",
+              "actor": "user",
+              "reason": "ambiguous_target",
+              "source": {
+                "start": 0,
+                "length": 41,
+                "text": "Actually, make the presentation Thursday."
+              },
+              "temporal_source": {
+                "start": 32,
+                "length": 8,
+                "text": "Thursday"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "completion",
+      "split": "development",
+      "tags": [
+        "completion",
+        "revision"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": [
+          {
+            "ref": "backend_1",
+            "kind": "task",
+            "title": "Backend",
+            "plan": "XYZ",
+            "revision": 2,
+            "status": "pending"
+          }
+        ]
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I finished the backend.",
+          "expected_actions": [
+            {
+              "operation": "COMPLETE_TASK",
+              "disposition": "AUTO",
+              "title": "Backend",
+              "actor": "user",
+              "target_ref": "backend_1",
+              "target_revision": 2,
+              "source": {
+                "start": 0,
+                "length": 23,
+                "text": "I finished the backend."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cross_owner",
+      "split": "development",
+      "tags": [
+        "ownership",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Move Alice's report to Thursday.",
+          "expected_actions": [
+            {
+              "operation": "UPDATE_TASK",
+              "disposition": "DENY",
+              "title": "Alice's report",
+              "actor": "user",
+              "reason": "unowned_target",
+              "source": {
+                "start": 0,
+                "length": 32,
+                "text": "Move Alice's report to Thursday."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cancel",
+      "split": "development",
+      "tags": [
+        "destructive",
+        "confirmation"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": [
+          {
+            "ref": "presentation_1",
+            "kind": "task",
+            "title": "Presentation",
+            "plan": "XYZ",
+            "revision": 3,
+            "status": "pending"
+          }
+        ]
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Cancel the presentation task.",
+          "expected_actions": [
+            {
+              "operation": "CANCEL",
+              "disposition": "CONFIRM",
+              "title": "Presentation",
+              "actor": "user",
+              "target_ref": "presentation_1",
+              "target_revision": 3,
+              "source": {
+                "start": 0,
+                "length": 29,
+                "text": "Cancel the presentation task."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "external",
+      "split": "development",
+      "tags": [
+        "external",
+        "deny"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Send the client our report Friday.",
+          "expected_actions": [
+            {
+              "operation": "SEND_MESSAGE",
+              "disposition": "DENY",
+              "title": "Send report",
+              "actor": "user",
+              "reason": "unsupported_external_operation",
+              "source": {
+                "start": 0,
+                "length": 34,
+                "text": "Send the client our report Friday."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "daily_recurrence",
+      "split": "development",
+      "tags": [
+        "recurrence",
+        "positive"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Remind me every day at 9 AM to take vitamins.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_REMINDER",
+              "disposition": "AUTO",
+              "title": "Take vitamins",
+              "actor": "user",
+              "recurrence": "FREQ=DAILY",
+              "local_at": "2026-10-06T09:00:00",
+              "source": {
+                "start": 0,
+                "length": 45,
+                "text": "Remind me every day at 9 AM to take vitamins."
+              },
+              "temporal_source": {
+                "start": 10,
+                "length": 17,
+                "text": "every day at 9 AM"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "monthly_recurrence",
+      "split": "development",
+      "tags": [
+        "recurrence",
+        "clarify"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Remind me on the last business day of every month to send invoices.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_REMINDER",
+              "disposition": "CLARIFY",
+              "title": "Send invoices",
+              "actor": "user",
+              "reason": "unsupported_recurrence",
+              "source": {
+                "start": 0,
+                "length": 67,
+                "text": "Remind me on the last business day of every month to send invoices."
+              },
+              "temporal_source": {
+                "start": 17,
+                "length": 32,
+                "text": "last business day of every month"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "normal_mode",
+      "split": "development",
+      "tags": [
+        "consent",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "normal",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I need to finish the report Friday.",
+          "expected_actions": []
+        }
+      ],
+      "notes": "No inferred proposal. Explicit manual tools retain their existing confirmation rules."
+    },
+    {
+      "id": "private_session",
+      "split": "development",
+      "tags": [
+        "privacy",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": true,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I need to finish the report Friday.",
+          "expected_actions": []
+        }
+      ],
+      "notes": "No inferred persistence, proposal content or shadow extraction."
+    },
+    {
+      "id": "memory_disabled",
+      "split": "development",
+      "tags": [
+        "privacy",
+        "positive"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": false,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I need to finish the report Friday.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Finish report",
+              "actor": "user",
+              "local_at": "2026-10-09T23:59:00",
+              "source": {
+                "start": 0,
+                "length": 35,
+                "text": "I need to finish the report Friday."
+              },
+              "temporal_source": {
+                "start": 28,
+                "length": 6,
+                "text": "Friday"
+              }
+            }
+          ]
+        }
+      ],
+      "notes": "Explicit plan consent permits structured organization; personal memory remains disabled."
+    },
+    {
+      "id": "enable_control",
+      "split": "development",
+      "tags": [
+        "control",
+        "consent"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "normal",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Enable plan mode.",
+          "expected_actions": [],
+          "expected_control": "enable"
+        }
+      ]
+    },
+    {
+      "id": "disable_control",
+      "split": "development",
+      "tags": [
+        "control",
+        "revocation"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Stop planning.",
+          "expected_actions": [],
+          "expected_control": "disable"
+        }
+      ]
+    },
+    {
+      "id": "quoted_control",
+      "split": "development",
+      "tags": [
+        "control",
+        "quote",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "normal",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Alice said \"enable plan mode\".",
+          "expected_actions": [],
+          "expected_control": null
+        }
+      ]
+    },
+    {
+      "id": "select_plan",
+      "split": "development",
+      "tags": [
+        "control",
+        "identity"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Select plan XYZ.",
+          "expected_actions": [],
+          "expected_control": "select",
+          "plan_name": "XYZ"
+        }
+      ]
+    },
+    {
+      "id": "mixed_enable",
+      "split": "development",
+      "tags": [
+        "control",
+        "activation_boundary"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "normal",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Enable plan mode and I need the report Friday.",
+          "expected_actions": [],
+          "expected_control": null
+        }
+      ],
+      "notes": "PM-1 supports whole direct controls only. Mixed activation requires clarification/direct control first; no retroactive inference."
+    },
+    {
+      "id": "duplicate_plan_name",
+      "split": "development",
+      "tags": [
+        "identity",
+        "ambiguity"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": null,
+        "owned_targets": [
+          {
+            "ref": "plan_1",
+            "kind": "plan",
+            "title": "XYZ",
+            "status": "active",
+            "revision": 1
+          },
+          {
+            "ref": "plan_2",
+            "kind": "plan",
+            "title": "XYZ",
+            "status": "active",
+            "revision": 1
+          }
+        ]
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Use plan XYZ.",
+          "expected_actions": [],
+          "expected_control": "select",
+          "control_outcome": "CLARIFY"
+        }
+      ]
+    },
+    {
+      "id": "replay",
+      "split": "development",
+      "tags": [
+        "replay",
+        "midnight"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I need the report tomorrow.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Report",
+              "actor": "user",
+              "local_at": "2026-10-06T23:59:00",
+              "source": {
+                "start": 0,
+                "length": 27,
+                "text": "I need the report tomorrow."
+              },
+              "temporal_source": {
+                "start": 18,
+                "length": 8,
+                "text": "tomorrow"
+              }
+            }
+          ]
+        },
+        {
+          "id": "retry1",
+          "transcript": "I need the report tomorrow.",
+          "retry_of": "t1",
+          "clock": "2026-10-07T08:00:00Z",
+          "expected_actions": [],
+          "expected_replay_of": "t1",
+          "notes": "Reuse frozen original batch/date/action identity; no new extraction or writes."
+        }
+      ]
+    },
+    {
+      "id": "conversational_duplicate",
+      "split": "development",
+      "tags": [
+        "duplicate",
+        "multi_turn"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I need to prepare the presentation Friday.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Prepare presentation",
+              "actor": "user",
+              "local_at": "2026-10-09T23:59:00",
+              "source": {
+                "start": 0,
+                "length": 42,
+                "text": "I need to prepare the presentation Friday."
+              },
+              "temporal_source": {
+                "start": 35,
+                "length": 6,
+                "text": "Friday"
+              }
+            }
+          ]
+        },
+        {
+          "id": "t2",
+          "transcript": "The presentation still needs to be prepared by Friday.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "NO_ACTION",
+              "title": "Prepare presentation",
+              "actor": "team",
+              "reason": "duplicate",
+              "target_ref": "t1:0",
+              "source": {
+                "start": 0,
+                "length": 54,
+                "text": "The presentation still needs to be prepared by Friday."
+              },
+              "temporal_source": {
+                "start": 47,
+                "length": 6,
+                "text": "Friday"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "overflow",
+      "split": "development",
+      "tags": [
+        "bounds",
+        "overflow"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I need to do A, B, C, D, E, F, G, H and I.",
+          "expected_actions": [],
+          "batch_outcome": "CLARIFY",
+          "reason": "action_overflow",
+          "grounded_action_count": 9
+        }
+      ],
+      "notes": "Do not silently truncate to eight."
+    },
+    {
+      "id": "heldout_negation",
+      "split": "held_out",
+      "tags": [
+        "negation",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Don't add buying paint to my plan.",
+          "expected_actions": []
+        }
+      ]
+    },
+    {
+      "id": "heldout_question",
+      "split": "held_out",
+      "tags": [
+        "question",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Would it help to prepare slides next Tuesday?",
+          "expected_actions": []
+        }
+      ]
+    },
+    {
+      "id": "heldout_reference",
+      "split": "held_out",
+      "tags": [
+        "reference",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "The sample project lists writing a report as step one.",
+          "expected_actions": []
+        }
+      ]
+    },
+    {
+      "id": "heldout_team",
+      "split": "held_out",
+      "tags": [
+        "actor",
+        "positive"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Our team must deliver the demo Thursday.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Deliver demo",
+              "actor": "team",
+              "local_at": "2026-10-08T23:59:00",
+              "source": {
+                "start": 0,
+                "length": 40,
+                "text": "Our team must deliver the demo Thursday."
+              },
+              "temporal_source": {
+                "start": 31,
+                "length": 8,
+                "text": "Thursday"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "heldout_mixed",
+      "split": "held_out",
+      "tags": [
+        "negation",
+        "multi_action"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Don't schedule a review. I need to finish the slides tomorrow.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Finish slides",
+              "actor": "user",
+              "local_at": "2026-10-06T23:59:00",
+              "source": {
+                "start": 25,
+                "length": 37,
+                "text": "I need to finish the slides tomorrow."
+              },
+              "temporal_source": {
+                "start": 53,
+                "length": 8,
+                "text": "tomorrow"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "heldout_anchor",
+      "split": "held_out",
+      "tags": [
+        "temporal",
+        "unsupported_anchor"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I need to publish the draft after dinner.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "CLARIFY",
+              "title": "Publish draft",
+              "actor": "user",
+              "reason": "unsupported_anchor",
+              "source": {
+                "start": 0,
+                "length": 41,
+                "text": "I need to publish the draft after dinner."
+              },
+              "temporal_source": {
+                "start": 28,
+                "length": 12,
+                "text": "after dinner"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "heldout_undated",
+      "split": "held_out",
+      "tags": [
+        "undated",
+        "positive"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "I will write the integration tests.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_TASK",
+              "disposition": "AUTO",
+              "title": "Write integration tests",
+              "actor": "user",
+              "source": {
+                "start": 0,
+                "length": 35,
+                "text": "I will write the integration tests."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "heldout_external",
+      "split": "held_out",
+      "tags": [
+        "external",
+        "deny"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Book a flight to Delhi for Friday.",
+          "expected_actions": [
+            {
+              "operation": "BOOK_TRAVEL",
+              "disposition": "DENY",
+              "title": "Book flight",
+              "actor": "user",
+              "reason": "unsupported_external_operation",
+              "source": {
+                "start": 0,
+                "length": 34,
+                "text": "Book a flight to Delhi for Friday."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "heldout_missing_time",
+      "split": "held_out",
+      "tags": [
+        "temporal",
+        "clarify"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "We have a design review Wednesday.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_REMINDER",
+              "disposition": "CLARIFY",
+              "title": "Design review",
+              "actor": "team",
+              "reason": "missing_time",
+              "source": {
+                "start": 0,
+                "length": 34,
+                "text": "We have a design review Wednesday."
+              },
+              "temporal_source": {
+                "start": 24,
+                "length": 9,
+                "text": "Wednesday"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "heldout_quote",
+      "split": "held_out",
+      "tags": [
+        "quote",
+        "negative"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "The document says \"I will finish the slides tomorrow\".",
+          "expected_actions": []
+        }
+      ]
+    },
+    {
+      "id": "dst_nonexistent",
+      "split": "held_out",
+      "tags": [
+        "temporal",
+        "dst"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Remind me on March 14 2027 at 2:30 AM to call home.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_REMINDER",
+              "disposition": "CLARIFY",
+              "title": "Call home",
+              "actor": "user",
+              "reason": "nonexistent_local_time",
+              "source": {
+                "start": 0,
+                "length": 51,
+                "text": "Remind me on March 14 2027 at 2:30 AM to call home."
+              },
+              "temporal_source": {
+                "start": 13,
+                "length": 24,
+                "text": "March 14 2027 at 2:30 AM"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dst_ambiguous",
+      "split": "held_out",
+      "tags": [
+        "temporal",
+        "dst"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Remind me on November 1 2026 at 1:30 AM to call home.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_REMINDER",
+              "disposition": "CLARIFY",
+              "title": "Call home",
+              "actor": "user",
+              "reason": "ambiguous_local_time",
+              "source": {
+                "start": 0,
+                "length": 53,
+                "text": "Remind me on November 1 2026 at 1:30 AM to call home."
+              },
+              "temporal_source": {
+                "start": 13,
+                "length": 26,
+                "text": "November 1 2026 at 1:30 AM"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "past_time",
+      "split": "held_out",
+      "tags": [
+        "temporal",
+        "past"
+      ],
+      "clock": "2026-10-05T16:00:00Z",
+      "timezone": "America/Los_Angeles",
+      "initial": {
+        "mode": "plan",
+        "memory_excluded": false,
+        "memory_enabled": true,
+        "active_plan": "XYZ",
+        "owned_targets": []
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "transcript": "Remind me today at 8 AM to call home.",
+          "expected_actions": [
+            {
+              "operation": "CREATE_REMINDER",
+              "disposition": "CLARIFY",
+              "title": "Call home",
+              "actor": "user",
+              "reason": "past_time",
+              "source": {
+                "start": 0,
+                "length": 37,
+                "text": "Remind me today at 8 AM to call home."
+              },
+              "temporal_source": {
+                "start": 10,
+                "length": 13,
+                "text": "today at 8 AM"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

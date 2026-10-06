@@ -95,6 +95,8 @@ class VoiceWebSocketTransport(
     )
 
     data class ServerEventPayload(
+        val planningJson: String? = null,
+        val requestEventId: String? = null,
         val text: String? = null,
         val delta: String? = null,
         val isFinal: Boolean? = null,
@@ -845,6 +847,28 @@ class VoiceWebSocketTransport(
                 .put("transcript", transcript),
         )
         notifyStatus()
+        return Result(true)
+    }
+
+    fun setPlanningMode(sessionId: String, version: Int, mode: String, eventId: String): Result {
+        if (mode != "normal" && mode != "plan") return Result(false, "E_VOICE_PLANNING", "Invalid mode.")
+        return planningControl(sessionId, version, eventId, JSONObject()
+            .put("type", "client.planning.set_mode").put("mode", mode))
+    }
+
+    fun selectPlan(sessionId: String, version: Int, planId: String?, eventId: String): Result {
+        return planningControl(sessionId, version, eventId, JSONObject()
+            .put("type", "client.planning.select_plan").put("plan_id", planId ?: JSONObject.NULL))
+    }
+
+    private fun planningControl(sessionId: String, version: Int, eventId: String, message: JSONObject): Result {
+        synchronized(stateLock) {
+            if (!status.connected || !status.sessionStarted || status.sessionId != sessionId || version < 1) {
+                return Result(false, "E_VOICE_STATE", "The voice session is not ready for planning.")
+            }
+        }
+        message.put("session_id", sessionId).put("expected_state_version", version).put("event_id", eventId)
+        postControl(message)
         return Result(true)
     }
 
@@ -1872,7 +1896,8 @@ class VoiceWebSocketTransport(
         val isTool = eventType == "tool.status" ||
             eventType == "confirmation.required" ||
             eventType == "confirmation.resolved"
-        if (!isTranscript && !isAssistant && !isError && !isTool) {
+        val isPlanning = eventType.startsWith("server.planning.") || eventType == "server.session.ready"
+        if (!isTranscript && !isAssistant && !isError && !isTool && !isPlanning) {
             return null
         }
 
@@ -1908,6 +1933,8 @@ class VoiceWebSocketTransport(
             null
         }
         return ServerEventPayload(
+            planningJson = json.optJSONObject("planning")?.toString()?.takeIf { it.length <= 4096 },
+            requestEventId = json.optStringOrNull("request_event_id")?.takeIf { it.length <= 128 },
             text = text,
             delta = delta,
             isFinal = isFinal,

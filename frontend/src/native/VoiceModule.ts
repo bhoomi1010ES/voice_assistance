@@ -749,6 +749,8 @@ export type VoiceGatewayStatus = {
 };
 
 export type VoiceGatewayEvent = {
+  planningJson?: string | null;
+  requestEventId?: string | null;
   connectionGeneration?: number;
   event: string;
   sessionId: string | null;
@@ -911,6 +913,18 @@ type NativeVoiceModule = {
     reason?: string | null,
   ) => Promise<VoiceGatewayStatus>;
   resetVoiceConversation: () => Promise<VoiceGatewayStatus>;
+  setVoicePlanningMode: (
+    sessionId: string,
+    version: number,
+    mode: string,
+    eventId: string,
+  ) => Promise<VoiceGatewayStatus>;
+  selectVoicePlan: (
+    sessionId: string,
+    version: number,
+    planId: string | null,
+    eventId: string,
+  ) => Promise<VoiceGatewayStatus>;
   stopVoicePlayback: () => Promise<VoiceGatewayStatus>;
   getVoiceOutputPreferences: () => Promise<VoiceOutputPreferences>;
   setVoiceOutputEnabled: (enabled: boolean) => Promise<VoiceOutputPreferences>;
@@ -1272,5 +1286,33 @@ export async function requestMicrophonePermission(): Promise<string> {
       buttonPositive: 'Allow',
       buttonNegative: 'Deny',
     },
+  );
+}
+
+export async function setVoicePlanningMode(
+  sessionId: string,
+  version: number,
+  mode: 'normal' | 'plan',
+  eventId: string,
+): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().setVoicePlanningMode(
+    sessionId,
+    version,
+    mode,
+    eventId,
+  );
+}
+
+export async function selectVoicePlan(
+  sessionId: string,
+  version: number,
+  planId: string | null,
+  eventId: string,
+): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().selectVoicePlan(
+    sessionId,
+    version,
+    planId,
+    eventId,
   );
 }

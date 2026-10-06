@@ -15,6 +15,7 @@ from app.memory.retrieval import MemoryRetrievalService
 from app.memory.worker_service import MemoryWorkerService
 from app.okf.shadow import ShadowReadCapacity
 from app.okf.worker_service import OkfWorkerService
+from app.planning.observer import PlanningObserver
 from app.reminders.worker_service import ReminderWorkerService
 from app.routing.service import DecisionRouterService
 from app.services.infrastructure import Infrastructure
@@ -40,9 +41,7 @@ def create_app(
             shadow_semaphore=asyncio.Semaphore(app_settings.router_shadow_max_concurrent),
         )
         app.state.router_decision_service = router_service
-        app.state.okf_shadow_capacity = ShadowReadCapacity(
-            app_settings.okf_shadow_max_concurrent
-        )
+        app.state.okf_shadow_capacity = ShadowReadCapacity(app_settings.okf_shadow_max_concurrent)
         if router_service.is_active():
             warm_started = time.perf_counter()
             warmed = router_service.warm_graph()
@@ -58,6 +57,11 @@ def create_app(
         active_infrastructure = infrastructure or Infrastructure(app_settings)
         active_stt_service = stt_service or STTService(app_settings)
         active_llm_service = llm_service or LLMService(app_settings)
+        planning_observer = PlanningObserver(
+            app_settings,
+            active_llm_service,
+            getattr(getattr(active_infrastructure, "database", None), "session_factory", None),
+        )
         active_tts_service = tts_service or TTSService(app_settings)
         embedding_provider = None
         reranker = None
@@ -83,6 +87,7 @@ def create_app(
             app.state.infrastructure = active_infrastructure
             app.state.stt_service = active_stt_service
             app.state.llm_service = active_llm_service
+            app.state.planning_observer = planning_observer
             app.state.tts_service = active_tts_service
             app.state.memory_service = memory_service
             if app_settings.memory_write_enabled:
@@ -120,6 +125,7 @@ def create_app(
             yield
         finally:
             try:
+                await planning_observer.close()
                 if reminder_worker is not None:
                     await reminder_worker.stop()
                 if okf_worker is not None:

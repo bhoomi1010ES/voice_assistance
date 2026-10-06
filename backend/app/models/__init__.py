@@ -1,6 +1,13 @@
 """SQLAlchemy models."""
 
 from app.models.auth import AuditLog, AuthSession, Device, User
+from app.models.planning import (
+    Plan,
+    PlanContextItem,
+    PlanningAction,
+    PlanningBatch,
+    PlanningSession,
+)
 from app.models.resources import (
     Entity,
     EntityAlias,
@@ -22,6 +29,11 @@ from app.models.resources import (
 from app.models.voice import ConversationTurn, VoiceSession
 
 __all__ = [
+    "Plan",
+    "PlanContextItem",
+    "PlanningAction",
+    "PlanningBatch",
+    "PlanningSession",
     "AuditLog",
     "AuthSession",
     "ConversationTurn",

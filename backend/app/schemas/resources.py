@@ -102,6 +102,7 @@ TaskPriority = Literal["low", "normal", "high", "urgent"]
 
 
 class TaskCreateRequest(StrictSchema):
+    plan_id: uuid.UUID | None = None
     title: str = Field(min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=100_000)
     due_at: datetime | None = None
@@ -127,6 +128,8 @@ class TaskCreateRequest(StrictSchema):
 
 
 class TaskUpdateRequest(StrictSchema):
+    plan_id: uuid.UUID | None = None
+    expected_revision: int | None = Field(default=None, ge=1)
     title: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=100_000)
     status: TaskStatus | None = None
@@ -157,6 +160,9 @@ class TaskUpdateRequest(StrictSchema):
 
 
 class TaskResponse(BaseModel):
+    plan_id: uuid.UUID | None = None
+    planning_action_id: uuid.UUID | None = None
+    revision: int = 1
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -178,6 +184,7 @@ ReminderStatus = Literal["scheduled", "sent", "failed", "cancelled"]
 
 
 class ReminderCreateRequest(StrictSchema):
+    plan_id: uuid.UUID | None = None
     title: str = Field(min_length=1, max_length=255)
     body: str | None = Field(default=None, max_length=100_000)
     trigger_at: datetime
@@ -205,6 +212,8 @@ class ReminderCreateRequest(StrictSchema):
 
 
 class ReminderUpdateRequest(StrictSchema):
+    plan_id: uuid.UUID | None = None
+    expected_revision: int | None = Field(default=None, ge=1)
     title: str | None = Field(default=None, min_length=1, max_length=255)
     body: str | None = Field(default=None, max_length=100_000)
     trigger_at: datetime | None = None
@@ -236,6 +245,10 @@ class ReminderUpdateRequest(StrictSchema):
 
 
 class ReminderResponse(BaseModel):
+    plan_id: uuid.UUID | None = None
+    planning_action_id: uuid.UUID | None = None
+    revision: int = 1
+    source_turn_id: uuid.UUID | None = None
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID

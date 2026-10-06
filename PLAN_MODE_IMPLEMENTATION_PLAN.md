@@ -1,7 +1,7 @@
 # Conversational Plan Mode implementation plan
 
 **Verified:** 2026-10-05, America/Los_Angeles.  
-**Status:** Planning only; no feature code implemented or changed during this review.  
+**Status:** PM-0 contracts/baseline, PM-1 source and PM-2 shadow extraction/evaluation are implemented on 2026-10-05. The PM-2 live quality gate is not met; PM-3 onward remain pending. Live database/native acceptance is not established. See the [frozen PM-0 contract](docs/PLAN_MODE_CONTRACT_V1.md), [implementation-start baseline](docs/20261005_172513_pm0_baseline.json), [PM-1 work record](docs/20261005_171305_pm1_durable_planning_mode_.md) and [PM-2 work record](docs/20261005_185028_pm2_shadow_extraction_.md).
 **Scope:** The conversational Plan Mode described in the supplied `Pasted text.txt`.  
 **Parent plan:** [implementation.md](implementation.md). Related boundaries: [router plan](plan.md) and [OKF plan](OKF_IMPLEMENTATION_PLAN.md).
 
@@ -25,15 +25,18 @@ Expected: one XYZ plan, technology context, three tasks, and one push reminder a
 - [x] Run focused existing backend tests without building the backend or mobile application.
 - [x] Check multi-action time normalization with an in-memory diagnostic.
 - [x] Write implementation phases, file mapping, acceptance criteria, and rollback behavior.
-- [ ] Implement the feature in a future, explicitly requested code-change task.
+- [x] Implement PM-1 in the explicitly requested code-change task; see the work record.
+- [x] Complete PM-0 baseline, frozen contract, labeled fixtures and conservative rollout policy in the subsequent explicitly requested task.
+- [x] Implement PM-2 extraction/validation/observation/proposal storage and measure selected-provider quality; keep its unmet quality gate visible.
+- [ ] Implement the remaining phases.
 
 The working tree already contained backend/frontend code edits, plan edits, and the untracked `0020_user_knowledge_mode.py` migration before this task. These are existing owner changes and must be preserved. Historical OKF/router documents contain dated snapshots; their old migration heads and flag values are not current-source facts.
 
 This review did not inspect secret `.env` values, query live databases, change records, contact model providers, apply migrations, or verify physical Android behavior. Runtime rollout/readiness is not established by this document. Some scratch directories are inaccessible; application source and the selected tests were accessible.
 
-## 3. Verified current codebase
+## 3. Review baseline before PM-1 implementation
 
-All paths in this table refer to current files. Proposed files are listed separately in section 12.
+This table records the source review before PM-1 was implemented. The linked PM-1 work record describes the subsequent schema, API, transport and UI changes. Proposed remaining work is listed in section 12.
 
 | Area | Current evidence | Consequence |
 |---|---|---|
@@ -301,36 +304,46 @@ Existing task mutations are implemented in REST endpoints and tool handlers rath
 
 ## 13. Implementation phases and todo
 
-All feature items below are pending. Complete each phase's checks before marking it implemented.
+PM-0 contracts, PM-1 source and PM-2 source/evaluation items are implemented and covered by focused checks. PM-2's live quality gate is not met; PM-3 onward are pending. The frozen PM-0 contract governs behavior. Live PostgreSQL and Android acceptance remain separate from source/test completion.
 
 ### PM-0 — Freeze contracts and baseline
 
-- [ ] Record HEAD, existing working-tree changes, migration heads, effective non-secret settings, and applicable acceptance status at implementation start.
-- [ ] Freeze actionability examples, consent/private-session policy, session lifecycle, plan identity, date-only behavior, recurrence subset, and automatic-operation allowlist.
-- [ ] Add labeled conversation fixtures covering the supplied scenarios and negative/correction/replay cases.
-- [ ] Establish configuration defaults: `PLAN_MODE_ENABLED=false`, `PLAN_EXTRACTION_MODE=off` (`off|shadow|on`), `PLAN_AUTO_ACTIONS_ENABLED=false`, explicit test-owner allowlist, bounded timeout/concurrency/action count, and `PLAN_POLICY_VERSION=plan-v1`.
-- [ ] Require feature enablement plus extractor `on` plus auto flag plus active session consent for automatic writes. Shadow forbids persistence of actions/plan context; keep privacy-filtered observations only.
+- [x] Record HEAD, existing working-tree changes, migration heads, effective non-secret settings, and applicable acceptance status at implementation start.
+- [x] Freeze actionability examples, consent/private-session policy, session lifecycle, plan identity, date-only behavior, recurrence subset, and automatic-operation allowlist.
+- [x] Add labeled conversation fixtures covering the supplied scenarios and negative/correction/replay cases.
+- [x] Establish configuration defaults: `PLAN_MODE_ENABLED=false`, `PLAN_EXTRACTION_MODE=off` (`off|shadow|on`), `PLAN_AUTO_ACTIONS_ENABLED=false`, explicit test-owner allowlist, bounded timeout/concurrency/action count, and `PLAN_POLICY_VERSION=plan-v1`.
+- [x] Require feature enablement plus extractor `on` plus auto flag plus active session consent for automatic writes. Shadow forbids persistence of actions/plan context; keep privacy-filtered observations only.
 
 **Gate:** behavior is concrete and reviewable; all planning defaults preserve current behavior.
 
+**PM-0 validation:** 423 focused backend tests passed, one optional PostgreSQL test skipped; Ruff checks passed. The corpus freezes 53 conversations/55 turns (13 held-out conversations) and 12 lifecycle cases with a versioned checksum manifest. Defaults perform no extraction or automatic writes; the new policy computes eligibility only and is not an executor grant. Local `.env` is unchanged. Its existing OKF shadow/knowledge-mode conflict prevents startup configuration acceptance and is recorded in the baseline. PM-2 accuracy/latency and PM-3 execution acceptance remain pending. See the [PM-0 work record](docs/20261005_173845_pm0_contracts_baseline_.md).
+
 ### PM-1 — Durable schema and mode controls
 
-- [ ] Add owner-scoped plans/context, planning sessions, batches/actions, and nullable task/reminder grouping/provenance with revision checks.
-- [ ] Add mode enable/disable/select controls and shared voice recognition, server acknowledgements and resume snapshots.
-- [ ] Revoke state on reset/end/timeout/logout and serialize disable against execution.
-- [ ] Add compatible owner-scoped plan APIs and tests; existing task/reminder payloads continue working.
+- [x] Add owner-scoped plans/context, planning sessions, batches/actions, and nullable task/reminder grouping/provenance with revision checks.
+- [x] Add mode enable/disable/select controls and shared voice recognition, server acknowledgements and resume snapshots.
+- [x] Revoke state on reset/end/timeout/logout and serialize disable against execution.
+- [x] Add compatible owner-scoped plan APIs and tests; existing task/reminder payloads continue working.
 
 **Gate:** UI and voice can select a persistent session mode; this phase performs no inferred organizational writes.
 
+**PM-1 validation:** 345 focused backend tests passed, 51 focused Jest tests passed, TypeScript/ESLint/Prettier/Ruff checks passed. The optional real PostgreSQL barrier test was skipped because `PLAN_MODE_TEST_DATABASE_URL` is unset. Migration `0021_planning_foundation` is prepared, not applied to a live database. `PLAN_MODE_ENABLED` defaults to false; local `.env` was not changed. Android runtime verification remains pending.
+
 ### PM-2 — Extraction and validation in shadow
 
-- [ ] Implement one bounded structured extraction request per eligible final turn with the existing model service.
-- [ ] Validate source/action/temporal evidence, actor attribution, negation/quotes/hypotheticals, multi-action output, and active-plan context.
-- [ ] Add candidate-specific time resolution and unsupported-anchor/offset clarification.
-- [ ] Persist proposals only where privacy policy permits; shadow observes without mutations or response-path ownership.
-- [ ] Measure candidate precision, false actions, target ambiguity, duplicate decisions, timeout rate, and added latency using labeled fixtures and held-out conversations.
+- [x] Implement one bounded structured extraction request per eligible final turn with the existing model service.
+- [x] Validate source/action/temporal evidence, actor attribution, negation/quotes/hypotheticals, multi-action output, and active-plan context.
+- [x] Add candidate-specific time resolution and unsupported-anchor/offset clarification.
+- [x] Persist proposals only where privacy policy permits; shadow observes without mutations or response-path ownership.
+- [x] Measure candidate precision, false actions, target ambiguity, duplicate decisions, timeout rate, and added latency using labeled fixtures and held-out conversations.
 
 **Gate:** grounded proposals are accurate enough for the defined corpus; no shadow-created task/reminder/memory exists.
+
+**PM-2 validation:** 586 focused backend tests passed, one optional PostgreSQL test skipped; Ruff/format/whitespace checks passed. Shadow creates no organizational/proposal rows or memories; only privacy-filtered observation metadata is retained. Extractor `on` stores pending proposals only, never executes them. Labeled proposal replay validated 21/21 automatic labels and both ambiguity/duplicate cases; this is not model accuracy.
+
+**PM-2 gate remains open:** the final selected-provider v2 trial at a diagnostic 15-second bound matched 10/10 emitted automatic candidates but only 10/21 expected candidates (47.6% recall), clarified 1/1 ambiguous targets and missed 1/1 duplicate decisions. No timeouts or unmatched automatic candidates were observed; two extraction failures remained. The held-out split matched 3/3 positive candidates, an insufficiently broad sample to override the overall failure. Earlier v1 trials at the unchanged 3-second default had high timeout rates. Three paired foreground measurements found median added latency about 50 ms with substantial noise. No extraction/auto defaults or local `.env` values were enabled or changed. See the [work record](docs/20261005_185028_pm2_shadow_extraction_.md) and [final live report](docs/pm2_live_provider_15000ms_final.json).
+
+- [ ] Calibrate extraction/grounding/duplicate behavior and meet the overall live corpus gate before execution rollout; obtain acceptance at the intended runtime deadline.
 
 ### PM-3 — Policy and existing tool integration
 
@@ -407,4 +420,4 @@ Release requirements include zero observed unauthorized/destructive/external act
 
 ## 15. Completion definition
 
-The feature is complete when a user can explicitly enable Plan Mode, speak actionable plans naturally, receive accurate saved tasks/reminders and organized context without repeated organizational confirmation, correct the same plan across turns, and disable the mode reliably. All writes must remain owned, grounded, audited, replay-safe and governed by the operation-specific confirmation policy. The current work completes only the source review and implementation document; every implementation checkbox remains pending.
+The feature is complete when a user can explicitly enable Plan Mode, speak actionable plans naturally, receive accurate saved tasks/reminders and organized context without repeated organizational confirmation, correct the same plan across turns, and disable the mode reliably. All writes must remain owned, grounded, audited, replay-safe and governed by the operation-specific confirmation policy. PM-0 contracts/baseline, PM-1 source and PM-2 source/evaluation are implemented. PM-2's quality gate, PM-3 onward and live database/native acceptance remain pending.

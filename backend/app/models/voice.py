@@ -111,6 +111,9 @@ class ConversationTurn(Base):
             name="fk_conversation_turns_session_user",
         ),
         UniqueConstraint("id", "user_id", name="uq_conversation_turns_id_user_id"),
+        UniqueConstraint(
+            "id", "session_id", "user_id", name="uq_conversation_turns_id_session_user"
+        ),
         UniqueConstraint("session_id", "turn_number", name="uq_conversation_turns_session_number"),
         Index("ix_conversation_turns_user_started", "user_id", "started_at"),
         Index("ix_conversation_turns_session_number", "session_id", "turn_number"),

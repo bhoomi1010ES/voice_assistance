@@ -117,6 +117,20 @@ class SessionEndMessage(ControlMessage):
     reason: str = Field(default="client_requested", max_length=128)
 
 
+class PlanningSetModeMessage(ControlMessage):
+    type: Literal["client.planning.set_mode"]
+    session_id: uuid.UUID
+    expected_state_version: StrictInt = Field(ge=1)
+    mode: Literal["normal", "plan"]
+
+
+class PlanningSelectPlanMessage(ControlMessage):
+    type: Literal["client.planning.select_plan"]
+    session_id: uuid.UUID
+    expected_state_version: StrictInt = Field(ge=1)
+    plan_id: uuid.UUID | None
+
+
 ControlMessageType = Annotated[
     SessionStartMessage
     | TurnStartMessage
@@ -127,6 +141,8 @@ ControlMessageType = Annotated[
     | ResponseRetryMessage
     | ConfirmationResolveMessage
     | ClientPingMessage
+    | PlanningSetModeMessage
+    | PlanningSelectPlanMessage
     | SessionEndMessage,
     Field(discriminator="type"),
 ]

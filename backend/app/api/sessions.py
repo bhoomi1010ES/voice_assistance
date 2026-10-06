@@ -88,6 +88,21 @@ async def update_session(
         )
         raise not_found()
     if payload.client_metadata is not None:
+        voice_session = await session.scalar(
+            select(VoiceSession)
+            .where(
+                VoiceSession.id == session_id,
+                VoiceSession.user_id == principal.user_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if payload.client_metadata.get("memory_excluded"):
+            from app.planning.repository import erase_proposal_content
+            from app.planning.service import revoke_session_state
+
+            await revoke_session_state(session, principal.user_id, session_id)
+            await erase_proposal_content(session, principal.user_id, session_id)
         voice_session.client_metadata = payload.client_metadata
     await session.commit()
     await session.refresh(voice_session)
@@ -117,6 +132,21 @@ async def set_memory_exclusion(
             resource_id=session_id,
         )
         raise not_found()
+    voice_session = await session.scalar(
+        select(VoiceSession)
+        .where(
+            VoiceSession.id == session_id,
+            VoiceSession.user_id == principal.user_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if payload.excluded:
+        from app.planning.repository import erase_proposal_content
+        from app.planning.service import revoke_session_state
+
+        await revoke_session_state(session, principal.user_id, session_id)
+        await erase_proposal_content(session, principal.user_id, session_id)
     metadata = dict(voice_session.client_metadata or {})
     was_excluded = metadata.get("memory_excluded") is True
     if payload.excluded and not was_excluded:
@@ -227,8 +257,7 @@ async def delete_session(
     await OkfLifecycleService(
         policy_version=request.app.state.settings.okf_policy_version,
         sync_enabled=(
-            request.app.state.settings.okf_enabled
-            and request.app.state.settings.okf_sync_enabled
+            request.app.state.settings.okf_enabled and request.app.state.settings.okf_sync_enabled
         ),
     ).exclude_session(session, user_id=principal.user_id, session_id=session_id)
     await session.delete(voice_session)

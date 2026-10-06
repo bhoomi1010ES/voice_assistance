@@ -383,15 +383,25 @@ class MemoryJobWorker:
         if job.source_session_id is None:
             raise ValueError("memory_source_session_missing")
         from app.okf.lifecycle import OkfLifecycleService
+        from app.planning.repository import erase_proposal_content
+        from app.planning.service import revoke_session_state
+
+        voice = await session.scalar(
+            select(VoiceSession)
+            .where(
+                VoiceSession.id == job.source_session_id,
+                VoiceSession.user_id == job.user_id,
+            )
+            .with_for_update()
+        )
+        if voice is not None:
+            await revoke_session_state(session, job.user_id, job.source_session_id)
+            await erase_proposal_content(session, job.user_id, job.source_session_id)
 
         await OkfLifecycleService(
             policy_version=self.settings.okf_policy_version,
-            sync_enabled=(
-                self.settings.okf_enabled and self.settings.okf_sync_enabled
-            ),
-        ).exclude_session(
-            session, user_id=job.user_id, session_id=job.source_session_id
-        )
+            sync_enabled=(self.settings.okf_enabled and self.settings.okf_sync_enabled),
+        ).exclude_session(session, user_id=job.user_id, session_id=job.source_session_id)
         await session.execute(
             MemoryItem.__table__.delete().where(
                 MemoryItem.user_id == job.user_id,

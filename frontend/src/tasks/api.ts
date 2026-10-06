@@ -24,11 +24,17 @@ function queryString(
 
 export function listTasks(
   controller: AuthController,
-  options: { status?: TaskStatus; priority?: string; limit?: number } = {},
+  options: {
+    status?: TaskStatus;
+    priority?: string;
+    limit?: number;
+    plan_id?: string;
+  } = {},
 ): Promise<Task[]> {
   return controller.request<Task[]>(
     `/tasks${queryString({
       status: options.status,
+      plan_id: options.plan_id,
       priority: options.priority,
       limit: options.limit ?? 100,
     })}`,

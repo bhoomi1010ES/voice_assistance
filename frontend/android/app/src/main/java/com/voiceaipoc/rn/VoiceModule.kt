@@ -484,6 +484,16 @@ class VoiceModule(
     }
 
     @ReactMethod
+    fun setVoicePlanningMode(sessionId: String, version: Double, mode: String, eventId: String, promise: Promise) {
+        resolveVoiceResult(voiceGateway.setPlanningMode(sessionId, version.toInt(), mode, eventId), promise)
+    }
+
+    @ReactMethod
+    fun selectVoicePlan(sessionId: String, version: Double, planId: String?, eventId: String, promise: Promise) {
+        resolveVoiceResult(voiceGateway.selectPlan(sessionId, version.toInt(), planId, eventId), promise)
+    }
+
+    @ReactMethod
     fun resetVoiceConversation(promise: Promise) {
         resolveVoiceResult(voiceGateway.resetConversation(), promise)
     }
@@ -989,6 +999,8 @@ class VoiceModule(
         val payload = Arguments.createMap().apply {
             putDouble("connectionGeneration", connectionGeneration.toDouble())
             putString("event", eventType)
+            putString("planningJson", eventPayload?.planningJson)
+            putString("requestEventId", eventPayload?.requestEventId)
             if (sessionId == null) putNull("sessionId") else putString("sessionId", sessionId)
             if (turnId == null) putNull("turnId") else putString("turnId", turnId)
             if (responseId == null) putNull("responseId") else putString("responseId", responseId)

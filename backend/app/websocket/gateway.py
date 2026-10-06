@@ -49,6 +49,16 @@ from app.memory.tool_tools import (
     build_explicit_memory_save_call,
 )
 from app.models import ConversationTurn, User, VoiceSession
+from app.planning.service import (
+    PlanningError,
+    change_state,
+    locked_state,
+    recognize_mode_control,
+    recognize_plan_selection,
+    resolve_plan_selection,
+    revoke_session_state,
+    snapshot,
+)
 from app.routing.formatters import format_structured_read_answer
 from app.routing.models import RouteName, RouterMode, RouterRuntimeContext
 from app.routing.service import DecisionRouterService
@@ -106,6 +116,8 @@ from app.websocket.protocol import (
     ControlMessageType,
     ConversationResetMessage,
     DeviceTimeContextPayload,
+    PlanningSelectPlanMessage,
+    PlanningSetModeMessage,
     ProtocolError,
     ResponseAbortAllMessage,
     ResponseCancelMessage,
@@ -208,6 +220,8 @@ class VoiceGateway:
         self.stt_service = stt_service
         self.llm_service = llm_service
         app_state = getattr(getattr(websocket, "app", None), "state", None)
+        self.planning_observer = getattr(app_state, "planning_observer", None)
+        self._planning_scheduled_turns: set[uuid.UUID] = set()
         self.router_service = getattr(app_state, "router_decision_service", None)
         if self.router_service is None:
             self.router_service = DecisionRouterService(
@@ -532,6 +546,8 @@ class VoiceGateway:
             await self._handle_response_retry(message)
         elif isinstance(message, ConfirmationResolveMessage):
             await self._handle_confirmation_decision(message)
+        elif isinstance(message, (PlanningSetModeMessage, PlanningSelectPlanMessage)):
+            await self._handle_planning_control(message)
         elif isinstance(message, ClientPingMessage):
             await self._handle_ping(message)
         elif isinstance(message, SessionEndMessage):
@@ -579,9 +595,14 @@ class VoiceGateway:
                 self.principal,
                 message.resume_session_id,
                 reconnect_grace_seconds=self.settings.voice_reconnect_grace_seconds,
+                active_stale_after_seconds=(
+                    self.settings.voice_heartbeat_timeout_seconds
+                    + self.settings.voice_reconnect_grace_seconds
+                ),
             )
 
             if voice_session is None:
+                await self.db.commit()
                 await self._protocol_failure("session_not_available", close_code=1008)
                 return
             self.stats.reconnect = True
@@ -595,6 +616,8 @@ class VoiceGateway:
 
         # A reconnect is allowed to move with the device. Replace the stored
         # snapshot only after ownership/session validation has succeeded.
+        if (voice_session.client_metadata or {}).get("memory_excluded") is True:
+            safe_metadata["memory_excluded"] = True
         voice_session.client_metadata = safe_metadata
 
         acquired = await self.registry.acquire(self.owner, voice_session.id)
@@ -637,6 +660,8 @@ class VoiceGateway:
         )
         self._session_started = time.monotonic()
         self.state.session_ready(voice_session.id, completed_turns=voice_session.total_turns)
+        if self.settings.plan_mode_enabled:
+            await locked_state(self.db, self.principal, voice_session.id)
         await self.db.commit()
         await self._emit_session_ready()
 
@@ -670,6 +695,7 @@ class VoiceGateway:
                     "source": self._device_time_context.source,
                 },
                 llm=self._safe_llm_session_info(),
+                planning=await self._planning_snapshot(),
             )
         )
 
@@ -773,6 +799,193 @@ class VoiceGateway:
             )
         )
         await self._handle_session_start(restart_message)
+
+    async def _planning_snapshot(self) -> dict:
+        if not self.settings.plan_mode_enabled:
+            return {
+                "available": False,
+                "automatic_actions_available": False,
+                "mode": "normal",
+                "state_version": 1,
+                "active_plan_id": None,
+            }
+        async with self.session_factory() as db:
+            state = await locked_state(db, self.principal, self._active_session_id())
+            result = await snapshot(db, state, available=True)
+            await db.commit()
+            return result
+
+    async def _revoke_planning(self) -> None:
+        session_id = self._active_session_id()
+        if session_id is None:
+            return
+        async with self.session_factory() as db:
+            voice = await db.scalar(
+                select(VoiceSession)
+                .where(
+                    VoiceSession.id == session_id,
+                    VoiceSession.user_id == self.principal.user_id,
+                    VoiceSession.device_id == self.principal.device_id,
+                    VoiceSession.auth_session_id == self.principal.session_id,
+                )
+                .with_for_update()
+            )
+            if voice is not None:
+                await revoke_session_state(db, self.principal.user_id, session_id)
+            await db.commit()
+        observer = getattr(self, "planning_observer", None)
+        if observer is not None:
+            await observer.cancel_session(self.principal.user_id, session_id)
+
+    async def _handle_planning_control(self, message) -> None:
+        session_id = self._active_session_id()
+        if session_id is None or message.session_id != session_id:
+            await self._send(
+                server_event(
+                    "server.planning.error",
+                    session_id=session_id,
+                    code="session_not_available",
+                    request_event_id=message.event_id,
+                )
+            )
+            return
+        try:
+            async with self.session_factory() as db:
+                result = await change_state(
+                    db,
+                    self.principal,
+                    session_id,
+                    expected_version=message.expected_state_version,
+                    enabled=self.settings.plan_mode_enabled,
+                    policy_version=self.settings.plan_policy_version,
+                    mode=message.mode if isinstance(message, PlanningSetModeMessage) else None,
+                    plan_id=message.plan_id
+                    if isinstance(message, PlanningSelectPlanMessage)
+                    else None,
+                    select_plan=isinstance(message, PlanningSelectPlanMessage),
+                )
+                await db.commit()
+        except PlanningError as error:
+            await self._send(
+                server_event(
+                    "server.planning.error",
+                    session_id=session_id,
+                    code=str(error),
+                    request_event_id=message.event_id,
+                )
+            )
+            # A conflict returns a fresh authoritative snapshot for client recovery.
+            if str(error) == "planning_state_conflict":
+                await self._send(
+                    server_event(
+                        "server.planning.state",
+                        session_id=session_id,
+                        planning=await self._planning_snapshot(),
+                    )
+                )
+            return
+        await self._send(
+            server_event(
+                "server.planning.state",
+                session_id=session_id,
+                request_event_id=message.event_id,
+                planning=result,
+            )
+        )
+
+    async def _resolve_planning_voice(self, *, session_id, turn_id, response_id, transcript):
+        mode = recognize_mode_control(transcript)
+        selection = recognize_plan_selection(transcript) if mode is None else None
+        if mode is None and selection is None:
+            return None
+        text = ""
+        result = None
+        try:
+            async with self.session_factory() as db:
+                state = await locked_state(db, self.principal, session_id)
+                turn = await db.scalar(
+                    select(ConversationTurn).where(
+                        ConversationTurn.id == turn_id,
+                        ConversationTurn.user_id == self.principal.user_id,
+                        ConversationTurn.session_id == session_id,
+                    )
+                )
+                if turn is None:
+                    raise PlanningError("session_not_available")
+                if (turn.metadata_json or {}).get("planning_control"):
+                    result = await snapshot(db, state, available=self.settings.plan_mode_enabled)
+                    text = "That planning control has already been handled."
+                else:
+                    selected_id = (
+                        await resolve_plan_selection(db, self.principal.user_id, selection)
+                        if selection is not None
+                        else None
+                    )
+                    result = await change_state(
+                        db,
+                        self.principal,
+                        session_id,
+                        expected_version=state.state_version,
+                        enabled=self.settings.plan_mode_enabled,
+                        policy_version=self.settings.plan_policy_version,
+                        mode=mode,
+                        plan_id=selected_id,
+                        select_plan=selection is not None,
+                    )
+                    turn.metadata_json = {
+                        **(turn.metadata_json or {}),
+                        "planning_control": {
+                            "mode": mode,
+                            "state_version": result["state_version"],
+                        },
+                    }
+                    text = (
+                        "Plan Mode is on. Automatic organization is not available yet."
+                        if mode == "plan"
+                        else "Plan Mode is off."
+                    )
+                    if selection is not None:
+                        text = (
+                            f"Selected plan {result['active_plan_name']}."
+                            if selected_id
+                            else "Active plan cleared."
+                        )
+                await db.commit()
+        except PlanningError as error:
+            text = {
+                "plan_not_found": "That active plan was not found.",
+                "plan_ambiguous": "Several plans have that name. Select one in the app.",
+                "planning_mode_required": "Enable Plan Mode before selecting a plan.",
+                "planning_unavailable": "Plan Mode is unavailable on this server.",
+                "planning_private_session": "Plan Mode is unavailable in a private session.",
+            }.get(str(error), "The planning control could not be applied. Please try again.")
+            await self._send(
+                server_event(
+                    "server.planning.error",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    code=str(error),
+                )
+            )
+        if result is not None:
+            await self._send(
+                server_event(
+                    "server.planning.state",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    planning=result,
+                )
+            )
+        await self._emit_routed_final_text(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            text=text,
+            route=RouteName.CONTROL,
+        )
+        return {"status": "completed", "planning_control": True, "tool_execution_count": 0}
 
     async def _handle_turn_start(self, message: TurnStartMessage) -> None:
         if self.voice_session is None or self.state.session_id is None:
@@ -1491,7 +1704,27 @@ class VoiceGateway:
     ) -> dict[str, Any]:
         if not transcript.strip():
             return {"status": "failed", "error": "empty_transcript"}
+        planning_result = await self._resolve_planning_voice(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            transcript=transcript,
+        )
+        if planning_result is not None:
+            return planning_result
         routed_memory_context: str | None = None
+        observer = getattr(self, "planning_observer", None)
+        scheduled = getattr(self, "_planning_scheduled_turns", set())
+        if observer is not None and turn_id not in scheduled and len(scheduled) < 1024:
+            scheduled.add(turn_id)
+            self._planning_scheduled_turns = scheduled
+            context = getattr(self, "_device_time_context", None)
+            observer.schedule(
+                principal=self.principal, session_id=session_id, turn_id=turn_id,
+                transcript=transcript,
+                now_utc=context.current_instant_utc() if context else self.clock.now_utc(),
+                timezone=self._user_timezone(),
+            )
         routed_memory_evidence_ids: tuple[uuid.UUID, ...] = ()
         routed_memory_evidence_route = "RAG_PLUS_LLM"
         skip_legacy_memory_retrieval = False
@@ -3537,6 +3770,14 @@ class VoiceGateway:
     ) -> dict[str, Any] | None:
         """Resolve obvious spoken confirmation before ordinary LLM routing."""
 
+        planning_result = await self._resolve_planning_voice(
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            transcript=transcript,
+        )
+        if planning_result is not None:
+            return planning_result
         store = getattr(self, "confirmation_store", None)
         if store is None:
             return None
@@ -4867,6 +5108,7 @@ class VoiceGateway:
 
     async def _handle_session_end(self, message: SessionEndMessage) -> None:
         self._require_session()
+        await self._revoke_planning()
         self._session_status = "completed"
         self._close_code = 1000
         self._close_reason = message.reason
@@ -4951,6 +5193,7 @@ class VoiceGateway:
         return True
 
     async def _timeout(self, reason: str) -> None:
+        await self._revoke_planning()
         self._session_status = "timed_out"
         self._close_code = 1000
         self._close_reason = reason
@@ -5119,6 +5362,9 @@ class VoiceGateway:
                 await asyncio.gather(*shadow_tasks, return_exceptions=True)
             if shadow_task_set is not None:
                 shadow_task_set.clear()
+            observer = getattr(self, "planning_observer", None)
+            if observer is not None:
+                await observer.cancel_session(self.principal.user_id, self._active_session_id())
             okf_shadow_task_set = getattr(self, "_okf_shadow_tasks", None)
             okf_shadow_tasks = list(okf_shadow_task_set or ())
             for task in okf_shadow_tasks:

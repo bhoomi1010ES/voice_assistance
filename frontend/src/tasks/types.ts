@@ -2,6 +2,9 @@ export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
 export type TaskPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 export type Task = {
+  plan_id?: string | null;
+  planning_action_id?: string | null;
+  revision?: number;
   id: string;
   title: string;
   description: string | null;
@@ -20,6 +23,9 @@ export type Task = {
 export type ReminderStatus = 'scheduled' | 'sent' | 'failed' | 'cancelled';
 
 export type Reminder = {
+  plan_id?: string | null;
+  planning_action_id?: string | null;
+  revision?: number;
   id: string;
   task_id: string | null;
   title: string;
@@ -38,6 +44,7 @@ export type Reminder = {
 };
 
 export type CreateTaskInput = {
+  plan_id?: string | null;
   title: string;
   description?: string | null;
   due_at?: string | null;
@@ -48,11 +55,18 @@ export type CreateTaskInput = {
 export type UpdateTaskInput = Partial<
   Pick<
     Task,
-    'title' | 'description' | 'status' | 'due_at' | 'priority' | 'timezone'
+    | 'title'
+    | 'description'
+    | 'status'
+    | 'due_at'
+    | 'priority'
+    | 'timezone'
+    | 'plan_id'
   >
->;
+> & { expected_revision?: number };
 
 export type CreateReminderInput = {
+  plan_id?: string | null;
   title: string;
   body?: string | null;
   trigger_at: string;
@@ -72,5 +86,6 @@ export type UpdateReminderInput = Partial<
     | 'recurrence_rule'
     | 'status'
     | 'task_id'
+    | 'plan_id'
   >
->;
+> & { expected_revision?: number };

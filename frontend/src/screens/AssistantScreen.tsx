@@ -47,6 +47,7 @@ import { ConnectionStatusBadge } from '../components/voice/ConnectionStatusBadge
 import { VoiceStatusView } from '../components/voice/VoiceStatusView';
 import { QuickActionChips } from '../components/voice/QuickActionChips';
 import { ToolConfirmationCard } from '../components/voice/ToolConfirmationCard';
+import { PlanningControls } from '../components/voice/PlanningControls';
 import {
   ConversationBubble,
   TranscriptBubble,
@@ -318,6 +319,8 @@ export function AssistantScreen() {
           statusText={statusCopy(socketState)}
           testID="voice-connection-status"
         />
+
+        <PlanningControls />
 
         {/* Local conversation history notice */}
         {historyNoticeVisible ? (

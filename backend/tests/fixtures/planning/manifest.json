@@ -1,0 +1,15 @@
+{
+  "schema_version": "plan-fixtures-v1",
+  "policy_version": "plan-v1",
+  "frozen_on": "2026-10-05",
+  "conversations": 53,
+  "turns": 55,
+  "development_conversations": 40,
+  "held_out_conversations": 13,
+  "lifecycle_cases": 12,
+  "canonical_json_sha256": {
+    "conversations.json": "9f906bfa65b6b1c70f18f42d8709fa6b6142c610b052370845354b28efc84d93",
+    "lifecycle.json": "278186906fa2ed0f81550520009e1bb3fd7e00feb338fe3b295f4a4331cf3e00"
+  },
+  "change_policy": "Revise corpus version and replace holdout before tuning against held-out examples. Labels are expectations, not measured model outputs."
+}

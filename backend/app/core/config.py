@@ -216,6 +216,17 @@ class Settings(BaseSettings):
     conversation_logging_enabled: bool = False
     conversation_log_dir: str = str(PROJECT_ROOT / "conversation_logs")
 
+    plan_mode_enabled: bool = False
+    plan_extraction_mode: Literal["off", "shadow", "on"] = "off"
+    plan_auto_actions_enabled: bool = False
+    plan_test_user_ids: tuple[UUID, ...] = Field(default=(), max_length=64)
+    plan_extraction_timeout_ms: int = Field(default=3_000, ge=100, le=30_000)
+    plan_extraction_max_concurrent: int = Field(default=2, ge=1, le=16)
+    plan_max_actions_per_turn: int = Field(default=8, ge=1, le=8)
+    plan_policy_version: str = Field(
+        default="plan-v1", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$"
+    )
+
     voice_protocol_version: int = 1
     voice_sample_rate_hz: int = 16_000
     voice_channels: int = 1
@@ -240,6 +251,27 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
     )
+
+    @model_validator(mode="after")
+    def validate_planning_configuration(self) -> Self:
+        """Fail closed for the initial allowlisted planning rollout."""
+        if len(set(self.plan_test_user_ids)) != len(self.plan_test_user_ids):
+            raise ValueError("PLAN_TEST_USER_IDS must not contain duplicates")
+        if any(value.int == 0 for value in self.plan_test_user_ids):
+            raise ValueError("PLAN_TEST_USER_IDS must not contain the nil UUID")
+        if self.plan_extraction_mode != "off":
+            if not self.plan_mode_enabled:
+                raise ValueError("PLAN_EXTRACTION_MODE requires PLAN_MODE_ENABLED=true")
+            if not self.plan_test_user_ids:
+                raise ValueError("PLAN_EXTRACTION_MODE requires explicit PLAN_TEST_USER_IDS")
+        if self.plan_auto_actions_enabled and (
+            not self.plan_mode_enabled or self.plan_extraction_mode != "on"
+        ):
+            raise ValueError(
+                "PLAN_AUTO_ACTIONS_ENABLED requires PLAN_MODE_ENABLED=true and "
+                "PLAN_EXTRACTION_MODE=on"
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_llm_configuration(self) -> Self:

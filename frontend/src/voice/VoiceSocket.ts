@@ -11,6 +11,8 @@ import {
   resolveVoiceConfirmation,
   retryVoiceResponse,
   resetVoiceConversation,
+  setVoicePlanningMode,
+  selectVoicePlan,
   stopVoicePlayback,
   startMicrophone,
   startVoiceSession,
@@ -24,6 +26,7 @@ import {
   VoiceGatewayEvent,
   VoiceGatewayStatus,
 } from '../native/VoiceModule';
+import { PlanningState, parsePlanningState } from '../plans/types';
 import { publicApiConfig } from '../config/environment';
 import {
   applyTranscriptEvent,
@@ -77,6 +80,8 @@ export const VOICE_SERVER_EVENT_TYPES = [
   'voice.session.started',
   'voice.session.stale.reaped',
   'server.session.ready',
+  'server.planning.state',
+  'server.planning.error',
   'server.conversation.reset',
   'server.session.ending',
   'server.session.ended',
@@ -149,6 +154,9 @@ export type VoiceTtsPlaybackState =
   | 'failed';
 
 export type VoiceSocketSnapshot = {
+  planning?: PlanningState | null;
+  planningPending?: boolean;
+  planningError?: string | null;
   connectionGeneration: number;
   connection: VoiceConnectionState;
   session: VoiceSessionState;
@@ -204,6 +212,8 @@ export type VoiceSocketAdapter = {
   cancelResponse: (reason?: string | null) => Promise<VoiceGatewayStatus>;
   abortAll?: (reason?: string | null) => Promise<VoiceGatewayStatus>;
   resetConversation?: () => Promise<VoiceGatewayStatus>;
+  setPlanningMode?: typeof setVoicePlanningMode;
+  selectPlan?: typeof selectVoicePlan;
   stopPlayback?: () => Promise<VoiceGatewayStatus>;
   retryResponse?: (
     turnId: string,
@@ -261,6 +271,9 @@ export type VoiceTurnCommitOptions = {
 const INITIAL_SNAPSHOT: VoiceSocketSnapshot = {
   connectionGeneration: 0,
   connection: 'disconnected',
+  planning: null,
+  planningPending: false,
+  planningError: null,
   session: 'idle',
   turn: 'idle',
   heartbeat: 'unknown',
@@ -386,6 +399,8 @@ const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
   cancelResponse: cancelVoiceResponse,
   abortAll: abortAllVoiceResponses,
   resetConversation: resetVoiceConversation,
+  setPlanningMode: setVoicePlanningMode,
+  selectPlan: selectVoicePlan,
   stopPlayback: stopVoicePlayback,
   retryResponse: retryVoiceResponse,
   resolveConfirmation: resolveVoiceConfirmation,
@@ -402,6 +417,8 @@ const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
 };
 
 export type NormalizedVoiceEvent = {
+  planning?: PlanningState;
+  requestEventId?: string;
   connectionGeneration?: number;
   type: VoiceServerEventType;
   eventId: string | null;
@@ -457,6 +474,14 @@ export function normalizeVoiceGatewayEvent(
     return null;
   }
 
+  const planning = parsePlanningState(record.planning ?? record.planningJson);
+  if (rawType === 'server.planning.state' && !planning) {
+    return null;
+  }
+  const requestEventId = readString(
+    record.requestEventId ?? record.request_event_id,
+    128,
+  );
   const timestampMs = readTimestamp(record.timestampMs ?? record.timestamp_ms);
   const transcript = readTranscriptEvent(rawType, record);
   const assistant = readAssistantEvent(rawType, record);
@@ -489,6 +514,8 @@ export function normalizeVoiceGatewayEvent(
       MAX_ID_LENGTH,
     ),
     timestampMs,
+    ...(planning ? { planning } : {}),
+    ...(requestEventId ? { requestEventId } : {}),
     ...(transcript ? { transcript } : {}),
     ...(assistant ? { assistant } : {}),
     ...(thinkingText ? { thinkingText } : {}),
@@ -502,6 +529,8 @@ export function normalizeVoiceGatewayEvent(
 }
 
 export class VoiceSocket {
+  private planningRequestId: string | null = null;
+  private planningTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly adapter: VoiceSocketAdapter;
   private readonly rollout: VoiceRolloutConfig;
   private readonly url: string;
@@ -717,7 +746,12 @@ export class VoiceSocket {
       this.connectPromise = null;
       this.clearAutoListenTimer();
       this.clearSpeechEndCommitTimer();
-      this.invalidateSessionState('manual_retry_cleanup', 'disconnected', null, false);
+      this.invalidateSessionState(
+        'manual_retry_cleanup',
+        'disconnected',
+        null,
+        false,
+      );
       const cleanup: Promise<unknown>[] = [
         this.adapter.stopMicrophone?.() ?? Promise.resolve(),
         this.adapter.stopPlayback?.() ?? Promise.resolve(),
@@ -1195,6 +1229,81 @@ export class VoiceSocket {
     }
   }
 
+  async setPlanningMode(mode: 'normal' | 'plan'): Promise<void> {
+    return this.sendPlanningControl((sessionId, version, eventId) => {
+      if (!this.adapter.setPlanningMode) {
+        throw new Error('Planning unavailable');
+      }
+      return this.adapter.setPlanningMode(sessionId, version, mode, eventId);
+    });
+  }
+
+  async selectPlan(planId: string | null): Promise<void> {
+    return this.sendPlanningControl((sessionId, version, eventId) => {
+      if (!this.adapter.selectPlan) {
+        throw new Error('Planning unavailable');
+      }
+      return this.adapter.selectPlan(sessionId, version, planId, eventId);
+    });
+  }
+
+  private async sendPlanningControl(
+    send: (
+      sessionId: string,
+      version: number,
+      eventId: string,
+    ) => Promise<VoiceGatewayStatus>,
+  ): Promise<void> {
+    const state = this.snapshot.planning;
+    if (
+      !state?.available ||
+      this.snapshot.connection !== 'connected' ||
+      this.snapshot.session !== 'ready' ||
+      !this.snapshot.sessionId ||
+      this.snapshot.planningPending
+    ) {
+      this.setSnapshot({
+        planningError: 'Planning is unavailable until the session is ready.',
+      });
+      return;
+    }
+    const eventId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(
+      /[xy]/g,
+      char => {
+        const random = Math.floor(Math.random() * 16);
+        return (char === 'x' ? random : (random % 4) + 8).toString(16);
+      },
+    );
+    this.planningRequestId = eventId;
+    this.setSnapshot({ planningPending: true, planningError: null });
+    this.planningTimer = setTimeout(() => {
+      this.planningRequestId = null;
+      this.planningTimer = null;
+      this.setSnapshot({
+        planningPending: false,
+        planningError:
+          'No acknowledgement received. Reconnect to refresh planning state.',
+      });
+    }, 10000);
+    try {
+      await send(this.snapshot.sessionId, state.stateVersion, eventId);
+    } catch {
+      this.clearPlanningRequest();
+      this.setSnapshot({
+        planningPending: false,
+        planningError: 'The planning control could not be sent.',
+      });
+    }
+  }
+
+  private clearPlanningRequest(): void {
+    if (this.planningTimer) {
+      clearTimeout(this.planningTimer);
+    }
+    this.planningTimer = null;
+    this.planningRequestId = null;
+  }
+
   async resetConversation(): Promise<void> {
     this.clearAutoListenTimer();
     this.autoListenSuppressed = false;
@@ -1544,7 +1653,10 @@ export class VoiceSocket {
 
   private handleStatus(status: VoiceGatewayStatus): void {
     const statusGeneration = status.connectionGeneration;
-    if (typeof statusGeneration === 'number' && Number.isFinite(statusGeneration)) {
+    if (
+      typeof statusGeneration === 'number' &&
+      Number.isFinite(statusGeneration)
+    ) {
       if (statusGeneration < this.snapshot.connectionGeneration) {
         this.recordDroppedEvent(false);
         this.logLifecycle('stale_native_status_ignored', {
@@ -1553,7 +1665,12 @@ export class VoiceSocket {
         return;
       }
       if (statusGeneration > this.snapshot.connectionGeneration) {
-        this.invalidateSessionState('connection_generation_changed', 'connecting', null, false);
+        this.invalidateSessionState(
+          'connection_generation_changed',
+          'connecting',
+          null,
+          false,
+        );
         this.setSnapshot({ connectionGeneration: statusGeneration });
       }
     }
@@ -1594,7 +1711,8 @@ export class VoiceSocket {
         connection: 'connected',
         heartbeat:
           this.lastHeartbeatSessionId !== null &&
-          this.lastHeartbeatSessionId === (status.sessionId ?? this.snapshot.sessionId)
+          this.lastHeartbeatSessionId ===
+            (status.sessionId ?? this.snapshot.sessionId)
             ? 'healthy'
             : 'unknown',
         error: null,
@@ -1713,6 +1831,7 @@ export class VoiceSocket {
     const usesClientClock = CLIENT_CLOCK_EVENT_TYPES.has(event.type);
     if (
       !usesClientClock &&
+      !event.type.startsWith('server.planning.') &&
       event.timestampMs !== null &&
       this.snapshot.lastEventAtMs !== null &&
       event.timestampMs < this.snapshot.lastEventAtMs
@@ -1741,6 +1860,25 @@ export class VoiceSocket {
     if (event.transcript && !this.canAcceptTranscript(event.transcript)) {
       this.recordDroppedEvent(false);
       return;
+    }
+
+    if (event.type.startsWith('server.planning.')) {
+      if (!event.sessionId || event.sessionId !== this.snapshot.sessionId) {
+        this.recordDroppedEvent(false);
+        return;
+      }
+      if (
+        event.planning &&
+        this.snapshot.planning &&
+        event.planning.stateVersion <= this.snapshot.planning.stateVersion
+      ) {
+        if (event.requestEventId === this.planningRequestId) {
+          this.clearPlanningRequest();
+          this.setSnapshot({ planningPending: false });
+        }
+        this.recordDroppedEvent(false);
+        return;
+      }
     }
 
     const receivedAtMs = this.now();
@@ -1772,8 +1910,12 @@ export class VoiceSocket {
         ? this.snapshot.lastEventAtMs
         : event.timestampMs ?? receivedAtMs,
       ...(event.sessionId ? { sessionId: event.sessionId } : {}),
-      ...(event.turnId ? { turnId: event.turnId } : {}),
-      ...(event.responseId ? { responseId: event.responseId } : {}),
+      ...(event.turnId && !event.type.startsWith('server.planning.')
+        ? { turnId: event.turnId }
+        : {}),
+      ...(event.responseId && !event.type.startsWith('server.planning.')
+        ? { responseId: event.responseId }
+        : {}),
     });
 
     if (event.transcript) {
@@ -1801,7 +1943,9 @@ export class VoiceSocket {
         reconnectAttempt: 0,
         error: null,
       });
-      this.logLifecycle('session_heartbeat', { heartbeat_session_id: event.sessionId });
+      this.logLifecycle('session_heartbeat', {
+        heartbeat_session_id: event.sessionId,
+      });
       this.scheduleContinuousListen();
       return;
     }
@@ -1812,13 +1956,46 @@ export class VoiceSocket {
         this.setSnapshot({ connection: 'connected', error: null });
         this.logLifecycle('websocket_opened');
         break;
+      case 'voice.connection.closed':
+        this.clearPlanningRequest();
+        this.setSnapshot({ planning: null, planningPending: false });
+        break;
+      case 'server.planning.state':
+        if (event.planning) {
+          this.setSnapshot({ planning: event.planning, planningError: null });
+        }
+        if (event.requestEventId === this.planningRequestId) {
+          this.clearPlanningRequest();
+          this.setSnapshot({ planningPending: false });
+        }
+        break;
+      case 'server.planning.error':
+        if (
+          event.requestEventId === this.planningRequestId ||
+          !event.requestEventId
+        ) {
+          this.clearPlanningRequest();
+          this.setSnapshot({
+            planningPending: false,
+            planningError:
+              event.errorCode === 'planning_private_session'
+                ? 'Planning is unavailable in a private session.'
+                : event.errorCode === 'planning_state_conflict'
+                ? 'Planning state changed. Please try again.'
+                : 'The planning control could not be applied.',
+          });
+        }
+        break;
       case 'server.session.ready':
         if (!event.sessionId) {
           this.recordDroppedEvent(false);
           this.logLifecycle('session_ready_without_id_ignored');
           break;
         }
-        if (this.snapshot.sessionId && this.snapshot.sessionId !== event.sessionId) {
+        if (
+          this.snapshot.sessionId &&
+          this.snapshot.sessionId !== event.sessionId
+        ) {
           this.invalidateSessionState('session_id_replaced', 'connecting');
         }
         this.sessionStartInFlight = false;
@@ -1841,7 +2018,9 @@ export class VoiceSocket {
           session: 'ready',
           sessionId: event.sessionId,
           heartbeat:
-            this.lastHeartbeatSessionId === event.sessionId ? 'healthy' : 'unknown',
+            this.lastHeartbeatSessionId === event.sessionId
+              ? 'healthy'
+              : 'unknown',
           lastHeartbeatAtMs:
             this.lastHeartbeatSessionId === event.sessionId
               ? this.snapshot.lastHeartbeatAtMs
@@ -1849,7 +2028,15 @@ export class VoiceSocket {
           reconnectAttempt: 0,
           error: null,
         });
-        this.logLifecycle('session_ready', { ready_session_id: event.sessionId });
+        this.clearPlanningRequest();
+        this.setSnapshot({
+          planning: event.planning ?? null,
+          planningPending: false,
+          planningError: null,
+        });
+        this.logLifecycle('session_ready', {
+          ready_session_id: event.sessionId,
+        });
         this.scheduleContinuousListen();
         break;
       case 'server.conversation.reset':
@@ -3899,6 +4086,14 @@ export class VoiceSocket {
   }
 
   private setSnapshot(patch: Partial<VoiceSocketSnapshot>): void {
+    if (
+      (patch.connection && patch.connection !== 'connected') ||
+      patch.sessionId === null ||
+      patch.session === 'ending'
+    ) {
+      this.clearPlanningRequest();
+      patch = { ...patch, planning: null, planningPending: false };
+    }
     this.snapshot = { ...this.snapshot, ...patch };
     this.notify();
   }

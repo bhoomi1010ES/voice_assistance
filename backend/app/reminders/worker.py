@@ -53,6 +53,7 @@ class ReminderWorker:
                 Reminder.lease_expires_at <= now,
             )
             .values(
+                revision=Reminder.revision + 1,
                 status="retry_wait",
                 next_attempt_at=now,
                 failure_code="stale_processing_claim",

@@ -51,6 +51,11 @@ class LLMService:
         return self.settings.llm_configured
 
     @property
+    def background_capacity(self) -> int:
+        """Leave one model request slot available for conversational answering."""
+        return max(0, self.settings.llm_max_concurrent_requests - len(self._active_tasks) - 1)
+
+    @property
     def provider_info(self) -> LLMProviderInfo | None:
         return self._provider_info
 

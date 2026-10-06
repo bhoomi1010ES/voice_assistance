@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 
 from app.api.dependencies import DatabaseSessionDependency, get_current_principal
+from app.api.plans import commit_revision, conflict, validate_group
 from app.core.clock import SystemClock
 from app.models import Reminder, User
 from app.schemas import ReminderCreateRequest, ReminderResponse, ReminderUpdateRequest
@@ -49,6 +50,10 @@ def _public_response(reminder: Reminder) -> ReminderResponse:
     )
     return ReminderResponse(
         id=reminder.id,
+        plan_id=getattr(reminder, "plan_id", None),
+        planning_action_id=getattr(reminder, "planning_action_id", None),
+        source_turn_id=getattr(reminder, "source_turn_id", None),
+        revision=getattr(reminder, "revision", 1) or 1,
         task_id=reminder.task_id,
         title=reminder.title,
         body=reminder.body,
@@ -92,6 +97,7 @@ async def list_reminders(
     upcoming: bool = False,
     limit: int = Query(default=50, ge=1, le=100),
     before: datetime | None = None,
+    plan_id: uuid.UUID | None = None,
 ) -> list[ReminderResponse]:
     query = (
         select(Reminder)
@@ -99,6 +105,8 @@ async def list_reminders(
         .order_by(Reminder.trigger_at.asc(), Reminder.id.asc())
         .limit(limit)
     )
+    if plan_id is not None:
+        query = query.where(Reminder.plan_id == plan_id)
     if status_filter == "scheduled":
         query = query.where(Reminder.status.in_(("scheduled", "processing", "retry_wait")))
     elif status_filter is not None:
@@ -129,8 +137,10 @@ async def create_reminder(
     except TaskDueDateResolutionError as error:
         raise temporal_error(error) from error
     await _validate_task_scope(session, principal, payload.task_id)
+    await validate_group(session, principal.user_id, payload.plan_id)
     reminder = Reminder(
         user_id=principal.user_id,
+        plan_id=payload.plan_id,
         task_id=payload.task_id,
         title=payload.title,
         body=payload.body,
@@ -189,6 +199,11 @@ async def update_reminder(
             resource_id=reminder_id,
         )
         raise not_found()
+    if payload.expected_revision is not None and reminder.revision != payload.expected_revision:
+        raise conflict()
+    if "plan_id" in payload.model_fields_set:
+        await validate_group(session, principal.user_id, payload.plan_id)
+        reminder.plan_id = payload.plan_id
     try:
         recurrence_rule = (
             validate_recurrence_rule(payload.recurrence_rule)
@@ -258,7 +273,7 @@ async def update_reminder(
     elif payload.status == "scheduled":
         reminder.status = "scheduled"
         reminder.next_attempt_at = reminder.trigger_at
-    await session.commit()
+    await commit_revision(session)
     await session.refresh(reminder)
     return _public_response(reminder)
 

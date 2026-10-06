@@ -761,6 +761,9 @@ class Task(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    plan_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    planning_action_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
@@ -778,12 +781,27 @@ class Task(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    __mapper_args__ = {"version_id_col": revision}
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["plan_id", "user_id"],
+            ["plans.id", "plans.user_id"],
+            ondelete="SET NULL (plan_id)",
+            name="fk_tasks_plan_user",
+        ),
+        ForeignKeyConstraint(
+            ["planning_action_id", "user_id"],
+            ["planning_actions.id", "planning_actions.user_id"],
+            ondelete="SET NULL (planning_action_id)",
+            name="fk_tasks_planning_action_user",
+        ),
+        CheckConstraint("revision > 0", name="ck_tasks_revision"),
+        Index("ix_tasks_user_plan", "user_id", "plan_id"),
         ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(
             ["source_turn_id", "user_id"],
             ["conversation_turns.id", "conversation_turns.user_id"],
-            ondelete="SET NULL",
+            ondelete="SET NULL (source_turn_id)",
             name="fk_tasks_source_turn_user",
         ),
         UniqueConstraint("id", "user_id", name="uq_tasks_id_user_id"),
@@ -809,7 +827,11 @@ class Reminder(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_turn_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    plan_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    planning_action_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
     trigger_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -846,12 +868,33 @@ class Reminder(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    __mapper_args__ = {"version_id_col": revision}
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["source_turn_id", "user_id"],
+            ["conversation_turns.id", "conversation_turns.user_id"],
+            ondelete="SET NULL (source_turn_id)",
+            name="fk_reminders_source_turn_user",
+        ),
+        ForeignKeyConstraint(
+            ["plan_id", "user_id"],
+            ["plans.id", "plans.user_id"],
+            ondelete="SET NULL (plan_id)",
+            name="fk_reminders_plan_user",
+        ),
+        ForeignKeyConstraint(
+            ["planning_action_id", "user_id"],
+            ["planning_actions.id", "planning_actions.user_id"],
+            ondelete="SET NULL (planning_action_id)",
+            name="fk_reminders_planning_action_user",
+        ),
+        CheckConstraint("revision > 0", name="ck_reminders_revision"),
+        Index("ix_reminders_user_plan", "user_id", "plan_id"),
         ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(
             ["task_id", "user_id"],
             ["tasks.id", "tasks.user_id"],
-            ondelete="SET NULL",
+            ondelete="SET NULL (task_id)",
             name="fk_reminders_task_user",
         ),
         UniqueConstraint("id", "user_id", name="uq_reminders_id_user_id"),
