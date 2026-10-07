@@ -29,13 +29,10 @@ def _settings() -> Settings:
 @pytest.mark.parametrize(
     "prompt",
     [
-        "Remind me to call Rahul tomorrow at 9 AM.",
-        "Remind me to drink water at 10 AM tomorrow.",
         "Create a task to submit my report Friday.",
         "Create a task to submit the report tomorrow.",
         "Create task to submit report on 13th September.",
         "Create a task to submit the report on 2nd October.",
-        "Please remind me to call the doctor tomorrow morning.",
     ],
 )
 def test_explicit_mutating_voice_intent_selects_only_create_task(prompt: str) -> None:
@@ -44,6 +41,36 @@ def test_explicit_mutating_voice_intent_selects_only_create_task(prompt: str) ->
     assert isinstance(choice, LLMNamedToolChoice)
     assert choice.type == "function"
     assert choice.function.name == "create_task"
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Remind me to call Rahul tomorrow at 9 AM.",
+        "Remind me to call Parth in 5 minutes.",
+        "Please remind me to drink water today at 2.45 PM.",
+        "Remind me about the clinic tomorrow.",
+        "Remind me to update the task tomorrow at 9 AM.",
+        "Create a reminder to call the doctor tomorrow morning.",
+        "Add a reminder for medicine in 5 minutes.",
+        "Set up a reminder for tomorrow at 9 AM.",
+        "Schedule a reminder to submit the report Friday.",
+        "Remind us to leave in 5 minutes.",
+        "Remind me to call Parth.",
+    ],
+)
+def test_explicit_reminder_intent_selects_reminder_and_excludes_task(prompt: str) -> None:
+    request = build_voice_llm_request(
+        _settings(),
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=uuid.uuid4(),
+        transcript=prompt,
+        allowed_tools=create_default_tool_registry().definitions(),
+    )
+    assert isinstance(request.tool_choice, LLMNamedToolChoice)
+    assert request.tool_choice.function.name == "create_reminder"
+    assert "create_task" not in {tool.name for tool in request.allowed_tools}
 
 
 @pytest.mark.parametrize(
@@ -83,13 +110,18 @@ def test_task_lookup_requires_registered_list_tasks_tool() -> None:
     assert classify_voice_tool_choice("When should I call Path?", ()) == "auto"
 
 
-def test_routing_requires_registered_create_task_tool() -> None:
+def test_reminder_does_not_fall_back_to_task_when_reminder_tool_is_unavailable() -> None:
+    tools = tuple(
+        tool
+        for tool in create_default_tool_registry().definitions()
+        if tool.name != "create_reminder"
+    )
     assert (
         classify_voice_tool_choice(
             "Remind me to call Rahul tomorrow at 9 AM.",
-            (),
+            tools,
         )
-        == "auto"
+        == "none"
     )
 
 
@@ -150,6 +182,8 @@ def test_voice_request_contains_server_owned_routing_and_confirmation_policy() -
     assert isinstance(request.tool_choice, LLMNamedToolChoice)
     assert "MUST first call the registered" in request.system_instructions
     assert "create_task tool" in request.system_instructions
+    assert request.tool_choice.function.name == "create_reminder"
+    assert "registered create_reminder tool" in request.system_instructions
     assert "memory_save tool" in request.system_instructions
     assert "server owns confirmation and execution" in request.system_instructions
 

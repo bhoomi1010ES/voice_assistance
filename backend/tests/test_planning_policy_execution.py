@@ -82,13 +82,17 @@ def make_proposal(
     content: str | None = None,
 ) -> Proposal:
     src_text = text or title
+    temporal_span = None
+    if temporal_text:
+        start = src_text.index(temporal_text) if temporal_text in src_text else 0
+        temporal_span = Span(start=start, length=len(temporal_text), text=temporal_text)
     return Proposal(
         operation=operation,
         classification=classification,
         title=title,
         actor=actor,
         source=Span(start=0, length=len(src_text), text=src_text),
-        temporal=Span(start=0, length=len(temporal_text), text=temporal_text) if temporal_text else None,
+        temporal=temporal_span,
         content=content,
         confidence=1.0,
     )
@@ -1206,3 +1210,293 @@ async def test_pm3_gate_multi_record_conversational_turn(storage, tool_executor,
         assert "Added 2 tasks" in receipt.text_summary
         assert "Scheduled reminder 'Client meeting'" in receipt.text_summary
         assert "require confirmation" in receipt.text_summary
+
+
+# ---------------------------------------------------------------------------
+# Slice 3: Plan clock-timed obligations notify
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_plan_clock_timed_obligation_creates_task_and_linked_reminder(
+    storage, tool_executor, settings
+) -> None:
+    engine, owners = storage
+    principal, session_id = owners[0]
+    planning_executor = PlanningExecutor(settings, tool_executor)
+
+    with Session(engine, expire_on_commit=False) as sync_db:
+        db = AsyncDB(sync_db)
+        turn_id = await create_turn(db, principal, session_id)
+        now_utc = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
+
+        snapshot = PlanningSnapshot(
+            consent=PlanningConsent(
+                user_id=principal.user_id,
+                session_id=session_id,
+                authenticated=True,
+                session_active=True,
+                mode="plan",
+                state_version=1,
+                expected_state_version=1,
+            ),
+            now_utc=now_utc,
+            timezone="America/Los_Angeles",
+            active_plan_id=None,
+            plans=(),
+            targets=(),
+            context=(),
+        )
+
+        clock_due = datetime(2026, 10, 6, 22, 13, tzinfo=UTC)
+        dec_task = make_decision(
+            proposal=make_proposal(
+                "CREATE_TASK",
+                "Call Harsh",
+                text="I need to call Harsh at 3:13 PM",
+                temporal_text="at 3:13 PM",
+            ),
+            disposition="AUTO",
+            reason="eligible",
+            scheduled_at=clock_due,
+        )
+        dec_task = replace(dec_task, has_clock=True)
+
+        receipt = await planning_executor.execute_batch(
+            db=db,
+            principal=principal,
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=uuid.uuid4(),
+            transcript="I need to call Harsh at 3:13 PM",
+            snapshot=snapshot,
+            decisions=(dec_task,),
+            user_timezone="America/Los_Angeles",
+        )
+
+        assert len(receipt.saved_actions) == 1
+        assert len(receipt.failed_actions) == 0
+
+        tasks = (await db.scalars(select(Task).where(Task.user_id == principal.user_id))).all()
+        assert len(tasks) == 1
+        assert tasks[0].title == "Call Harsh"
+        assert tasks[0].due_at.replace(tzinfo=UTC) == clock_due
+
+        reminders = (
+            await db.scalars(select(Reminder).where(Reminder.user_id == principal.user_id))
+        ).all()
+        assert len(reminders) == 1
+        assert reminders[0].task_id == tasks[0].id
+        assert reminders[0].title == "Call Harsh"
+        assert reminders[0].trigger_at.replace(tzinfo=UTC) == clock_due
+        assert reminders[0].status == "scheduled"
+        assert reminders[0].delivery_channel == "push"
+
+
+@pytest.mark.asyncio
+async def test_plan_date_only_obligation_creates_task_only_no_reminder(
+    storage, tool_executor, settings
+) -> None:
+    engine, owners = storage
+    principal, session_id = owners[0]
+    planning_executor = PlanningExecutor(settings, tool_executor)
+
+    with Session(engine, expire_on_commit=False) as sync_db:
+        db = AsyncDB(sync_db)
+        turn_id = await create_turn(db, principal, session_id)
+        now_utc = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
+
+        snapshot = PlanningSnapshot(
+            consent=PlanningConsent(
+                user_id=principal.user_id,
+                session_id=session_id,
+                authenticated=True,
+                session_active=True,
+                mode="plan",
+                state_version=1,
+                expected_state_version=1,
+            ),
+            now_utc=now_utc,
+            timezone="America/Los_Angeles",
+            active_plan_id=None,
+            plans=(),
+            targets=(),
+            context=(),
+        )
+
+        eod_due = datetime(2026, 10, 9, 23, 59, tzinfo=UTC)
+        dec_task = make_decision(
+            proposal=make_proposal(
+                "CREATE_TASK",
+                "Presentation and report",
+                text="The presentation and report must be ready Friday",
+                temporal_text="Friday",
+            ),
+            disposition="AUTO",
+            reason="eligible",
+            scheduled_at=eod_due,
+        )
+        dec_task = replace(dec_task, has_clock=False)
+
+        receipt = await planning_executor.execute_batch(
+            db=db,
+            principal=principal,
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=uuid.uuid4(),
+            transcript="The presentation and report must be ready Friday",
+            snapshot=snapshot,
+            decisions=(dec_task,),
+            user_timezone="America/Los_Angeles",
+        )
+
+        assert len(receipt.saved_actions) == 1
+
+        tasks = (await db.scalars(select(Task).where(Task.user_id == principal.user_id))).all()
+        assert len(tasks) == 1
+        assert tasks[0].title == "Presentation and report"
+
+        reminders = (
+            await db.scalars(select(Reminder).where(Reminder.user_id == principal.user_id))
+        ).all()
+        assert len(reminders) == 0
+
+
+@pytest.mark.asyncio
+async def test_plan_coupled_task_and_reminder_upserts_no_duplicate(
+    storage, tool_executor, settings
+) -> None:
+    engine, owners = storage
+    principal, session_id = owners[0]
+    planning_executor = PlanningExecutor(settings, tool_executor)
+
+    with Session(engine, expire_on_commit=False) as sync_db:
+        db = AsyncDB(sync_db)
+        turn_id = await create_turn(db, principal, session_id)
+        now_utc = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
+
+        snapshot = PlanningSnapshot(
+            consent=PlanningConsent(
+                user_id=principal.user_id,
+                session_id=session_id,
+                authenticated=True,
+                session_active=True,
+                mode="plan",
+                state_version=1,
+                expected_state_version=1,
+            ),
+            now_utc=now_utc,
+            timezone="America/Los_Angeles",
+            active_plan_id=None,
+            plans=(),
+            targets=(),
+            context=(),
+        )
+
+        meeting_time = datetime(2026, 10, 9, 23, 0, tzinfo=UTC)
+        dec_task = make_decision(
+            proposal=make_proposal(
+                "CREATE_TASK",
+                "Client meeting",
+                text="Client meeting Friday at 4 PM",
+                temporal_text="Friday at 4 PM",
+            ),
+            disposition="AUTO",
+            reason="eligible",
+            scheduled_at=meeting_time,
+        )
+        dec_task = replace(dec_task, has_clock=True)
+
+        dec_reminder = make_decision(
+            proposal=make_proposal(
+                "CREATE_REMINDER",
+                "Client meeting",
+                text="Client meeting Friday at 4 PM",
+                classification="REMINDER",
+                temporal_text="Friday at 4 PM",
+            ),
+            disposition="AUTO",
+            reason="eligible",
+            scheduled_at=meeting_time,
+        )
+        dec_reminder = replace(dec_reminder, has_clock=True)
+
+        receipt = await planning_executor.execute_batch(
+            db=db,
+            principal=principal,
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=uuid.uuid4(),
+            transcript="Client meeting Friday at 4 PM",
+            snapshot=snapshot,
+            decisions=(dec_task, dec_reminder),
+            user_timezone="America/Los_Angeles",
+        )
+
+        assert len(receipt.saved_actions) == 2
+        assert len(receipt.duplicate_actions) == 0
+
+        tasks = (await db.scalars(select(Task).where(Task.user_id == principal.user_id))).all()
+        reminders = (
+            await db.scalars(select(Reminder).where(Reminder.user_id == principal.user_id))
+        ).all()
+        assert len(tasks) == 1
+        assert len(reminders) == 1
+        assert reminders[0].task_id == tasks[0].id
+        assert reminders[0].title == "Client meeting"
+        assert reminders[0].trigger_at.replace(tzinfo=UTC) == meeting_time
+
+
+def test_resolution_attaches_has_clock_correctly() -> None:
+    from app.planning.resolution import validate
+    from app.planning.types import Envelope
+
+    snapshot = PlanningSnapshot(
+        consent=PlanningConsent(uuid.uuid4(), uuid.uuid4(), True, True, "plan", 1, 1),
+        now_utc=datetime(2026, 10, 6, 12, 0, tzinfo=UTC),
+        timezone="America/Los_Angeles",
+    )
+
+    # 1. "at 3:13 PM" -> has_clock is True
+    p1 = make_proposal(
+        "CREATE_TASK",
+        "Call Harsh",
+        text="I need to call Harsh at 3:13 PM",
+        temporal_text="at 3:13 PM",
+    )
+    dec1 = validate(Envelope(actions=[p1]), "I need to call Harsh at 3:13 PM", snapshot)
+    assert len(dec1) == 1
+    assert dec1[0].has_clock is True
+
+    # 2. "tomorrow" -> has_clock is False
+    p2 = make_proposal(
+        "CREATE_TASK",
+        "Draft report",
+        text="Draft report tomorrow",
+        temporal_text="tomorrow",
+    )
+    dec2 = validate(Envelope(actions=[p2]), "Draft report tomorrow", snapshot)
+    assert len(dec2) == 1
+    assert dec2[0].has_clock is False
+
+    # 3. "tomorrow at 23:59" -> has_clock is False (23:59 EOD is not treated as clock)
+    p3 = make_proposal(
+        "CREATE_TASK",
+        "EOD deadline",
+        text="EOD deadline tomorrow at 23:59",
+        temporal_text="tomorrow at 23:59",
+    )
+    dec3 = validate(Envelope(actions=[p3]), "EOD deadline tomorrow at 23:59", snapshot)
+    assert len(dec3) == 1
+    assert dec3[0].has_clock is False
+
+    # 4. "in 15 minutes" -> has_clock is True
+    p4 = make_proposal(
+        "CREATE_TASK",
+        "Check oven",
+        text="I will check oven in 15 minutes",
+        temporal_text="in 15 minutes",
+    )
+    dec4 = validate(Envelope(actions=[p4]), "I will check oven in 15 minutes", snapshot)
+    assert len(dec4) == 1
+    assert dec4[0].has_clock is True

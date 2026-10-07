@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -9,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.clock import FrozenClock
 from app.core.config import Settings
+from app.llm.context import build_voice_llm_request
 from app.llm.errors import LLMToolLoopLimitError
 from app.llm.task_tools import CreateTaskArguments, register_task_tools
 from app.llm.tool_loop import (
@@ -29,6 +31,7 @@ from app.llm.types import (
     LLMRole,
     LLMToolCall,
 )
+from app.models import Reminder
 from app.services.device_time import DeviceTimeContext
 
 
@@ -266,14 +269,18 @@ class FakeFollowUpLLMService:
 class FakeDatabase:
     def __init__(self) -> None:
         self.tasks = []
+        self.reminders = []
 
     def add(self, value) -> None:
-        self.tasks.append(value)
+        if isinstance(value, Reminder):
+            self.reminders.append(value)
+        else:
+            self.tasks.append(value)
 
     async def flush(self) -> None:
-        for task in self.tasks:
-            if task.id is None:
-                task.id = uuid.uuid4()
+        for item in self.tasks + self.reminders:
+            if getattr(item, "id", None) is None:
+                item.id = uuid.uuid4()
 
 
 @pytest.mark.asyncio
@@ -297,6 +304,108 @@ async def test_default_registry_is_server_owned_and_schema_backed() -> None:
     )
     assert definition.name == "get_current_time"
     assert definition.input_schema["additionalProperties"] is False
+
+
+@pytest.mark.asyncio
+async def test_remind_me_proposes_and_confirms_only_a_reminder() -> None:
+    registry = create_default_tool_registry()
+    request = build_voice_llm_request(
+        _settings(),
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=uuid.uuid4(),
+        transcript="Remind me to call Parth in 5 minutes.",
+        allowed_tools=registry.definitions(),
+    )
+    call = LLMToolCall(
+        tool_call_id="call-reminder-only",
+        name="create_reminder",
+        arguments={"title": "Call Parth", "trigger_expression": "in 5 minutes"},
+    )
+    database = FakeDatabase()
+    captured = []
+
+    async def confirm(_call, arguments, _tool):
+        captured.append(arguments)
+        return True
+
+    context = _context(
+        request,
+        scopes=frozenset({"tasks:write", "reminders:write"}),
+        db=database,
+        clock=FrozenClock(datetime(2026, 10, 7, 9, 40, tzinfo=UTC)),
+        user_timezone="Asia/Kolkata",
+        source_transcript=request.messages[-1].content,
+        confirmation_requested=confirm,
+    )
+    loop = LLMToolLoop(
+        _settings(),
+        FakeFollowUpLLMService(call, "Done."),
+        registry,
+        idempotency_store=InMemoryToolIdempotencyStore(),
+    )
+    events = [event async for event in loop.stream(request, context=context)]
+    assert any(event.event_type == "confirmation_required" for event in events)
+    assert database.tasks == []
+    assert captured[0].trigger_at == datetime(2026, 10, 7, 9, 45, tzinfo=UTC)
+
+    approved = await loop.executor.execute(
+        call.model_copy(update={"arguments": captured[0].model_dump(mode="json")}),
+        context=replace(
+            context, source_transcript=None, confirmed_tool_call_ids=frozenset({call.tool_call_id})
+        ),
+    )
+    assert approved.success and approved.executed
+    assert len(database.tasks) == 0
+    assert len(database.reminders) == 1
+    assert isinstance(database.reminders[0], Reminder)
+    assert database.reminders[0].trigger_at == datetime(2026, 10, 7, 9, 45, tzinfo=UTC)
+    assert database.reminders[0].timezone == "Asia/Kolkata"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reminder_available", [True, False])
+async def test_reminder_request_rejects_a_provider_task_call_before_any_write(
+    reminder_available: bool,
+) -> None:
+    registry = create_default_tool_registry()
+    request = build_voice_llm_request(
+        _settings(),
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=uuid.uuid4(),
+        transcript="Remind me to call Parth in 5 minutes.",
+        allowed_tools=tuple(
+            tool
+            for tool in registry.definitions()
+            if reminder_available or tool.name != "create_reminder"
+        ),
+    )
+    call = LLMToolCall(
+        tool_call_id="wrong-task", name="create_task", arguments={"title": "Call Parth"}
+    )
+
+    class WrongTaskProvider(FakeLLMService):
+        async def stream(self, request):
+            if any(message.role == LLMRole.TOOL for message in request.messages):
+                yield _event(
+                    request, "response_completed", 0, text="Unable to create the reminder."
+                )
+            else:
+                yield _event(request, "tool_call_completed", 0, tool_call=call)
+
+    database = FakeDatabase()
+    context = _context(
+        request,
+        scopes=frozenset({"tasks:write", "reminders:write"}),
+        db=database,
+        confirmed_tool_call_ids=frozenset({call.tool_call_id}),
+    )
+    loop = LLMToolLoop(_settings(), WrongTaskProvider(), registry)
+    events = [event async for event in loop.stream(request, context=context)]
+    failure = next(event for event in events if event.event_type == "tool_execution_failed")
+    assert failure.error_code == "llm_tool_not_authorized"
+    assert database.tasks == []
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from app.llm.tool_loop import (
     create_default_tool_registry,
 )
 from app.llm.types import LLMNamedToolChoice, LLMToolCall
+from app.models.resources import Reminder, Task
 from app.routing.models import RouteName
 from app.routing.rules import classify_transcript
 from app.services import device_time
@@ -166,30 +167,38 @@ def test_scheduled_item_lookups_precede_broad_clock_routing(transcript: str) -> 
 
 
 @pytest.mark.parametrize(
-    "transcript",
+    ("transcript", "expected_tool"),
     [
-        "Schedule a meeting at the current time tomorrow.",
-        "Remind me to ask what time it is tomorrow.",
+        ("Schedule a meeting at the current time tomorrow.", "create_task"),
+        ("Remind me to ask what time it is tomorrow.", "create_reminder"),
     ],
 )
-def test_scheduled_item_creation_does_not_route_to_a_clock_tool(transcript: str) -> None:
+def test_scheduled_item_creation_does_not_route_to_a_clock_tool(
+    transcript: str, expected_tool: str
+) -> None:
     choice = classify_voice_tool_choice(transcript, create_default_tool_registry().definitions())
 
     assert isinstance(choice, LLMNamedToolChoice)
-    assert choice.function.name == "create_task"
+    assert choice.function.name == expected_tool
 
 
 class _TaskDatabase:
     def __init__(self) -> None:
         self.tasks: list[object] = []
+        self.reminders: list[object] = []
 
-    def add(self, task: object) -> None:
-        self.tasks.append(task)
+    def add(self, item: object) -> None:
+        if isinstance(item, Task):
+            self.tasks.append(item)
+        elif isinstance(item, Reminder):
+            self.reminders.append(item)
+        else:
+            self.tasks.append(item)
 
     async def flush(self) -> None:
-        for task in self.tasks:
-            if getattr(task, "id", None) is None:
-                task.id = uuid.uuid4()
+        for item in self.tasks + self.reminders:
+            if getattr(item, "id", None) is None:
+                item.id = uuid.uuid4()
 
 
 @pytest.mark.asyncio
@@ -257,7 +266,12 @@ async def test_acceptance_3_tomorrow_uses_device_date_and_executes_once_after_co
     assert approved.success is True and approved.executed is True
     assert replay.success is True and replay.replayed is True
     assert len(database.tasks) == 1
+    assert len(database.reminders) == 1
     task = database.tasks[0]
+    reminder = database.reminders[0]
+    assert reminder.task_id == task.id
+    assert reminder.trigger_at == task.due_at
+    assert reminder.title == task.title
     assert task.due_at == datetime(2026, 9, 12, 3, 30, tzinfo=UTC)
     assert task.local_due_at.isoformat() == "2026-09-12T09:00:00+05:30"
     assert task.timezone_source == "device"

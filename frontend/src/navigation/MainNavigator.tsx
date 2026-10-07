@@ -37,9 +37,13 @@ export function MainNavigator() {
   >('tasks');
 
   useEffect(() => {
-    const unsubscribe = setupPushNotificationListeners(controller, () => {
+    const unsubscribe = setupPushNotificationListeners(controller, data => {
       setRoute('tasks');
-      setTasksInitialPage('reminders');
+      if (data?.kind === 'task_created') {
+        setTasksInitialPage('tasks');
+      } else {
+        setTasksInitialPage('reminders');
+      }
     });
     return unsubscribe;
   }, [controller]);

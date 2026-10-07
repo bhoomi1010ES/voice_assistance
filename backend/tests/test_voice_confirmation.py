@@ -770,6 +770,18 @@ def test_create_task_confirmation_copy_uses_task_language() -> None:
     assert VoiceGateway._confirmation_rejected_text(pending) == "Okay, I won't create that task."
 
 
+def test_create_reminder_confirmation_copy_uses_reminder_language() -> None:
+    pending = _pending(_principal(), uuid.uuid4())
+    pending.tool_name = "create_reminder"
+    assert VoiceGateway._confirmation_success_text(pending) == (
+        "Done. I created the reminder Call Rahul."
+    )
+    assert VoiceGateway._confirmation_failure_text(pending) == "I couldn't create that reminder."
+    assert (
+        VoiceGateway._confirmation_rejected_text(pending) == "Okay, I won't create that reminder."
+    )
+
+
 @pytest.mark.asyncio
 async def test_confirmation_prompt_is_spoken_with_the_same_text_shown_to_the_user() -> None:
     gateway, _store, outbound, response_id, _count = await _gateway()

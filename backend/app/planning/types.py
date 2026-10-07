@@ -94,6 +94,7 @@ class Decision:
     target_revision: int | None = None
     scheduled_at: datetime | None = None
     timezone: str | None = None
+    has_clock: bool = False
 
     def outcome(self, disposition: str, reason: str) -> Decision:
         return replace(self, disposition=disposition, reason=reason)

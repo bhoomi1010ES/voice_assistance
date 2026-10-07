@@ -33,6 +33,7 @@ import {
   parsePlanningReceipt,
   parsePlanningState,
 } from '../plans/types';
+import { displayLocalTaskCreatedNotification } from '../notifications/PushNotificationService';
 import { publicApiConfig } from '../config/environment';
 import {
   applyTranscriptEvent,
@@ -621,6 +622,7 @@ export class VoiceSocket {
   private sileroSpeechSegmentStartedDuringGuard = false;
   private autoListenSuppressed = false;
   private lastHeartbeatSessionId: string | null = null;
+  private notifiedTaskToolCallIds = new Set<string>();
 
   constructor(options: VoiceSocketOptions = {}) {
     this.adapter = options.adapter ?? nativeVoiceSocketAdapter;
@@ -1957,6 +1959,24 @@ export class VoiceSocket {
         this.confirmationAwaitingVoice = false;
         this.confirmationPromptPlaybackCompleted = false;
         this.setSnapshot({ confirmationAwaitingVoice: false });
+      }
+      if (
+        event.assistant.type === 'tool.status' &&
+        event.assistant.name === 'create_task' &&
+        event.assistant.status === 'success' &&
+        event.assistant.toolCallId &&
+        !this.notifiedTaskToolCallIds.has(event.assistant.toolCallId)
+      ) {
+        this.notifiedTaskToolCallIds.add(event.assistant.toolCallId);
+        if (this.notifiedTaskToolCallIds.size > 200) {
+          const oldest = this.notifiedTaskToolCallIds.keys().next().value;
+          if (oldest) {
+            this.notifiedTaskToolCallIds.delete(oldest);
+          }
+        }
+        displayLocalTaskCreatedNotification({
+          title: 'Task created',
+        }).catch(() => undefined);
       }
     }
 
@@ -3558,6 +3578,7 @@ export class VoiceSocket {
       this.conversationFlushTimer = null;
     }
     this.pendingConversationEvents = [];
+    this.notifiedTaskToolCallIds.clear();
     this.conversationState = clearConversation();
     this.setSnapshot({
       conversationMessages: [],

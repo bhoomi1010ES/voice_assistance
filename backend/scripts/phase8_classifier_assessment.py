@@ -53,7 +53,13 @@ PHASE7_CASES = (
         None,
         False,
     ),
-    ("p7-task-action", "Remind me to call Rahul tomorrow at 9 AM.", "TASK_ACTION", "task", False),
+    (
+        "p7-reminder-action",
+        "Remind me to call Rahul tomorrow at 9 AM.",
+        "TASK_ACTION",
+        "reminder",
+        False,
+    ),
     ("p7-memory-save", "Remember that I prefer cappuccino.", "MEMORY_ACTION", "memory_save", False),
     (
         "p7-multi-memory-action",

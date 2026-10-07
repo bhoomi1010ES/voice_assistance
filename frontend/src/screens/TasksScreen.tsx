@@ -27,6 +27,7 @@ import {
 import { useAppTheme } from '../design/ThemeProvider';
 import { radii, spacing, typography } from '../theme';
 import { strings } from '../i18n/strings';
+import { displayLocalTaskCreatedNotification } from '../notifications/PushNotificationService';
 import {
   completeTask,
   createReminder,
@@ -318,6 +319,12 @@ export function TasksScreen({ initialPage = 'tasks' }: TasksScreenProps = {}) {
       });
       setTaskFormOpen(false);
       setNotice({ text: editingTaskId ? 'Task updated.' : 'Task created.' });
+      if (!editingTaskId) {
+        displayLocalTaskCreatedNotification({
+          title: 'Task created',
+          body: saved.title,
+        }).catch(() => undefined);
+      }
     });
   };
 

@@ -1867,6 +1867,7 @@ class VoiceGateway:
         tool_execution_finished_at: float | None = None
         confirmation_required = False
         task_date_clarification_required = False
+        temporal_tool_name: str | None = None
         tts_queue: asyncio.Queue[str | None] | None = None
         tts_task: asyncio.Task[None] | None = None
         tts_segmenter: SentenceSegmenter | None = None
@@ -2356,16 +2357,23 @@ class VoiceGateway:
                         )
                         if (
                             event.event_type == "tool_execution_failed"
-                            and event.tool_call.name == "create_task"
+                            and event.tool_call.name in {"create_task", "create_reminder"}
                             and event.error_code == "llm_tool_temporal_resolution_failed"
                         ):
                             task_date_clarification_required = True
+                            temporal_tool_name = event.tool_call.name
                             self._trace_latency(
                                 session_id=session_id,
                                 turn_id=turn_id,
                                 response_id=response_id,
-                                component="task",
-                                event="task_date_resolution_failed",
+                                component="reminder"
+                                if temporal_tool_name == "create_reminder"
+                                else "task",
+                                event=(
+                                    "reminder_date_resolution_failed"
+                                    if temporal_tool_name == "create_reminder"
+                                    else "task_date_resolution_failed"
+                                ),
                                 metadata={"error_code": event.error_code},
                             )
                             break
@@ -2470,7 +2478,8 @@ class VoiceGateway:
             }
 
         if task_date_clarification_required:
-            text = "I couldn't resolve that task date or time. What date and time should I use?"
+            item = "reminder" if temporal_tool_name == "create_reminder" else "task"
+            text = f"I couldn't resolve that {item} date or time. What date and time should I use?"
             await self._emit_routed_final_text(
                 session_id=session_id,
                 turn_id=turn_id,
@@ -3469,6 +3478,7 @@ class VoiceGateway:
             "list_reminders": RouteName.STRUCTURED_READ,
             "memory_search": RouteName.MEMORY_QUERY,
             "create_task": RouteName.TASK_ACTION,
+            "create_reminder": RouteName.TASK_ACTION,
             "memory_save": RouteName.MEMORY_ACTION,
             "memory_forget": RouteName.MEMORY_ACTION,
         }
@@ -4329,6 +4339,9 @@ class VoiceGateway:
 
     @staticmethod
     def _confirmation_success_text(pending: PendingConfirmation) -> str:
+        if pending.tool_name == "create_reminder":
+            title = str(pending.validated_tool_arguments.get("title", "that reminder"))
+            return f"Done. I created the reminder {title}."
         if pending.tool_name == "create_task":
             title = str(pending.validated_tool_arguments.get("title", "that task"))
             return f"Done. I created the task {title}."
@@ -4340,6 +4353,8 @@ class VoiceGateway:
 
     @staticmethod
     def _confirmation_failure_text(pending: PendingConfirmation) -> str:
+        if pending.tool_name == "create_reminder":
+            return "I couldn't create that reminder."
         if pending.tool_name == "create_task":
             return "I couldn't create that task."
         if pending.tool_name == "memory_save":
@@ -4350,6 +4365,8 @@ class VoiceGateway:
 
     @staticmethod
     def _confirmation_rejected_text(pending: PendingConfirmation) -> str:
+        if pending.tool_name == "create_reminder":
+            return "Okay, I won't create that reminder."
         if pending.tool_name == "create_task":
             return "Okay, I won't create that task."
         if pending.tool_name == "memory_save":

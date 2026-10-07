@@ -28,6 +28,7 @@ from app.llm.service import LLMService
 from app.llm.types import (
     LLMEvent,
     LLMMessage,
+    LLMNamedToolChoice,
     LLMRequest,
     LLMRole,
     LLMToolCall,
@@ -614,7 +615,14 @@ class LLMToolLoop:
                 raise LLMToolLoopLimitError("Tool execution requires provider metadata.")
             lifecycle_sequence = round_events[-1].sequence + 1 if round_events else 0
             for call in completed_calls:
-                result = await self.executor.execute(call, context=context)
+                if request.tool_choice == "none" or (
+                    isinstance(request.tool_choice, LLMNamedToolChoice)
+                    and request.tool_choice.function.name == "create_reminder"
+                    and call.name == "create_task"
+                ):
+                    result = self.executor._failure(call, "llm_tool_not_authorized")
+                else:
+                    result = await self.executor.execute(call, context=context)
                 execution_results.append(result)
                 next_messages.append(
                     LLMMessage(

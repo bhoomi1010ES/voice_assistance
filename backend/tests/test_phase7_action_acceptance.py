@@ -23,7 +23,7 @@ def test_phase7_action_acceptance_corpus() -> None:
     assert corpus["corpus_id"] == "phase7-action-acceptance-v1"
     assert corpus["version"] == "1.0.0"
     assert corpus["reminder_semantics"]["notification_delivery_claimed"] is False
-    assert "create_task" in corpus["reminder_semantics"]["decision"]
+    assert "create_reminder" in corpus["reminder_semantics"]["decision"]
     registry = create_default_tool_registry()
     register_memory_tools(registry, allow_write=True)
 

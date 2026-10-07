@@ -18,7 +18,7 @@ from app.llm.types import (
 from app.services.latency_trace import latency_span
 from app.services.task_due_dates import has_temporal_expression
 
-VOICE_SYSTEM_PROMPT_VERSION = "phase6-voice-v2-memory-evidence"
+VOICE_SYSTEM_PROMPT_VERSION = "phase6-voice-v3-reminder-intent"
 VOICE_SYSTEM_INSTRUCTIONS = """You are a concise voice assistant.
 Answer the user's spoken request accurately and directly.
 Do not claim that an external action succeeded unless a validated tool result confirms it.
@@ -38,16 +38,20 @@ VOICE_TOOL_ROUTING_INSTRUCTIONS = """Tool-routing policy:
   the tool's local_due_at or local_trigger_at and timezone. Do not read raw
   ISO timestamps or use the UTC due_at/trigger_at clock as local time.
 - Answer other informational questions and ordinary conversation without a tool.
-- For an explicit task or reminder request, MUST first call the registered
+- For an explicit reminder request, including "remind me", MUST first call the
+  registered create_reminder tool. Never create a task for a reminder request.
+  Use only user-provided reminder fields; the server resolves trigger_expression.
+  If the reminder date/time is missing, ask when to remind the user.
+- For an explicit task request, MUST first call the registered
   create_task tool with only the user-provided task fields.
-- For a scheduled meeting, appointment, call, or event with a date/time, MUST
-  first call create_task.
+- For a scheduled meeting, appointment, call, or event with a date/time and
+  no explicit reminder request, MUST first call create_task.
 - Never resolve tomorrow, weekdays, relative durations, timezone offsets, DST,
   or due_at values yourself; the deterministic server resolver owns them.
 - For an explicit request to remember personal information, MUST first call the
   registered memory_save tool with only the information the user asked to save.
-- Do not ask for confirmation in ordinary assistant text or claim that a task
-  or memory was saved. The server owns confirmation and execution after a
+- Do not ask for confirmation in ordinary assistant text or claim that a task,
+  reminder, or memory was saved. The server owns confirmation and execution after a
   structured tool proposal.
 - Use only registered tools. Never invent tools or privileged ownership, user,
   tenant, admin, authorization, or internal status fields."""
@@ -58,10 +62,14 @@ _INFORMATIONAL_PREFIX = re.compile(
     r"can\s+you\s+explain\b|tell\s+me\s+about\b|meaning\s+of\b)",
     re.IGNORECASE,
 )
-_REMINDER_ACTION = re.compile(r"\bremind\s+(?:me|us)\b", re.IGNORECASE)
+_REMINDER_ACTION = re.compile(
+    r"\bremind\s+(?:me|us)\b|"
+    r"\b(?:create|add|make|set|schedule)\s+(?:up\s+)?(?:a|an|the)?\s*reminder\b",
+    re.IGNORECASE,
+)
 _TASK_ACTION = re.compile(
-    r"\b(?:create|add|make)\s+(?:a|an|the)?\s*(?:task|reminder)\b|"
-    r"\b(?:set|schedule)\s+(?:a|an|the)?\s*(?:task|reminder)\b",
+    r"\b(?:create|add|make)\s+(?:a|an|the)?\s*task\b|"
+    r"\b(?:set|schedule)\s+(?:a|an|the)?\s*task\b",
     re.IGNORECASE,
 )
 _MEMORY_SAVE_ACTION = re.compile(
@@ -137,9 +145,11 @@ def classify_voice_tool_choice(
     # precedence for explicit saved-item lookup questions.
     if _INFORMATIONAL_PREFIX.search(user_text):
         return "auto"
-    if "create_task" in available_tools and (
-        _REMINDER_ACTION.search(user_text) or _TASK_ACTION.search(user_text)
-    ):
+    if _REMINDER_ACTION.search(user_text):
+        if "create_reminder" in available_tools:
+            return LLMNamedToolChoice(function={"name": "create_reminder"})
+        return "none"
+    if "create_task" in available_tools and _TASK_ACTION.search(user_text):
         return LLMNamedToolChoice(function={"name": "create_task"})
     if "create_task" in available_tools and (
         _SCHEDULED_ITEM.search(user_text) and has_temporal_expression(user_text)
@@ -295,6 +305,11 @@ def _build_voice_llm_request(
     )
     with tool_span:
         tool_choice = classify_voice_tool_choice(user_text, allowed_tools)
+    if (
+        isinstance(tool_choice, LLMNamedToolChoice)
+        and tool_choice.function.name == "create_reminder"
+    ):
+        allowed_tools = tuple(tool for tool in allowed_tools if tool.name != "create_task")
 
     return LLMRequest(
         session_id=session_id,

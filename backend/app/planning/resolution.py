@@ -18,6 +18,7 @@ from app.services.task_due_dates import (
     normalize_clock_expression,
     resolve_task_due_at,
 )
+from app.services.task_linked_reminders import has_real_clock
 
 _NEGATIVE = re.compile(
     r"\b(?:not|don't|doesn't|didn't|never|no longer|might|maybe|thinking|considering|"
@@ -201,46 +202,52 @@ def _temporal_affinity(proposal: Proposal) -> bool:
 
 
 def resolve_time(
-    proposal: Proposal, snapshot: PlanningSnapshot
-) -> tuple[datetime | None, str, str]:
+    proposal: Proposal, snapshot: PlanningSnapshot, *, include_clock: bool = False
+) -> tuple[datetime | None, str, str] | tuple[datetime | None, str, str, bool]:
     expression = proposal.temporal.text if proposal.temporal else ""
     zone, _ = timezone_for_request(expression, device_timezone=snapshot.timezone)
+
+    def _fail(r: str):
+        if include_clock:
+            return None, zone, r, False
+        return None, zone, r
+
     try:
         ZoneInfo(zone)
     except ZoneInfoNotFoundError:
-        return None, zone, "invalid_timezone"
+        return _fail("invalid_timezone")
     if _ANCHOR.search(proposal.source.text) and not _ANCHOR.search(expression):
-        return None, zone, "missing_temporal_modifier"
+        return _fail("missing_temporal_modifier")
     if re.search(r"\bnext week\b", proposal.source.text, re.I) and not re.search(
         r"\bnext week\b", expression, re.I
     ):
-        return None, zone, "missing_temporal_modifier"
+        return _fail("missing_temporal_modifier")
     if re.search(r"\bevery\b|\bdaily\b|\bweekly\b", proposal.source.text, re.I) and not re.search(
         r"\bevery\b|\bdaily\b|\bweekly\b", expression, re.I
     ):
-        return None, zone, "missing_temporal_modifier"
+        return _fail("missing_temporal_modifier")
     if not expression:
         if has_temporal_expression(proposal.source.text) or _TEMPORAL.search(proposal.source.text):
-            return None, zone, "missing_temporal_evidence"
+            return _fail("missing_temporal_evidence")
         if "REMINDER" in proposal.operation:
-            return None, zone, "missing_time"
-        return None, zone, ""
+            return _fail("missing_time")
+        return _fail("")
     if _ANCHOR.search(expression):
         reason = (
             "unsupported_offset"
             if re.search(r"\b(?:days?|hours?|minutes?)\b", expression, re.I)
             else "unsupported_anchor"
         )
-        return None, zone, reason
+        return _fail(reason)
     if re.search(r"\bnext week\b", expression, re.I):
-        return None, zone, "date_range"
+        return _fail("date_range")
     if re.search(r"\b(?:monthly|month|business day)\b", expression, re.I):
-        return None, zone, "unsupported_recurrence"
+        return _fail("unsupported_recurrence")
     if proposal.recurrence:
         try:
             normalized = validate_recurrence_rule(proposal.recurrence)
         except RecurrenceResolutionError:
-            return None, zone, "unsupported_recurrence"
+            return _fail("unsupported_recurrence")
         evidence = proposal.recurrence_source.text if proposal.recurrence_source else ""
         daily = re.search(r"\bevery day\b|\bdaily\b", evidence, re.I)
         weekly = re.search(
@@ -261,12 +268,12 @@ def resolve_time(
             else ("FREQ=WEEKLY;BYDAY=" + weekdays[weekly[1].casefold()] if weekly else None)
         )
         if normalized != expected:
-            return None, zone, "ungrounded_recurrence"
+            return _fail("ungrounded_recurrence")
         expression = re.sub(
             r"\bevery day\b|\bdaily\b|\bevery\s+", "", expression, flags=re.I
         ).strip()
     elif re.search(r"\bevery\b|\bdaily\b|\bweekly\b", expression, re.I):
-        return None, zone, "unsupported_recurrence"
+        return _fail("unsupported_recurrence")
     # Never let a resolver discard an unknown modifier around a recognized date.
     grammar = (
         r"(?:today|tomorrow|day after tomorrow|(?:next )?"
@@ -282,21 +289,21 @@ def resolve_time(
     cleaned = re.sub(r"^(?:by|on)\s+", "", cleaned)
     cleaned = normalize_clock_expression(cleaned)
     if not cleaned:
-        return None, zone, "missing_time"
+        return _fail("missing_time")
     matched = re.fullmatch(grammar, cleaned, re.I)
     duration = re.fullmatch(
         r"in (?:\d+|one|two|three|four|five|six|seven|eight|nine|ten) (?:minutes?|hours?)",
         cleaned,
     )
     if not matched and not duration:
-        return None, zone, "unsupported_temporal_expression"
+        return _fail("unsupported_temporal_expression")
     clock_text = (matched["clock"] or "").strip() if matched else ""
     clock_match = re.search(r"\d{1,2}", clock_text)
     has_clock = bool(clock_text or duration)
     if clock_match and 1 <= int(clock_match[0]) <= 12 and not re.search(r"[ap]\.?m\.?", clock_text):
-        return None, zone, "ambiguous_time"
+        return _fail("ambiguous_time")
     if "REMINDER" in proposal.operation and not has_clock:
-        return None, zone, "missing_time"
+        return _fail("missing_time")
     if (
         clock_text
         and not re.match(r"(?:at|by)\b", clock_text)
@@ -315,6 +322,10 @@ def resolve_time(
             now_utc=snapshot.now_utc,
             timezone_name=zone,
         )
+        if at is not None and not has_real_clock(at, zone):
+            has_clock = False
+        if include_clock:
+            return at, zone, "", has_clock
         return at, zone, ""
     except (TaskDueDateResolutionError, ValueError) as error:
         message = str(error)
@@ -325,7 +336,7 @@ def resolve_time(
             reason = "ambiguous_local_time"
         elif "future" in message:
             reason = "past_time"
-        return None, zone, reason
+        return _fail(reason)
 
 
 def validate(
@@ -541,12 +552,12 @@ def validate(
         ):
             decisions.append(decision.outcome("CLARIFY", "missing_plan"))
             continue
-        at, zone, reason = (
-            resolve_time(proposal, snapshot)
+        at, zone, reason, clock_present = (
+            resolve_time(proposal, snapshot, include_clock=True)
             if proposal.operation not in {"COMPLETE_TASK", "ADD_PLAN_CONTEXT"}
-            else (None, snapshot.timezone, "")
+            else (None, snapshot.timezone, "", False)
         )
-        decision = replace(decision, scheduled_at=at, timezone=zone)
+        decision = replace(decision, scheduled_at=at, timezone=zone, has_clock=clock_present)
         if reason:
             decisions.append(decision.outcome("CLARIFY", reason))
             continue

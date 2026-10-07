@@ -177,6 +177,7 @@ class PlanningExecutor:
                 "timezone": decision.timezone,
                 "plan_ordinal": decision.plan_ordinal,
                 "resolved_at": snapshot.now_utc.isoformat(),
+                "has_clock": getattr(decision, "has_clock", False),
             }
             canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
             action = PlanningAction(
@@ -315,7 +316,11 @@ class PlanningExecutor:
                             # Check semantic duplicate in db
                             if decision.proposal.operation in {"CREATE_TASK", "CREATE_REMINDER"}:
                                 is_dup = await self._check_runtime_duplicate(
-                                    db, principal.user_id, effective_plan_id, decision
+                                    db,
+                                    principal.user_id,
+                                    effective_plan_id,
+                                    decision,
+                                    coupled_task_id=coupled_task_id,
                                 )
                                 if is_dup:
                                     action.status = "duplicate"
@@ -410,6 +415,48 @@ class PlanningExecutor:
                                     ).automatic_writes
                                 ),
                             )
+
+                            if tool_name == "create_reminder" and coupled_task_id:
+                                existing_linked = await db.scalar(
+                                    select(Reminder).where(
+                                        Reminder.task_id == coupled_task_id,
+                                        Reminder.user_id == principal.user_id,
+                                        Reminder.status == "scheduled",
+                                    )
+                                )
+                                if existing_linked is not None:
+                                    existing_linked.planning_action_id = action.id
+                                    if getattr(validated_tool_args, "title", None):
+                                        existing_linked.title = validated_tool_args.title
+                                    if getattr(validated_tool_args, "body", None):
+                                        existing_linked.body = validated_tool_args.body
+                                    if getattr(validated_tool_args, "recurrence_rule", None):
+                                        existing_linked.recurrence_rule = (
+                                            validated_tool_args.recurrence_rule
+                                        )
+                                    if getattr(validated_tool_args, "trigger_at", None):
+                                        existing_linked.trigger_at = validated_tool_args.trigger_at
+                                        existing_linked.next_attempt_at = (
+                                            validated_tool_args.trigger_at
+                                        )
+                                    await db.flush()
+                                    res_data = {
+                                        "result": {
+                                            "reminder_id": str(existing_linked.id),
+                                            "task_id": str(coupled_task_id),
+                                            "title": existing_linked.title,
+                                            "trigger_at": existing_linked.trigger_at.isoformat()
+                                            if existing_linked.trigger_at
+                                            else None,
+                                            "status": existing_linked.status,
+                                        }
+                                    }
+                                    action.status = "completed"
+                                    action.committed_at = datetime.now(UTC)
+                                    action.result_json = res_data
+                                    action.plan_id = effective_plan_id
+                                    group_results.append((action, decision, res_data))
+                                    continue
 
                             call = LLMToolCall(
                                 tool_call_id=action.tool_call_id or f"plan_act_{action.id}",
@@ -666,6 +713,7 @@ class PlanningExecutor:
         user_id: uuid.UUID,
         plan_id: uuid.UUID | None,
         decision: Decision,
+        coupled_task_id: uuid.UUID | None = None,
     ) -> bool:
         if decision.proposal.operation == "CREATE_TASK":
             existing_tasks = (
@@ -683,6 +731,8 @@ class PlanningExecutor:
                     if t.due_at == decision.scheduled_at:
                         return True
         elif decision.proposal.operation == "CREATE_REMINDER":
+            if coupled_task_id is not None:
+                return False
             existing_reminders = (
                 await db.scalars(
                     select(Reminder).where(

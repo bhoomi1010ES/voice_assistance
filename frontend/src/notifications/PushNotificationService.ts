@@ -12,6 +12,7 @@ import { PermissionsAndroid, Platform } from 'react-native';
 import { AuthController } from '../auth/AuthController';
 
 export const REMINDERS_CHANNEL_ID = 'reminders';
+export const TASKS_CHANNEL_ID = 'tasks';
 
 // Bounded in-memory set to prevent duplicate presentation if FCM redelivers
 const SEEN_DELIVERY_IDS = new Set<string>();
@@ -40,25 +41,31 @@ export function clearSeenDeliveryIds(): void {
   SEEN_DELIVERY_IDS.clear();
 }
 
-type NotificationTapHandler = () => void;
+export type NotificationTapData = {
+  kind?: string;
+  [key: string]: any;
+};
+
+export type NotificationTapHandler = (data?: NotificationTapData) => void;
 let globalNotificationTapHandler: NotificationTapHandler | null = null;
-let pendingNotificationTap = false;
+let pendingNotificationTapData: NotificationTapData | null = null;
 
 export function setNotificationTapHandler(
   handler: NotificationTapHandler | null,
 ): void {
   globalNotificationTapHandler = handler;
-  if (handler && pendingNotificationTap) {
-    pendingNotificationTap = false;
-    handler();
+  if (handler && pendingNotificationTapData !== null) {
+    const data = pendingNotificationTapData;
+    pendingNotificationTapData = null;
+    handler(data);
   }
 }
 
-export function triggerNotificationTap(): void {
+export function triggerNotificationTap(data?: NotificationTapData): void {
   if (globalNotificationTapHandler) {
-    globalNotificationTapHandler();
+    globalNotificationTapHandler(data);
   } else {
-    pendingNotificationTap = true;
+    pendingNotificationTapData = data ?? {};
   }
 }
 
@@ -73,6 +80,54 @@ export async function createRemindersNotificationChannel(): Promise<string> {
     });
   } catch {
     return REMINDERS_CHANNEL_ID;
+  }
+}
+
+export async function createTasksNotificationChannel(): Promise<string> {
+  try {
+    return await notifee.createChannel({
+      id: TASKS_CHANNEL_ID,
+      name: 'Tasks',
+      importance: AndroidImportance.HIGH,
+      sound: 'default',
+      vibration: true,
+    });
+  } catch {
+    return TASKS_CHANNEL_ID;
+  }
+}
+
+export async function displayLocalTaskCreatedNotification(options?: {
+  title?: string;
+  body?: string;
+}): Promise<void> {
+  const hasPermission = await requestNotificationPermission();
+  if (!hasPermission) {
+    return;
+  }
+
+  const title = options?.title || 'Task created';
+  const body = options?.body || '';
+
+  await createTasksNotificationChannel();
+
+  try {
+    await notifee.displayNotification({
+      title,
+      body,
+      android: {
+        channelId: TASKS_CHANNEL_ID,
+        importance: AndroidImportance.HIGH,
+        pressAction: {
+          id: 'default',
+        },
+      },
+      data: {
+        kind: 'task_created',
+      },
+    });
+  } catch {
+    // Best-effort local notification display
   }
 }
 
@@ -184,14 +239,15 @@ export async function handleBackgroundRemoteMessage(
 
 export function setupPushNotificationListeners(
   authController: AuthController,
-  onNavigateToReminders?: () => void,
+  onNavigate?: NotificationTapHandler,
 ): () => void {
-  if (onNavigateToReminders) {
-    setNotificationTapHandler(onNavigateToReminders);
+  if (onNavigate) {
+    setNotificationTapHandler(onNavigate);
   }
 
-  // Ensure high-importance notification channel exists
+  // Ensure high-importance notification channels exist
   createRemindersNotificationChannel().catch(() => undefined);
+  createTasksNotificationChannel().catch(() => undefined);
 
   // Sync token if already authenticated
   if (authController.getState().status === 'authenticated') {
@@ -222,7 +278,7 @@ export function setupPushNotificationListeners(
     unsubscribeOpenedApp = onNotificationOpenedApp(
       messaging,
       (_remoteMessage: RemoteMessage) => {
-        triggerNotificationTap();
+        triggerNotificationTap(_remoteMessage?.data);
       },
     );
   } catch {
@@ -232,9 +288,9 @@ export function setupPushNotificationListeners(
   // Notifee notification press events (both foreground and background)
   let unsubscribeNotifee: () => void = () => {};
   try {
-    unsubscribeNotifee = notifee.onForegroundEvent(({ type }) => {
+    unsubscribeNotifee = notifee.onForegroundEvent(({ type, detail }) => {
       if (type === EventType.PRESS) {
-        triggerNotificationTap();
+        triggerNotificationTap(detail?.notification?.data);
       }
     });
   } catch {
@@ -247,7 +303,7 @@ export function setupPushNotificationListeners(
     getInitialNotification(messaging)
       .then((initialMessage: RemoteMessage | null) => {
         if (initialMessage) {
-          triggerNotificationTap();
+          triggerNotificationTap(initialMessage?.data);
         }
       })
       .catch(() => undefined);
@@ -256,7 +312,7 @@ export function setupPushNotificationListeners(
       .getInitialNotification()
       .then(initialNotifee => {
         if (initialNotifee) {
-          triggerNotificationTap();
+          triggerNotificationTap(initialNotifee?.notification?.data);
         }
       })
       .catch(() => undefined);

@@ -18,6 +18,7 @@ from app.services.structured_reads import (
     resolve_local_day_bounds,
 )
 from app.services.task_due_dates import TaskDueDateResolutionError, resolve_task_due_at
+from app.services.task_linked_reminders import sync_linked_reminder_for_task
 
 LOGGER = logging.getLogger("voice-assistance-backend")
 
@@ -201,6 +202,7 @@ async def create_task_handler(
     )
     context.db.add(task)
     await context.db.flush()
+    await sync_linked_reminder_for_task(context.db, task, reason="due_set")
     return _task_result(task)
 
 
@@ -243,6 +245,12 @@ async def update_task_handler(
     task.timezone = context.user_timezone
     task.timezone_source = context.timezone_source
     await context.db.flush()
+    reason = "due_changed"
+    if task.status in ("completed", "cancelled"):
+        reason = task.status
+    elif {"due_at", "due_expression"} & arguments.model_fields_set and arguments.due_at is None:
+        reason = "due_cleared"
+    await sync_linked_reminder_for_task(context.db, task, reason=reason)
     return _task_result(task)
 
 
@@ -261,6 +269,7 @@ async def complete_task_handler(
     task.status = "completed"
     task.completed_at = datetime.now(UTC)
     await context.db.flush()
+    await sync_linked_reminder_for_task(context.db, task, reason="completed")
     return _task_result(task)
 
 
@@ -319,6 +328,7 @@ async def delete_task_handler(
         raise LLMToolError("revision_conflict")
     task.status = "cancelled"
     await context.db.flush()
+    await sync_linked_reminder_for_task(context.db, task, reason="cancelled")
     return {"task_id": str(task.id), "status": "cancelled"}
 
 

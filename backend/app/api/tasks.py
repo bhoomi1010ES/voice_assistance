@@ -16,6 +16,7 @@ from app.schemas import TaskCreateRequest, TaskResponse, TaskUpdateRequest
 from app.services.auth import AuthPrincipal
 from app.services.ownership import get_owned_task, record_ownership_denial
 from app.services.task_due_dates import TaskDueDateResolutionError, normalize_absolute_due_at
+from app.services.task_linked_reminders import sync_linked_reminder_for_task
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -75,6 +76,8 @@ async def create_task(
         timezone_source="explicit" if payload.timezone else "backend",
     )
     session.add(task)
+    await session.flush()
+    await sync_linked_reminder_for_task(session, task, reason="due_set")
     await session.commit()
     await session.refresh(task)
     return task
@@ -175,6 +178,12 @@ async def update_task(
     if payload.timezone is not None:
         task.timezone_source = "explicit"
     _set_completed_at(task, payload.status)
+    reason = "due_changed"
+    if task.status in ("completed", "cancelled"):
+        reason = task.status
+    elif "due_at" in payload.model_fields_set and due_at is None:
+        reason = "due_cleared"
+    await sync_linked_reminder_for_task(session, task, reason=reason)
     await commit_revision(session)
     await session.refresh(task)
     return task
@@ -200,6 +209,7 @@ async def complete_task(
         raise not_found()
     task.status = "completed"
     task.completed_at = datetime.now(UTC)
+    await sync_linked_reminder_for_task(session, task, reason="completed")
     await commit_revision(session)
     await session.refresh(task)
     return task
@@ -223,6 +233,7 @@ async def delete_task(
             resource_id=task_id,
         )
         raise not_found()
+    await sync_linked_reminder_for_task(session, task, reason="deleted")
     await session.delete(task)
     await session.commit()
 

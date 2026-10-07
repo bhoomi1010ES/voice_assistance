@@ -3,6 +3,8 @@ import { AuthTokenResponse } from '../src/auth/types';
 import {
   clearSeenDeliveryIds,
   createRemindersNotificationChannel,
+  createTasksNotificationChannel,
+  displayLocalTaskCreatedNotification,
   handleBackgroundRemoteMessage,
   handleForegroundRemoteMessage,
   recordAndCheckDeliveryId,
@@ -10,8 +12,11 @@ import {
   syncPushToken,
   triggerNotificationTap,
   REMINDERS_CHANNEL_ID,
+  TASKS_CHANNEL_ID,
 } from '../src/notifications/PushNotificationService';
 import notifee, { AndroidImportance } from '@notifee/react-native';
+import { PermissionsAndroid, Platform } from 'react-native';
+import { VoiceSocket } from '../src/voice/VoiceSocket';
 
 describe('Push Notifications Client (Phase 4)', () => {
   beforeEach(() => {
@@ -436,6 +441,161 @@ describe('Push Notifications Client (Phase 4)', () => {
     it('shows ready only when permission is granted and token is uploaded', () => {
       const state = resolvePermissionState(true, 'mock-fcm-token');
       expect(state).toBe('ready');
+    });
+  });
+
+  describe('Local task created notification (Slice 4)', () => {
+    it('creates high-importance tasks channel', async () => {
+      const channelId = await createTasksNotificationChannel();
+      expect(channelId).toBe(TASKS_CHANNEL_ID);
+      expect(notifee.createChannel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'tasks',
+          name: 'Tasks',
+          importance: AndroidImportance.HIGH,
+        }),
+      );
+    });
+
+    it('displays a high-importance local notification with kind=task_created', async () => {
+      await displayLocalTaskCreatedNotification({
+        title: 'Task created',
+        body: 'Submit expense report',
+      });
+
+      expect(notifee.displayNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Task created',
+          body: 'Submit expense report',
+          android: expect.objectContaining({
+            channelId: 'tasks',
+            importance: AndroidImportance.HIGH,
+          }),
+          data: {
+            kind: 'task_created',
+          },
+        }),
+      );
+    });
+
+    it('silently ignores display when permission is denied', async () => {
+      const originalOS = Platform.OS;
+      const originalVersion = Platform.Version;
+      Platform.OS = 'android';
+      (Platform as any).Version = 33;
+      jest
+        .spyOn(PermissionsAndroid, 'request')
+        .mockResolvedValueOnce(PermissionsAndroid.RESULTS.DENIED as any);
+
+      await displayLocalTaskCreatedNotification({
+        title: 'Task created',
+      });
+
+      expect(notifee.displayNotification).not.toHaveBeenCalled();
+
+      Platform.OS = originalOS;
+      (Platform as any).Version = originalVersion;
+    });
+
+    it('routes tap to tasks tab when data.kind is task_created', () => {
+      const tapHandler = jest.fn();
+      setNotificationTapHandler(tapHandler);
+
+      triggerNotificationTap({ kind: 'task_created' });
+      expect(tapHandler).toHaveBeenCalledWith({ kind: 'task_created' });
+    });
+
+    it('delivers pending tap data when handler is attached later', () => {
+      setNotificationTapHandler(null);
+      triggerNotificationTap({ kind: 'task_created' });
+
+      const tapHandler = jest.fn();
+      setNotificationTapHandler(tapHandler);
+      expect(tapHandler).toHaveBeenCalledWith({ kind: 'task_created' });
+    });
+  });
+
+  describe('VoiceSocket task notification integration (Slice 4)', () => {
+    it('fires local task notification on create_task success once per toolCallId, not on create_reminder', async () => {
+      let eventCallback: ((event: any) => void) | null = null;
+      const mockAdapter: any = {
+        connect: jest.fn().mockResolvedValue({}),
+        disconnect: jest.fn().mockResolvedValue({}),
+        startSession: jest.fn().mockResolvedValue({}),
+        startTurn: jest.fn().mockResolvedValue({}),
+        commitAudio: jest.fn().mockResolvedValue({}),
+        cancelResponse: jest.fn().mockResolvedValue({}),
+        endSession: jest.fn().mockResolvedValue({}),
+        getStatus: jest.fn().mockResolvedValue({}),
+        subscribeStatus: jest.fn(() => () => {}),
+        subscribeEvent: jest.fn((listener: (e: any) => void) => {
+          eventCallback = listener;
+          return () => {};
+        }),
+      };
+
+      // Instantiate VoiceSocket with mock adapter
+      const socket = new VoiceSocket({ adapter: mockAdapter });
+      socket.start();
+      (socket as any).setSnapshot({ connection: 'connected', sessionId: 'sess-1' });
+      expect(socket).toBeDefined();
+      expect(eventCallback).toBeDefined();
+
+      // 1. Emit create_reminder -> must NOT trigger local task created notification
+      eventCallback!({
+        event: 'tool.status',
+        eventId: 'ev-rem-1',
+        sessionId: 'sess-1',
+        turnId: 'turn-1',
+        responseId: 'resp-1',
+        toolCallId: 'call-rem-1',
+        toolName: 'create_reminder',
+        toolStatus: 'success',
+        timestampMs: 1000,
+      });
+
+      await new Promise(resolve => setTimeout(() => resolve(undefined), 20));
+      expect(notifee.displayNotification).not.toHaveBeenCalled();
+
+      // 2. Emit create_task success -> triggers local notification
+      eventCallback!({
+        event: 'tool.status',
+        eventId: 'ev-task-1',
+        sessionId: 'sess-1',
+        turnId: 'turn-1',
+        responseId: 'resp-1',
+        toolCallId: 'call-task-1',
+        toolName: 'create_task',
+        toolStatus: 'success',
+        timestampMs: 2000,
+      });
+
+      await new Promise(resolve => setTimeout(() => resolve(undefined), 20));
+      expect(notifee.displayNotification).toHaveBeenCalledTimes(1);
+      expect(notifee.displayNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Task created',
+          data: { kind: 'task_created' },
+        }),
+      );
+
+      // 3. Emit duplicate create_task with same toolCallId -> deduplicated, NOT called again
+      eventCallback!({
+        event: 'tool.status',
+        eventId: 'ev-task-2',
+        sessionId: 'sess-1',
+        turnId: 'turn-1',
+        responseId: 'resp-1',
+        toolCallId: 'call-task-1',
+        toolName: 'create_task',
+        toolStatus: 'success',
+        timestampMs: 3000,
+      });
+
+      await new Promise(resolve => setTimeout(() => resolve(undefined), 20));
+      expect(notifee.displayNotification).toHaveBeenCalledTimes(1);
+
+      await socket.stop('test');
     });
   });
 });

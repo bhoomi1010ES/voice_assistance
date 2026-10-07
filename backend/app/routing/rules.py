@@ -49,9 +49,9 @@ _TASK_WRITE = re.compile(
     r".*\btask\b",
     re.I,
 )
-_REMINDER_TASK_CREATION = re.compile(
-    r"\b(?:remind\s+me\s+to|set\s+(?:up\s+)?(?:a\s+)?reminder|"
-    r"create\s+(?:a\s+)?reminder)\b",
+_REMINDER_CREATION = re.compile(
+    r"\bremind\s+(?:me|us)\b|"
+    r"\b(?:create|add|make|set|schedule)\s+(?:up\s+)?(?:a|an|the)?\s*reminder\b",
     re.I,
 )
 _REMINDER_MANAGEMENT = re.compile(
@@ -282,11 +282,13 @@ def classify_transcript(transcript: str) -> RouteDecision:
     if informational:
         return _decision(RouteName.GENERAL_LLM)
 
+    if _REMINDER_CREATION.search(text):
+        return _decision(RouteName.TASK_ACTION, action_domain=ActionDomain.REMINDER)
+
     intent_hits = sum(
         bool(pattern.search(text))
         for pattern in (
             _TASK_WRITE,
-            _REMINDER_TASK_CREATION,
             _REMINDER_MANAGEMENT,
             _MEMORY_SAVE,
             _MEMORY_FORGET,
@@ -296,10 +298,6 @@ def classify_transcript(transcript: str) -> RouteDecision:
         return _decision(RouteName.MIXED_AMBIGUOUS)
 
     if _TASK_WRITE.search(text):
-        return _decision(RouteName.TASK_ACTION, action_domain=ActionDomain.TASK)
-    if _REMINDER_TASK_CREATION.search(text):
-        # Existing voice behavior creates a task through the confirmation-
-        # required `create_task` path for “remind me to …” requests.
         return _decision(RouteName.TASK_ACTION, action_domain=ActionDomain.TASK)
     if _REMINDER_MANAGEMENT.search(text):
         return _decision(RouteName.TASK_ACTION, action_domain=ActionDomain.REMINDER)

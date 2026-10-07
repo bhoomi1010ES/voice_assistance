@@ -1172,8 +1172,10 @@ async def test_task_route_emits_one_correlated_selection_trace_before_followup(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["create_task", "create_reminder"])
 async def test_task_date_failure_returns_targeted_clarification_and_keeps_single_route_trace(
     tmp_path,
+    tool_name: str,
 ) -> None:
     gateway, outbound = _direct_gateway()
     trace_path = tmp_path / "task-date-failure.jsonl"
@@ -1194,7 +1196,7 @@ async def test_task_date_failure_returns_targeted_clarification_and_keeps_single
             del context
             call = LLMToolCall(
                 tool_call_id="failed-task-date",
-                name="create_task",
+                name=tool_name,
                 arguments={"title": "Submit report"},
             )
             yield _event(
@@ -1215,13 +1217,18 @@ async def test_task_date_failure_returns_targeted_clarification_and_keeps_single
         session_id=session_id,
         turn_id=turn_id,
         response_id=response_id,
-        transcript="Create task to submit report on 32nd October.",
+        transcript=(
+            "Create task to submit report on 32nd October."
+            if tool_name == "create_task"
+            else "Remind me to call Parth on 32nd October at 2.45 PM."
+        ),
     )
     gateway.latency_tracer.close()
 
     records = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
     selected = [record for record in records if record["event"] == "router_task_route_selected"]
-    failed = [record for record in records if record["event"] == "task_date_resolution_failed"]
+    item = "task" if tool_name == "create_task" else "reminder"
+    failed = [record for record in records if record["event"] == f"{item}_date_resolution_failed"]
     assert result["status"] == "clarification_required"
     assert len(selected) == 1
     assert len(failed) == 1
@@ -1229,7 +1236,7 @@ async def test_task_date_failure_returns_targeted_clarification_and_keeps_single
     assert selected[0]["turn_id"] == str(turn_id)
     assert selected[0]["response_id"] == str(response_id)
     assert outbound[-1]["text"] == (
-        "I couldn't resolve that task date or time. What date and time should I use?"
+        f"I couldn't resolve that {item} date or time. What date and time should I use?"
     )
 
 

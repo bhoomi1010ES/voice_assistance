@@ -13,7 +13,7 @@ from app.llm.reminder_tools import (
 )
 from app.llm.task_tools import CreateTaskArguments, normalize_create_task_arguments
 from app.llm.tool_loop import ToolExecutionContext
-from app.routing.models import RouteName, RouterRunStatus, RouterRuntimeContext
+from app.routing.models import ActionDomain, RouteName, RouterRunStatus, RouterRuntimeContext
 from app.routing.rules import classify_transcript
 from app.routing.service import DecisionRouterService
 
@@ -82,7 +82,7 @@ from app.routing.service import DecisionRouterService
         ("Delete my reminder and tell me a joke.", RouteName.MIXED_AMBIGUOUS, None),
         ("Remember that I prefer tea", RouteName.MEMORY_ACTION, None),
         ("Forget that I prefer tea", RouteName.MEMORY_ACTION, None),
-        ("Remind me about the clinic tomorrow.", RouteName.MIXED_AMBIGUOUS, None),
+        ("Remind me about the clinic tomorrow.", RouteName.TASK_ACTION, None),
         ("Remind me to call", RouteName.MIXED_AMBIGUOUS, None),
         ("Remind remind me to call Rahul tomorrow at 9 AM", RouteName.MIXED_AMBIGUOUS, None),
         ("[unintelligible] medicine meeting tomorrow yes", RouteName.MIXED_AMBIGUOUS, None),
@@ -112,6 +112,26 @@ def test_narrow_rules_and_known_false_positives(
         assert decision.read_arguments is None
         assert "title" not in decision.model_dump()
         assert "content" not in decision.model_dump()
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "Remind me to call Parth in 5 minutes.",
+        "Please remind me to call Rahul tomorrow at 9 AM.",
+        "Remind me about the clinic tomorrow.",
+        "Remind me to update the task tomorrow at 9 AM.",
+        "Create a reminder to call the doctor tomorrow at 9 AM.",
+        "Set up a reminder for tomorrow at 9 AM.",
+        "Add a reminder for medicine in 5 minutes.",
+        "Schedule a reminder to submit the report Friday.",
+        "Remind us to leave in 5 minutes.",
+    ],
+)
+def test_explicit_reminder_creation_has_reminder_action_domain(transcript: str) -> None:
+    decision = classify_transcript(transcript)
+    assert decision.route == RouteName.TASK_ACTION
+    assert decision.action_domain == ActionDomain.REMINDER
 
 
 @pytest.mark.parametrize(
@@ -273,14 +293,12 @@ def test_schedule_read_routes_encode_bounded_window_and_ordering(
             )
 
 
-def test_reminder_creation_follows_existing_confirmation_required_task_semantics() -> None:
-    from app.routing.models import ActionDomain
-
+def test_reminder_creation_and_management_use_reminder_action_domain() -> None:
     create = classify_transcript("Remind me to call Rahul tomorrow at 9 AM.")
     manage = classify_transcript("Delete my Rahul reminder.")
 
     assert create.route == RouteName.TASK_ACTION
-    assert create.action_domain == ActionDomain.TASK
+    assert create.action_domain == ActionDomain.REMINDER
     assert create.target_tool is None
     assert create.read_arguments is None
     assert manage.route == RouteName.TASK_ACTION
@@ -519,7 +537,7 @@ async def test_full_frozen_acceptance_corpus_passes_without_side_effects() -> No
 
     corpus, results = await evaluate_corpus()
 
-    assert corpus["version"] == "1.2.0"
+    assert corpus["version"] == "1.3.0"
     assert corpus["status"] == "frozen"
     assert len(results) == 86
     assert sum(row["critical"] for row in results) == 82

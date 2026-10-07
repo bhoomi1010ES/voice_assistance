@@ -49,7 +49,7 @@ jest.mock('@react-native-firebase/messaging', () => {
 });
 
 jest.mock('@notifee/react-native', () => ({
-  createChannel: jest.fn().mockResolvedValue('reminders'),
+  createChannel: jest.fn(async channel => channel?.id ?? 'reminders'),
   displayNotification: jest.fn().mockResolvedValue('notification-id'),
   onForegroundEvent: jest.fn().mockReturnValue(jest.fn()),
   onBackgroundEvent: jest.fn().mockReturnValue(jest.fn()),
