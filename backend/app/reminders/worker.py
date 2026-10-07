@@ -131,6 +131,12 @@ class ReminderWorker:
                 )
             if result.delivered:
                 return result
+            if result.failure_code == "push_token_unregistered":
+                device.push_token = None
+                device.push_token_revoked_at = self.clock.now_utc()
+                await session.flush()
+                permanent_failure = result
+                continue
             if result.retryable:
                 retryable_failure = result
             else:

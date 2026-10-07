@@ -56,14 +56,21 @@ import {
   TaskFilter,
   TaskFilterChips,
 } from '../components/tasks/TaskFilterChips';
-import { TaskDraft, TaskEditorModal } from '../components/tasks/TaskEditorModal';
+import {
+  TaskDraft,
+  TaskEditorModal,
+} from '../components/tasks/TaskEditorModal';
 import {
   ReminderDraft,
   ReminderEditorModal,
 } from '../components/tasks/ReminderEditorModal';
 import { TaskEmptyState } from '../components/tasks/TaskEmptyState';
-import { PushPermissionCard } from '../components/tasks/PushPermissionCard';
+import {
+  PushPermissionCard,
+  PushPermissionState,
+} from '../components/tasks/PushPermissionCard';
 import { Confirmation, ConfirmModal } from '../components/tasks/ConfirmModal';
+import { syncPushToken } from '../notifications/PushNotificationService';
 
 const PHASE7_RECURRENCE_ACCEPTED = true;
 
@@ -85,12 +92,22 @@ const EMPTY_REMINDER_DRAFT: ReminderDraft = {
   recurrence: 'none',
 };
 
-export function TasksScreen() {
+export type TasksScreenProps = {
+  initialPage?: Page;
+};
+
+export function TasksScreen({ initialPage = 'tasks' }: TasksScreenProps = {}) {
   const { controller, profile } = useAuth();
   const { planningReceiptVersion = 0, session = 'idle' } = useVoiceSocket();
   const { colors } = useAppTheme();
 
-  const [page, setPage] = useState<Page>('tasks');
+  const [page, setPage] = useState<Page>(initialPage);
+
+  useEffect(() => {
+    if (initialPage) {
+      setPage(initialPage);
+    }
+  }, [initialPage]);
   const [taskFilter, setTaskFilter] = useState<TaskFilter>('upcoming');
   const [reminderFilter, setReminderFilter] =
     useState<ReminderFilter>('upcoming');
@@ -108,13 +125,18 @@ export function TasksScreen() {
   const [reminderForm, setReminderForm] =
     useState<ReminderDraft>(EMPTY_REMINDER_DRAFT);
   const [taskFormMode, setTaskFormMode] = useState<'create' | 'edit'>('create');
-  const [reminderFormMode, setReminderFormMode] = useState<'create' | 'edit'>('create');
+  const [reminderFormMode, setReminderFormMode] = useState<'create' | 'edit'>(
+    'create',
+  );
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
-  const [editingReminderId, setEditingReminderId] = useState<string | null>(null);
+  const [editingReminderId, setEditingReminderId] = useState<string | null>(
+    null,
+  );
   const [taskFormOpen, setTaskFormOpen] = useState(false);
   const [reminderFormOpen, setReminderFormOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-  const [pushState, setPushState] = useState<'unknown' | 'granted' | 'denied'>('unknown');
+  const [pushState, setPushState] = useState<PushPermissionState>('unknown');
+  const [pushSyncing, setPushSyncing] = useState(false);
 
   const actionKeys = useRef(new Set<string>());
   const userTimezone = profile?.timezone || deviceTimezone();
@@ -370,27 +392,75 @@ export function TasksScreen() {
     });
   };
 
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      if (Platform.OS === 'android') {
+        if (Number(Platform.Version) < 33) {
+          const token = await syncPushToken(controller);
+          if (active) {
+            setPushState(token ? 'ready' : 'granted_no_token');
+          }
+        } else {
+          const granted = await PermissionsAndroid.check(
+            'android.permission.POST_NOTIFICATIONS',
+          );
+          if (granted) {
+            const token = await syncPushToken(controller);
+            if (active) {
+              setPushState(token ? 'ready' : 'granted_no_token');
+            }
+          } else if (active) {
+            setPushState('unknown');
+          }
+        }
+      }
+    })().catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [controller]);
+
   const requestPushPermission = async () => {
-    if (Platform.OS !== 'android' || Number(Platform.Version) < 33) {
-      setPushState('granted');
-      return;
-    }
+    setPushSyncing(true);
     try {
+      if (Platform.OS !== 'android') {
+        const token = await syncPushToken(controller);
+        setPushState(token ? 'ready' : 'granted_no_token');
+        return;
+      }
+      if (Number(Platform.Version) < 33) {
+        const token = await syncPushToken(controller);
+        setPushState(token ? 'ready' : 'granted_no_token');
+        return;
+      }
       const result = await PermissionsAndroid.request(
         'android.permission.POST_NOTIFICATIONS',
       );
-      setPushState(
-        result === PermissionsAndroid.RESULTS.GRANTED ? 'granted' : 'denied',
-      );
+      if (result === PermissionsAndroid.RESULTS.GRANTED) {
+        const token = await syncPushToken(controller);
+        setPushState(token ? 'ready' : 'granted_no_token');
+      } else {
+        setPushState('denied');
+      }
     } catch {
       setPushState('denied');
+    } finally {
+      setPushSyncing(false);
     }
   };
 
   // Agenda Grouping: Safely groups tasks by date using device-aware scheduling helpers
   const groupedTasks = useMemo(() => {
     if (taskFilter === 'completed') {
-      return [{ key: 'completed', title: 'COMPLETED', dotColor: colors.success, items: visibleTasks }];
+      return [
+        {
+          key: 'completed',
+          title: 'COMPLETED',
+          dotColor: colors.success,
+          items: visibleTasks,
+        },
+      ];
     }
 
     const today = dateInputForOffset(0);
@@ -424,11 +494,36 @@ export function TasksScreen() {
     });
 
     const sections = [
-      { key: 'today', title: 'TODAY', dotColor: colors.primary, items: buckets.today },
-      { key: 'tomorrow', title: 'TOMORROW', dotColor: colors.secondary, items: buckets.tomorrow },
-      { key: 'upcoming', title: 'UPCOMING', dotColor: colors.tertiary, items: buckets.upcoming },
-      { key: 'past', title: 'PAST DUE', dotColor: colors.warning, items: buckets.past },
-      { key: 'noDate', title: 'NO DUE DATE', dotColor: colors.disabled, items: buckets.noDate },
+      {
+        key: 'today',
+        title: 'TODAY',
+        dotColor: colors.primary,
+        items: buckets.today,
+      },
+      {
+        key: 'tomorrow',
+        title: 'TOMORROW',
+        dotColor: colors.secondary,
+        items: buckets.tomorrow,
+      },
+      {
+        key: 'upcoming',
+        title: 'UPCOMING',
+        dotColor: colors.tertiary,
+        items: buckets.upcoming,
+      },
+      {
+        key: 'past',
+        title: 'PAST DUE',
+        dotColor: colors.warning,
+        items: buckets.past,
+      },
+      {
+        key: 'noDate',
+        title: 'NO DUE DATE',
+        dotColor: colors.disabled,
+        items: buckets.noDate,
+      },
     ];
 
     return sections.filter(section => section.items.length > 0);
@@ -462,10 +557,30 @@ export function TasksScreen() {
     });
 
     const sections = [
-      { key: 'today', title: 'TODAY', dotColor: colors.primary, items: buckets.today },
-      { key: 'tomorrow', title: 'TOMORROW', dotColor: colors.secondary, items: buckets.tomorrow },
-      { key: 'upcoming', title: 'UPCOMING', dotColor: colors.tertiary, items: buckets.upcoming },
-      { key: 'past', title: 'PREVIOUS', dotColor: colors.disabled, items: buckets.past },
+      {
+        key: 'today',
+        title: 'TODAY',
+        dotColor: colors.primary,
+        items: buckets.today,
+      },
+      {
+        key: 'tomorrow',
+        title: 'TOMORROW',
+        dotColor: colors.secondary,
+        items: buckets.tomorrow,
+      },
+      {
+        key: 'upcoming',
+        title: 'UPCOMING',
+        dotColor: colors.tertiary,
+        items: buckets.upcoming,
+      },
+      {
+        key: 'past',
+        title: 'PREVIOUS',
+        dotColor: colors.disabled,
+        items: buckets.past,
+      },
     ];
 
     return sections.filter(section => section.items.length > 0);
@@ -551,10 +666,7 @@ export function TasksScreen() {
                       ]}
                     />
                     <AppText
-                      style={[
-                        styles.sectionTitle,
-                        { color: colors.textMuted },
-                      ]}
+                      style={[styles.sectionTitle, { color: colors.textMuted }]}
                     >
                       {section.title}
                     </AppText>
@@ -604,6 +716,7 @@ export function TasksScreen() {
         ) : (
           <View style={styles.listContainer}>
             <PushPermissionCard
+              loading={pushSyncing}
               onOpenSettings={() =>
                 Linking.openSettings().catch(() => undefined)
               }
@@ -622,10 +735,7 @@ export function TasksScreen() {
                       ]}
                     />
                     <AppText
-                      style={[
-                        styles.sectionTitle,
-                        { color: colors.textMuted },
-                      ]}
+                      style={[styles.sectionTitle, { color: colors.textMuted }]}
                     >
                       {section.title}
                     </AppText>

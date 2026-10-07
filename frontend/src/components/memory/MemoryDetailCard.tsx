@@ -48,14 +48,9 @@ export function MemoryDetailCard({
           {strings.memory.detailTitle}
         </AppText>
         <View
-          style={[
-            styles.typeBadge,
-            { backgroundColor: colors.surfaceMuted },
-          ]}
+          style={[styles.typeBadge, { backgroundColor: colors.surfaceMuted }]}
         >
-          <AppText
-            style={[styles.typeText, { color: colors.textMuted }]}
-          >
+          <AppText style={[styles.typeText, { color: colors.textMuted }]}>
             {memoryTypeLabel(selected.memory_type)}
           </AppText>
         </View>

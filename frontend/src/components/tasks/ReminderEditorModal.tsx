@@ -218,7 +218,9 @@ export function ReminderEditorModal({
               >
                 {schedulePreview(draft.date, draft.time, draft.timezone)}
               </AppText>
-              <AppText style={[styles.previewHelp, { color: colors.textMuted }]}>
+              <AppText
+                style={[styles.previewHelp, { color: colors.textMuted }]}
+              >
                 {strings.tasks.serverValidation}
               </AppText>
             </View>

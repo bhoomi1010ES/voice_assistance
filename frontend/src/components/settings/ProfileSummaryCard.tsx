@@ -21,12 +21,13 @@ export function ProfileSummaryCard({
 }: ProfileSummaryCardProps) {
   const { colors } = useAppTheme();
 
-  const initials = name
-    .split(' ')
-    .map(part => part.charAt(0))
-    .slice(0, 2)
-    .join('')
-    .toUpperCase() || 'U';
+  const initials =
+    name
+      .split(' ')
+      .map(part => part.charAt(0))
+      .slice(0, 2)
+      .join('')
+      .toUpperCase() || 'U';
 
   return (
     <Card
@@ -56,10 +57,7 @@ export function ProfileSummaryCard({
           ]}
         >
           <AppText
-            style={[
-              styles.avatarText,
-              { color: colors.onPrimaryContainer },
-            ]}
+            style={[styles.avatarText, { color: colors.onPrimaryContainer }]}
           >
             {initials}
           </AppText>
@@ -77,9 +75,7 @@ export function ProfileSummaryCard({
                   { backgroundColor: colors.successContainer },
                 ]}
               >
-                <AppText
-                  style={[styles.statusText, { color: colors.success }]}
-                >
+                <AppText style={[styles.statusText, { color: colors.success }]}>
                   {status}
                 </AppText>
               </View>

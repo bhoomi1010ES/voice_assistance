@@ -5,18 +5,61 @@ import { useAppTheme } from '../../design/ThemeProvider';
 import { radii, spacing, typography } from '../../theme';
 import { strings } from '../../i18n/strings';
 
-interface PushPermissionCardProps {
-  state: 'unknown' | 'granted' | 'denied';
+export type PushPermissionState =
+  | 'unknown'
+  | 'denied'
+  | 'granted_no_token'
+  | 'ready'
+  | 'unavailable';
+
+export interface PushPermissionCardProps {
+  state: PushPermissionState | 'granted';
   onRequest: () => void;
   onOpenSettings: () => void;
+  loading?: boolean;
 }
 
 export function PushPermissionCard({
   state,
   onRequest,
   onOpenSettings,
+  loading = false,
 }: PushPermissionCardProps) {
   const { colors } = useAppTheme();
+  const normalizedState: PushPermissionState =
+    state === 'granted' ? 'ready' : state;
+
+  const description = (() => {
+    switch (normalizedState) {
+      case 'ready':
+        return strings.tasks.pushReady;
+      case 'denied':
+        return strings.tasks.pushDenied;
+      case 'granted_no_token':
+        return strings.tasks.pushGrantedNoToken;
+      case 'unavailable':
+        return strings.tasks.pushUnavailable;
+      case 'unknown':
+      default:
+        return strings.tasks.pushUnknown;
+    }
+  })();
+
+  const icon = (() => {
+    switch (normalizedState) {
+      case 'ready':
+        return '🔔';
+      case 'denied':
+        return '🔕';
+      case 'granted_no_token':
+        return '⚠️';
+      case 'unavailable':
+        return 'ℹ️';
+      case 'unknown':
+      default:
+        return '📱';
+    }
+  })();
 
   return (
     <Card
@@ -24,11 +67,12 @@ export function PushPermissionCard({
         styles.card,
         {
           backgroundColor:
-            state === 'granted' ? colors.surfaceLow : colors.surface,
+            normalizedState === 'ready' ? colors.surfaceLow : colors.surface,
           borderColor:
-            state === 'denied'
+            normalizedState === 'denied' ||
+            normalizedState === 'granted_no_token'
               ? colors.warning
-              : state === 'granted'
+              : normalizedState === 'ready'
               ? colors.borderSubtle
               : colors.border,
         },
@@ -36,24 +80,21 @@ export function PushPermissionCard({
       testID="push-permission-card"
     >
       <View style={styles.headerRow}>
-        <AppText style={styles.icon}>
-          {state === 'granted' ? '🔔' : state === 'denied' ? '🔕' : '📱'}
-        </AppText>
+        <AppText style={styles.icon}>{icon}</AppText>
         <View style={styles.content}>
           <AppText style={[styles.title, { color: colors.text }]}>
             {strings.tasks.pushTitle}
           </AppText>
-          <AppText style={[styles.description, { color: colors.textMuted }]}>
-            {state === 'granted'
-              ? strings.tasks.pushEnabled
-              : state === 'denied'
-              ? strings.tasks.pushDenied
-              : strings.tasks.pushDescription}
+          <AppText
+            style={[styles.description, { color: colors.textMuted }]}
+            testID="push-permission-description"
+          >
+            {description}
           </AppText>
         </View>
       </View>
 
-      {state === 'denied' ? (
+      {normalizedState === 'denied' ? (
         <View style={styles.actionContainer}>
           <ActionButton
             label={strings.tasks.openSettings}
@@ -62,9 +103,11 @@ export function PushPermissionCard({
             variant="secondary"
           />
         </View>
-      ) : state !== 'granted' ? (
+      ) : normalizedState === 'unknown' ||
+        normalizedState === 'granted_no_token' ? (
         <View style={styles.actionContainer}>
           <ActionButton
+            disabled={loading}
             label={strings.tasks.enablePush}
             onPress={onRequest}
             testID="push-enable"

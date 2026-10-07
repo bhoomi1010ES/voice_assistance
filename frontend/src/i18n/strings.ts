@@ -298,12 +298,17 @@ export const strings = {
     deliveryFailed:
       'Delivery failed. The reminder remains stored; retry guidance will appear after the next sync.',
     pushTitle: 'Push notifications',
-    pushDescription:
-      'Allow notifications after scheduling so due reminders can reach this device. Reminders remain durable even when notifications are disabled.',
-    pushEnabled:
-      'Notification permission is enabled. A provider token is still managed by the app service.',
+    pushDescription: 'Reminders can appear at the top of the phone when due',
+    pushUnknown: 'Reminders can appear at the top of the phone when due',
     pushDenied:
-      'Notifications are disabled. Your reminder remains stored, but this device may not notify you.',
+      'Reminder is stored; no banner until permission is allowed in Settings',
+    pushGrantedNoToken:
+      'Permission is on; this phone is not registered for push yet',
+    pushReady:
+      'Reminders can appear as a banner, including when the app is closed',
+    pushUnavailable: 'App is ready; server push is not configured',
+    pushEnabled:
+      'Reminders can appear as a banner, including when the app is closed',
     enablePush: 'Enable notifications',
     openSettings: 'Open notification settings',
   },

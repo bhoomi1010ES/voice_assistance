@@ -23,7 +23,6 @@ export function ReminderItemCard({
   const { colors } = useAppTheme();
   const isScheduled = reminder.status === 'scheduled';
   const isFailed = reminder.status === 'failed';
-  const isSent = reminder.status === 'sent';
 
   const statusColors: Record<
     ReminderStatus,

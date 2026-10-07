@@ -39,6 +39,7 @@ export class AuthController {
   private readonly stopVoiceResourcesImpl: () => Promise<void>;
   private readonly listeners = new Set<AuthListener>();
   private tokens: AuthTokens | null = null;
+  private deviceId: string | null = null;
   private refreshPromise: Promise<AuthTokens> | null = null;
   private state: AuthState = {
     status: 'unknown',
@@ -70,11 +71,13 @@ export class AuthController {
       const storedTokens = await this.storage.read();
       if (!storedTokens) {
         this.tokens = null;
+        this.deviceId = null;
         this.setState({ status: 'unauthenticated', profile: null });
         return;
       }
 
       this.tokens = storedTokens;
+      this.deviceId = (await this.storage.readDeviceId?.()) ?? null;
       const profile = await this.request<UserProfile>('/auth/me');
       this.setState({
         status: 'authenticated',
@@ -87,6 +90,7 @@ export class AuthController {
         return;
       }
       this.tokens = null;
+      this.deviceId = null;
       if (clientError.status === 401 || clientError.status === 403) {
         await this.clearStorage();
         this.setState({ status: 'unauthenticated', profile: null });
@@ -123,9 +127,41 @@ export class AuthController {
     return profile;
   }
 
+  getDeviceId(): string | null {
+    return this.deviceId;
+  }
+
+  async updatePushToken(token: string | null): Promise<void> {
+    const deviceId =
+      this.deviceId ?? (await this.storage.readDeviceId?.()) ?? null;
+    if (!deviceId) {
+      return;
+    }
+    await this.request(`/devices/${deviceId}/push-token`, {
+      method: 'PATCH',
+      body: JSON.stringify({ token }),
+    });
+  }
+
   async logout(): Promise<void> {
     const accessToken = this.tokens?.accessToken;
+    const deviceId =
+      this.deviceId ?? (await this.storage.readDeviceId?.()) ?? null;
     await this.stopVoiceResourcesImpl();
+    if (deviceId && accessToken) {
+      try {
+        await this.authenticatedRequest(
+          `/devices/${deviceId}/push-token`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify({ token: null }),
+          },
+          accessToken,
+        );
+      } catch {
+        // Clearing push token on logout is best-effort
+      }
+    }
     if (accessToken) {
       try {
         await logoutRequest(accessToken, this.fetchImpl);
@@ -134,6 +170,7 @@ export class AuthController {
       }
     }
     this.tokens = null;
+    this.deviceId = null;
     await this.clearStorage();
     this.setState({
       status: 'unauthenticated',
@@ -253,10 +290,15 @@ export class AuthController {
     };
     await this.storage.save(tokens);
     this.tokens = tokens;
+    if (response.device?.id) {
+      this.deviceId = response.device.id;
+      await this.storage.saveDeviceId?.(response.device.id);
+    }
   }
 
   private async invalidateSession(sessionExpired: boolean): Promise<void> {
     this.tokens = null;
+    this.deviceId = null;
     await this.clearStorage();
     this.setState({
       status: 'unauthenticated',
@@ -267,8 +309,10 @@ export class AuthController {
   }
 
   private async clearStorage(): Promise<void> {
+    this.deviceId = null;
     try {
       await this.storage.clear();
+      await this.storage.clearDeviceId?.();
     } catch {
       // State is still cleared if native storage is unavailable.
     }

@@ -23,9 +23,7 @@ export function SessionMemoryCard({
       style={[
         styles.card,
         {
-          backgroundColor: sessionExcluded
-            ? colors.surfaceLow
-            : colors.surface,
+          backgroundColor: sessionExcluded ? colors.surfaceLow : colors.surface,
           borderColor: sessionExcluded ? colors.warning : colors.border,
         },
       ]}
@@ -42,9 +40,7 @@ export function SessionMemoryCard({
             },
           ]}
         >
-          <AppText style={styles.icon}>
-            {sessionExcluded ? '🔒' : '🎙'}
-          </AppText>
+          <AppText style={styles.icon}>{sessionExcluded ? '🔒' : '🎙'}</AppText>
         </View>
 
         <View style={styles.titleContainer}>
@@ -66,9 +62,7 @@ export function SessionMemoryCard({
                 style={[
                   styles.badgeText,
                   {
-                    color: sessionExcluded
-                      ? colors.warning
-                      : colors.textMuted,
+                    color: sessionExcluded ? colors.warning : colors.textMuted,
                   },
                 ]}
               >

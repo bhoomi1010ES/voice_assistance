@@ -200,8 +200,7 @@ class Settings(BaseSettings):
     memory_chunk_max_chars: int = Field(default=1_600, ge=128, le=16_384)
     memory_chunk_overlap_chars: int = Field(default=160, ge=0, le=8_192)
 
-    # Phase 7 durable reminder worker. Push provider credentials are intentionally
-    # not part of this settings object until a real provider adapter is selected.
+    # Phase 7 durable reminder worker & Phase 1 FCM push delivery adapter.
     reminder_worker_enabled: bool = True
     reminder_worker_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
     reminder_worker_shutdown_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
@@ -209,6 +208,8 @@ class Settings(BaseSettings):
     reminder_max_attempts: int = Field(default=5, ge=1, le=20)
     reminder_retry_backoff_base_seconds: float = Field(default=5.0, gt=0, le=3_600)
     reminder_retry_backoff_max_seconds: float = Field(default=300.0, gt=0, le=86_400)
+    fcm_service_account_file: str | None = None
+    fcm_project_id: str | None = None
 
     # Human-readable conversation files are opt-in. Device/session ownership
     # and the physical-device classification remain mandatory even when this
@@ -515,6 +516,14 @@ class Settings(BaseSettings):
         """Return the bounded physical-diagnostic output directory."""
 
         path = Path(self.stt_diagnostic_capture_dir).expanduser()
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+    @property
+    def fcm_service_account_path_resolved(self) -> Path | None:
+        """Return an optional explicitly configured FCM service-account JSON path."""
+        if not self.fcm_service_account_file:
+            return None
+        path = Path(self.fcm_service_account_file).expanduser()
         return path if path.is_absolute() else PROJECT_ROOT / path
 
     @property

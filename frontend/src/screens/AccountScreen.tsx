@@ -106,10 +106,7 @@ export function AccountScreen() {
             ]}
           >
             <AppText
-              style={[
-                styles.avatarText,
-                { color: colors.onPrimaryContainer },
-              ]}
+              style={[styles.avatarText, { color: colors.onPrimaryContainer }]}
             >
               {initials}
             </AppText>
@@ -128,9 +125,7 @@ export function AccountScreen() {
                   { backgroundColor: colors.successContainer },
                 ]}
               >
-                <AppText
-                  style={[styles.statusText, { color: colors.success }]}
-                >
+                <AppText style={[styles.statusText, { color: colors.success }]}>
                   {profile.status}
                 </AppText>
               </View>

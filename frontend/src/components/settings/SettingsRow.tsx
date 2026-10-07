@@ -82,10 +82,7 @@ export function SettingsRow({
             ]}
           >
             <AppText
-              style={[
-                styles.badgeText,
-                { color: colors.onSecondaryContainer },
-              ]}
+              style={[styles.badgeText, { color: colors.onSecondaryContainer }]}
             >
               {badge}
             </AppText>

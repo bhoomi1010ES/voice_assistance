@@ -83,7 +83,9 @@ describe('Tasks Presentational Components', () => {
     expect(onComplete).toHaveBeenCalledTimes(2);
 
     // Verify voice badge rendered because source_turn_id is present
-    expect(root.findByProps({ testID: 'todo-voice-badge-task-100' })).toBeTruthy();
+    expect(
+      root.findByProps({ testID: 'todo-voice-badge-task-100' }),
+    ).toBeTruthy();
   });
 
   test('TaskItemCard hides voice badge when source_turn_id is null', () => {
@@ -104,7 +106,9 @@ describe('Tasks Presentational Components', () => {
     });
 
     const root = renderer!.root;
-    expect(root.findAllByProps({ testID: 'todo-voice-badge-task-100' })).toHaveLength(0);
+    expect(
+      root.findAllByProps({ testID: 'todo-voice-badge-task-100' }),
+    ).toHaveLength(0);
   });
 
   test('ReminderItemCard renders title, recurrence, schedule, and actions', () => {
@@ -127,16 +131,24 @@ describe('Tasks Presentational Components', () => {
 
     const root = renderer!.root;
     expect(root.findByProps({ testID: 'reminder-reminder-200' })).toBeTruthy();
-    expect(root.findByProps({ testID: 'reminder-edit-reminder-200' })).toBeTruthy();
-    expect(root.findByProps({ testID: 'reminder-delete-reminder-200' })).toBeTruthy();
+    expect(
+      root.findByProps({ testID: 'reminder-edit-reminder-200' }),
+    ).toBeTruthy();
+    expect(
+      root.findByProps({ testID: 'reminder-delete-reminder-200' }),
+    ).toBeTruthy();
 
     act(() => {
-      root.findByProps({ testID: 'reminder-edit-reminder-200' }).props.onPress();
+      root
+        .findByProps({ testID: 'reminder-edit-reminder-200' })
+        .props.onPress();
     });
     expect(onEdit).toHaveBeenCalledWith(sampleReminder);
 
     act(() => {
-      root.findByProps({ testID: 'reminder-delete-reminder-200' }).props.onPress();
+      root
+        .findByProps({ testID: 'reminder-delete-reminder-200' })
+        .props.onPress();
     });
     expect(onDelete).toHaveBeenCalledWith(sampleReminder);
   });
@@ -204,29 +216,164 @@ describe('Tasks Presentational Components', () => {
     expect(onCancel).toHaveBeenCalled();
   });
 
-  test('PushPermissionCard renders settings button when denied', () => {
-    const onOpenSettings = jest.fn();
-    const onRequest = jest.fn();
+  describe('PushPermissionCard pipeline states (Phase 5)', () => {
+    test('PushPermissionCard renders settings button and honest copy when denied', () => {
+      const onOpenSettings = jest.fn();
+      const onRequest = jest.fn();
 
-    let renderer: ReactTestRenderer.ReactTestRenderer;
-    act(() => {
-      renderer = ReactTestRenderer.create(
-        <TestProviders>
-          <PushPermissionCard
-            onOpenSettings={onOpenSettings}
-            onRequest={onRequest}
-            state="denied"
-          />
-        </TestProviders>,
+      let renderer: ReactTestRenderer.ReactTestRenderer;
+      act(() => {
+        renderer = ReactTestRenderer.create(
+          <TestProviders>
+            <PushPermissionCard
+              onOpenSettings={onOpenSettings}
+              onRequest={onRequest}
+              state="denied"
+            />
+          </TestProviders>,
+        );
+      });
+
+      const root = renderer!.root;
+      const desc = root.findByProps({ testID: 'push-permission-description' });
+      expect(desc.props.children).toBe(
+        'Reminder is stored; no banner until permission is allowed in Settings',
       );
+      // Copy never claims a banner will appear when permission is denied
+      expect(desc.props.children).not.toContain(
+        'Reminders can appear as a banner',
+      );
+
+      const settingsBtn = root.findByProps({ testID: 'push-open-settings' });
+      expect(settingsBtn).toBeTruthy();
+      act(() => {
+        settingsBtn.props.onPress();
+      });
+      expect(onOpenSettings).toHaveBeenCalled();
+      expect(root.findAllByProps({ testID: 'push-enable' })).toHaveLength(0);
     });
 
-    const root = renderer!.root;
-    expect(root.findByProps({ testID: 'push-open-settings' })).toBeTruthy();
-    act(() => {
-      root.findByProps({ testID: 'push-open-settings' }).props.onPress();
+    test('PushPermissionCard renders enable/retry button and honest copy when granted_no_token', () => {
+      const onOpenSettings = jest.fn();
+      const onRequest = jest.fn();
+
+      let renderer: ReactTestRenderer.ReactTestRenderer;
+      act(() => {
+        renderer = ReactTestRenderer.create(
+          <TestProviders>
+            <PushPermissionCard
+              onOpenSettings={onOpenSettings}
+              onRequest={onRequest}
+              state="granted_no_token"
+            />
+          </TestProviders>,
+        );
+      });
+
+      const root = renderer!.root;
+      const desc = root.findByProps({ testID: 'push-permission-description' });
+      expect(desc.props.children).toBe(
+        'Permission is on; this phone is not registered for push yet',
+      );
+      // Copy never claims a banner will appear when the token is missing
+      expect(desc.props.children).not.toContain(
+        'Reminders can appear as a banner',
+      );
+      expect(desc.props.children).not.toContain('appear as a banner');
+
+      const enableBtn = root.findByProps({ testID: 'push-enable' });
+      expect(enableBtn).toBeTruthy();
+      act(() => {
+        enableBtn.props.onPress();
+      });
+      expect(onRequest).toHaveBeenCalled();
+      expect(
+        root.findAllByProps({ testID: 'push-open-settings' }),
+      ).toHaveLength(0);
     });
-    expect(onOpenSettings).toHaveBeenCalled();
+
+    test('PushPermissionCard renders banner confirmation copy and no action button when ready', () => {
+      const onOpenSettings = jest.fn();
+      const onRequest = jest.fn();
+
+      let renderer: ReactTestRenderer.ReactTestRenderer;
+      act(() => {
+        renderer = ReactTestRenderer.create(
+          <TestProviders>
+            <PushPermissionCard
+              onOpenSettings={onOpenSettings}
+              onRequest={onRequest}
+              state="ready"
+            />
+          </TestProviders>,
+        );
+      });
+
+      const root = renderer!.root;
+      const desc = root.findByProps({ testID: 'push-permission-description' });
+      expect(desc.props.children).toBe(
+        'Reminders can appear as a banner, including when the app is closed',
+      );
+      // Ready state does not show action buttons
+      expect(root.findAllByProps({ testID: 'push-enable' })).toHaveLength(0);
+      expect(
+        root.findAllByProps({ testID: 'push-open-settings' }),
+      ).toHaveLength(0);
+    });
+
+    test('PushPermissionCard renders honest copy when unavailable', () => {
+      const onOpenSettings = jest.fn();
+      const onRequest = jest.fn();
+
+      let renderer: ReactTestRenderer.ReactTestRenderer;
+      act(() => {
+        renderer = ReactTestRenderer.create(
+          <TestProviders>
+            <PushPermissionCard
+              onOpenSettings={onOpenSettings}
+              onRequest={onRequest}
+              state="unavailable"
+            />
+          </TestProviders>,
+        );
+      });
+
+      const root = renderer!.root;
+      const desc = root.findByProps({ testID: 'push-permission-description' });
+      expect(desc.props.children).toBe(
+        'App is ready; server push is not configured',
+      );
+      expect(desc.props.children).not.toContain('appear as a banner');
+      expect(root.findAllByProps({ testID: 'push-enable' })).toHaveLength(0);
+      expect(
+        root.findAllByProps({ testID: 'push-open-settings' }),
+      ).toHaveLength(0);
+    });
+
+    test('PushPermissionCard renders enable button when unknown', () => {
+      const onOpenSettings = jest.fn();
+      const onRequest = jest.fn();
+
+      let renderer: ReactTestRenderer.ReactTestRenderer;
+      act(() => {
+        renderer = ReactTestRenderer.create(
+          <TestProviders>
+            <PushPermissionCard
+              onOpenSettings={onOpenSettings}
+              onRequest={onRequest}
+              state="unknown"
+            />
+          </TestProviders>,
+        );
+      });
+
+      const root = renderer!.root;
+      const desc = root.findByProps({ testID: 'push-permission-description' });
+      expect(desc.props.children).toBe(
+        'Reminders can appear at the top of the phone when due',
+      );
+      expect(root.findByProps({ testID: 'push-enable' })).toBeTruthy();
+    });
   });
 
   test('TaskEmptyState renders with expected testIDs', () => {

@@ -26,6 +26,12 @@ interface AuthTokenStorage {
     fun read(): StoredAuthTokens?
 
     fun clear()
+
+    fun saveDeviceId(deviceId: String)
+
+    fun readDeviceId(): String?
+
+    fun clearDeviceId()
 }
 
 /**
@@ -73,8 +79,32 @@ class SecureTokenStorage internal constructor(
         }
     }
 
+    override fun saveDeviceId(deviceId: String) {
+        require(deviceId.isNotBlank()) { "deviceId must not be blank" }
+        val key = keyProvider.getOrCreate()
+        backend.put(DEVICE_ID_KEY, encrypt(deviceId, key))
+    }
+
+    override fun readDeviceId(): String? {
+        val ciphertext = backend.get(DEVICE_ID_KEY) ?: return null
+        return try {
+            val key = keyProvider.getOrCreate()
+            decrypt(ciphertext, key)
+        } catch (_: GeneralSecurityException) {
+            clearDeviceId()
+            null
+        } catch (_: IllegalArgumentException) {
+            clearDeviceId()
+            null
+        }
+    }
+
+    override fun clearDeviceId() {
+        backend.clear(DEVICE_ID_KEY)
+    }
+
     override fun clear() {
-        backend.clear(ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY)
+        backend.clear(ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY, DEVICE_ID_KEY)
     }
 
     private fun encrypt(value: String, key: SecretKey): String {
@@ -106,6 +136,7 @@ class SecureTokenStorage internal constructor(
         private const val KEY_ALIAS = "voice_assistance_auth_tokens_v1"
         private const val ACCESS_TOKEN_KEY = "access_token"
         private const val REFRESH_TOKEN_KEY = "refresh_token"
+        private const val DEVICE_ID_KEY = "device_id"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val GCM_IV_BYTES = 12
         private const val GCM_TAG_BITS = 128

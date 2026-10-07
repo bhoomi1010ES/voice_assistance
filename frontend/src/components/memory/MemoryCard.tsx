@@ -12,7 +12,11 @@ interface MemoryCardProps {
   selected?: boolean;
 }
 
-export function MemoryCard({ memory, onView, selected = false }: MemoryCardProps) {
+export function MemoryCard({
+  memory,
+  onView,
+  selected = false,
+}: MemoryCardProps) {
   const { colors } = useAppTheme();
 
   return (
@@ -48,12 +52,7 @@ export function MemoryCard({ memory, onView, selected = false }: MemoryCardProps
               },
             ]}
           />
-          <AppText
-            style={[
-              styles.typeText,
-              { color: colors.textMuted },
-            ]}
-          >
+          <AppText style={[styles.typeText, { color: colors.textMuted }]}>
             {memoryTypeLabel(memory.memory_type)}
           </AppText>
         </View>
@@ -68,10 +67,7 @@ export function MemoryCard({ memory, onView, selected = false }: MemoryCardProps
             ]}
           >
             <AppText
-              style={[
-                styles.replacementText,
-                { color: colors.warning },
-              ]}
+              style={[styles.replacementText, { color: colors.warning }]}
             >
               {strings.memory.replacementNotice}
             </AppText>

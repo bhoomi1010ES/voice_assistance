@@ -19,7 +19,7 @@ from app.planning.observer import PlanningObserver
 from app.reminders.worker_service import ReminderWorkerService
 from app.routing.service import DecisionRouterService
 from app.services.infrastructure import Infrastructure
-from app.services.push_delivery import UnavailablePushDeliveryProvider
+from app.services.push_delivery import create_push_delivery_provider
 from app.stt.service import STTService
 from app.tts.service import TTSService
 
@@ -114,7 +114,7 @@ def create_app(
                 reminder_worker = ReminderWorkerService(
                     app_settings,
                     database,
-                    UnavailablePushDeliveryProvider(),
+                    create_push_delivery_provider(app_settings),
                 )
                 await reminder_worker.start()
                 app.state.reminder_worker = reminder_worker

@@ -343,7 +343,9 @@ export function AssistantScreen() {
           testID="voice-connection-status"
         />
 
-        <PlanningControls onOpenPlanDetail={planId => setSelectedPlanId(planId)} />
+        <PlanningControls
+          onOpenPlanDetail={planId => setSelectedPlanId(planId)}
+        />
 
         <PlanningReceiptCard
           receipt={

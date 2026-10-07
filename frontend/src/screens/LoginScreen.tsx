@@ -1,12 +1,5 @@
 import React, { useState } from 'react';
-import {
-  Modal,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { ClientError, safeUserMessage, toClientError } from '../api/errors';
 import { useAuth } from '../auth/AuthProvider';
 import { AuthBrandHeader } from '../components/auth/AuthBrandHeader';
@@ -131,7 +124,9 @@ export function LoginScreen({
                   onPress={() => setShowPassword(current => !current)}
                   style={styles.visibilityButton}
                 >
-                  <AppText style={[styles.visibilityText, { color: colors.primary }]}>
+                  <AppText
+                    style={[styles.visibilityText, { color: colors.primary }]}
+                  >
                     {showPassword
                       ? strings.auth.hidePassword
                       : strings.auth.showPassword}

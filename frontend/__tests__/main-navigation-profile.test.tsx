@@ -167,7 +167,9 @@ test('bottom navigation opens settings and profile actions', async () => {
   await act(async () => {
     renderer.root.findByProps({ testID: 'tab-assistant' }).props.onPress();
   });
-  expect(renderer.root.findByProps({ testID: 'assistant-screen' })).toBeTruthy();
+  expect(
+    renderer.root.findByProps({ testID: 'assistant-screen' }),
+  ).toBeTruthy();
   await act(async () => {
     renderer.unmount();
   });

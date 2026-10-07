@@ -11,7 +11,12 @@ export function listPlans(
 
 export function createPlan(
   controller: AuthController,
-  input: { name: string; goal?: string; deadline_at?: string; timezone?: string },
+  input: {
+    name: string;
+    goal?: string;
+    deadline_at?: string;
+    timezone?: string;
+  },
 ): Promise<Plan> {
   return controller.request('/plans', {
     method: 'POST',
@@ -19,7 +24,10 @@ export function createPlan(
   });
 }
 
-export function getPlan(controller: AuthController, planId: string): Promise<PlanDetail> {
+export function getPlan(
+  controller: AuthController,
+  planId: string,
+): Promise<PlanDetail> {
   return controller.request(`/plans/${encodeURIComponent(planId)}`);
 }
 
@@ -55,12 +63,16 @@ export function listPlanActions(
   controller: AuthController,
   planId: string,
 ): Promise<PlanningReceiptPayload[]> {
-  return controller.request(`/plans/${encodeURIComponent(planId)}/actions?limit=50`);
+  return controller.request(
+    `/plans/${encodeURIComponent(planId)}/actions?limit=50`,
+  );
 }
 
 export function listPlanTasks(
   controller: AuthController,
   planId: string,
 ): Promise<Task[]> {
-  return controller.request(`/tasks?plan_id=${encodeURIComponent(planId)}&limit=100`);
+  return controller.request(
+    `/tasks?plan_id=${encodeURIComponent(planId)}&limit=100`,
+  );
 }

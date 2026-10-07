@@ -135,7 +135,9 @@ export function RegisterScreen({
                   onPress={() => setShowPassword(current => !current)}
                   style={styles.visibilityButton}
                 >
-                  <AppText style={[styles.visibilityText, { color: colors.primary }]}>
+                  <AppText
+                    style={[styles.visibilityText, { color: colors.primary }]}
+                  >
                     {showPassword
                       ? strings.auth.hidePassword
                       : strings.auth.showPassword}
@@ -167,7 +169,9 @@ export function RegisterScreen({
                   onPress={() => setShowConfirmPassword(current => !current)}
                   style={styles.visibilityButton}
                 >
-                  <AppText style={[styles.visibilityText, { color: colors.primary }]}>
+                  <AppText
+                    style={[styles.visibilityText, { color: colors.primary }]}
+                  >
                     {showConfirmPassword
                       ? strings.auth.hidePassword
                       : strings.auth.showPassword}

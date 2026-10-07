@@ -181,7 +181,7 @@ export function TaskEditorModal({
                     backgroundColor: colors.surface,
                   },
                 ]}
-                testID="task-date-input"
+                testID="task-due-date-input"
                 value={draft.date}
               />
               <View style={styles.quickDateRow}>

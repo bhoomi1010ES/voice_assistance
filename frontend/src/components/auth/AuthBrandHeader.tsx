@@ -17,10 +17,7 @@ export function AuthBrandHeader({ title, subtitle }: AuthBrandHeaderProps) {
       {/* Brand Identity Orb */}
       <View style={styles.orbWrapper}>
         <View
-          style={[
-            styles.orbGlow,
-            { backgroundColor: colors.primaryContainer },
-          ]}
+          style={[styles.orbGlow, { backgroundColor: colors.primaryContainer }]}
         />
         <View
           style={[
@@ -31,9 +28,7 @@ export function AuthBrandHeader({ title, subtitle }: AuthBrandHeaderProps) {
             },
           ]}
         >
-          <Text style={[styles.brandGlyph, { color: colors.primary }]}>
-            ◉
-          </Text>
+          <Text style={[styles.brandGlyph, { color: colors.primary }]}>◉</Text>
         </View>
       </View>
 

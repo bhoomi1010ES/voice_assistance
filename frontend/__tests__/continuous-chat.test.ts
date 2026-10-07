@@ -325,7 +325,9 @@ test('failed response suppresses auto-listening until an explicit retry turn', a
 
 test('starts listening after session ready and keeps capture for the next turn', async () => {
   jest.useFakeTimers();
-  const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+  const infoSpy = jest
+    .spyOn(console, 'info')
+    .mockImplementation(() => undefined);
   const adapter = new ContinuousChatAdapter();
   adapter.status = status({ state: 'CONNECTED', connected: true });
   const socket = new VoiceSocket({ adapter });
@@ -420,7 +422,9 @@ test('manual finish commits the active turn and stops continuous auto-listening'
 });
 
 test('emits replacement telemetry only for a real barge-in replacement turn', async () => {
-  const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+  const infoSpy = jest
+    .spyOn(console, 'info')
+    .mockImplementation(() => undefined);
   const adapter = new ContinuousChatAdapter();
   adapter.status = status({
     state: 'SESSION_READY',

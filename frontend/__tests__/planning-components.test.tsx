@@ -7,7 +7,7 @@ import { ActionButton, AppText } from '../src/components/ui/Primitives';
 import { TestProviders } from '../src/testing/TestProviders';
 import { PlanningReceiptPayload } from '../src/plans/types';
 import { getPlan, listPlanTasks, archivePlan } from '../src/plans/api';
-import { completeTask, deleteTask } from '../src/tasks/api';
+import { completeTask } from '../src/tasks/api';
 
 jest.mock('../src/auth/AuthProvider', () => {
   const controller = {};
@@ -30,7 +30,10 @@ let renderer: ReactTestRenderer.ReactTestRenderer;
 beforeEach(() => {
   jest.clearAllMocks();
   jest.spyOn(Alert, 'alert').mockImplementation((_title, _msg, buttons) => {
-    const actionBtn = buttons?.find(b => b.style === 'destructive' || b.text === 'Archive' || b.text === 'Undo');
+    const actionBtn = buttons?.find(
+      b =>
+        b.style === 'destructive' || b.text === 'Archive' || b.text === 'Undo',
+    );
     if (actionBtn && actionBtn.onPress) {
       actionBtn.onPress();
     }
@@ -91,7 +94,9 @@ describe('PlanningReceiptCard', () => {
       );
     });
 
-    const texts = renderer.root.findAllByType(AppText).map(t => t.props.children);
+    const texts = renderer.root
+      .findAllByType(AppText)
+      .map(t => t.props.children);
     expect(texts).toContain('Planned 2 actions for moving trip');
     expect(texts).toContain('Pack fragile boxes');
     expect(texts).toContain('Update existing move date');
@@ -191,11 +196,7 @@ describe('PlanDetailModal', () => {
     await act(async () => {
       renderer = ReactTestRenderer.create(
         <TestProviders>
-          <PlanDetailModal
-            planId="plan-1"
-            visible={true}
-            onClose={onClose}
-          />
+          <PlanDetailModal planId="plan-1" visible={true} onClose={onClose} />
         </TestProviders>,
       );
     });
@@ -205,7 +206,9 @@ describe('PlanDetailModal', () => {
       await Promise.resolve();
     });
 
-    const texts = renderer.root.findAllByType(AppText).map(t => t.props.children);
+    const texts = renderer.root
+      .findAllByType(AppText)
+      .map(t => t.props.children);
     expect(texts).toContain('Apartment Relocation');
     expect(texts).toContain('Move to new apartment by end of month');
     expect(texts).toContain('Prefers morning delivery');

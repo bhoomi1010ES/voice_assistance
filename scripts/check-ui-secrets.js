@@ -8,7 +8,7 @@ const sourceDirectories = [
 ];
 const allowedExtensions = new Set(['.js', '.jsx', '.ts', '.tsx']);
 const secretPatterns = [
-  /(?:sk-|xai-|AIza|AKIA)[A-Za-z0-9_-]{8,}/,
+  /\b(?:sk-|xai-|AIza|AKIA)[A-Za-z0-9_-]{8,}/,
   /https?:\/\/[^\s/@]+:[^\s/@]+@/i,
 ];
 

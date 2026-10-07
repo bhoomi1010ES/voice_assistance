@@ -441,6 +441,36 @@ class VoiceModule(
     }
 
     @ReactMethod
+    fun storeDeviceId(deviceId: String, promise: Promise) {
+        try {
+            authTokenStorage.saveDeviceId(deviceId)
+            promise.resolve(true)
+        } catch (exception: Exception) {
+            promise.reject("E_AUTH_DEVICE_STORAGE", exception.message, exception)
+        }
+    }
+
+    @ReactMethod
+    fun readDeviceId(promise: Promise) {
+        try {
+            val deviceId = authTokenStorage.readDeviceId()
+            promise.resolve(deviceId)
+        } catch (exception: Exception) {
+            promise.reject("E_AUTH_DEVICE_READ", exception.message, exception)
+        }
+    }
+
+    @ReactMethod
+    fun clearDeviceId(promise: Promise) {
+        try {
+            authTokenStorage.clearDeviceId()
+            promise.resolve(true)
+        } catch (exception: Exception) {
+            promise.reject("E_AUTH_DEVICE_CLEAR", exception.message, exception)
+        }
+    }
+
+    @ReactMethod
     fun connectVoiceGateway(url: String, promise: Promise) {
         resolveVoiceResult(voiceGateway.connect(url), promise)
     }

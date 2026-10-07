@@ -1,14 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import {
-  Alert,
-  Modal,
-  ScrollView,
-  StyleSheet,
-  View,
-} from 'react-native';
+import { Alert, Modal, ScrollView, StyleSheet, View } from 'react-native';
 import { useAuth } from '../../auth/AuthProvider';
 import { archivePlan, getPlan, listPlanTasks } from '../../plans/api';
-import { PlanContextItem, PlanDetail } from '../../plans/types';
+import { PlanDetail } from '../../plans/types';
 import { completeTask, deleteTask } from '../../tasks/api';
 import { Task } from '../../tasks/types';
 import { strings } from '../../i18n/strings';
@@ -66,7 +60,9 @@ export function PlanDetailModal({
   // Group tasks into Today, Up next, Scheduled, No deadline, Completed
   const now = new Date();
   const todayStr = now.toISOString().slice(0, 10);
-  const in7Days = new Date(now.getTime() + 7 * 86400000).toISOString().slice(0, 10);
+  const in7Days = new Date(now.getTime() + 7 * 86400000)
+    .toISOString()
+    .slice(0, 10);
 
   const completedTasks = tasks.filter(t => t.status === 'completed');
   const activeTasks = tasks.filter(t => t.status !== 'completed');
@@ -93,7 +89,10 @@ export function PlanDetailModal({
 
   const totalTasksCount = tasks.length;
   const completedCount = completedTasks.length;
-  const progressPercent = totalTasksCount > 0 ? Math.round((completedCount / totalTasksCount) * 100) : 0;
+  const progressPercent =
+    totalTasksCount > 0
+      ? Math.round((completedCount / totalTasksCount) * 100)
+      : 0;
 
   const handleToggleComplete = async (task: Task) => {
     try {
@@ -143,7 +142,11 @@ export function PlanDetailModal({
           style: 'destructive',
           onPress: async () => {
             try {
-              await archivePlan(controller, detail.plan.id, detail.plan.revision);
+              await archivePlan(
+                controller,
+                detail.plan.id,
+                detail.plan.revision,
+              );
               Alert.alert(strings.planning.planArchived);
               onPlanArchived?.(detail.plan.id);
               onClose();
@@ -160,7 +163,11 @@ export function PlanDetailModal({
     );
   };
 
-  const renderTaskSection = (title: string, sectionTasks: Task[], testIdPrefix: string) => {
+  const renderTaskSection = (
+    title: string,
+    sectionTasks: Task[],
+    testIdPrefix: string,
+  ) => {
     if (sectionTasks.length === 0) return null;
     return (
       <View style={styles.sectionContainer} testID={`section-${testIdPrefix}`}>
@@ -171,7 +178,10 @@ export function PlanDetailModal({
           {sectionTasks.map(task => (
             <View
               key={task.id}
-              style={[styles.taskItem, { backgroundColor: colors.surfaceMuted }]}
+              style={[
+                styles.taskItem,
+                { backgroundColor: colors.surfaceMuted },
+              ]}
               testID={`task-${task.id}`}
             >
               <View style={styles.taskInfo}>
@@ -184,7 +194,9 @@ export function PlanDetailModal({
                   {task.title}
                 </AppText>
                 {task.due_at ? (
-                  <AppText style={[styles.taskDue, { color: colors.textSubtle }]}>
+                  <AppText
+                    style={[styles.taskDue, { color: colors.textSubtle }]}
+                  >
                     {task.due_at.replace('T', ' ').slice(0, 16)}
                   </AppText>
                 ) : null}
@@ -223,7 +235,9 @@ export function PlanDetailModal({
       onRequestClose={onClose}
     >
       <View style={styles.modalOverlay}>
-        <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
+        <View
+          style={[styles.modalContent, { backgroundColor: colors.surface }]}
+        >
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerTitleGroup}>
@@ -231,12 +245,19 @@ export function PlanDetailModal({
                 {detail?.plan.name ?? strings.planning.planDetails}
               </AppText>
               {detail ? (
-                <AppText style={[styles.revisionText, { color: colors.textSubtle }]}>
+                <AppText
+                  style={[styles.revisionText, { color: colors.textSubtle }]}
+                >
                   rev {detail.plan.revision} • {detail.plan.timezone}
                 </AppText>
               ) : null}
             </View>
-            <ActionButton label="✕" variant="quiet" onPress={onClose} testID="close-plan-detail-btn" />
+            <ActionButton
+              label="✕"
+              variant="quiet"
+              onPress={onClose}
+              testID="close-plan-detail-btn"
+            />
           </View>
 
           {loading && !detail ? (
@@ -244,25 +265,37 @@ export function PlanDetailModal({
               {strings.planning.loading}
             </AppText>
           ) : error ? (
-            <AppText accessibilityRole="alert" style={[styles.errorText, { color: colors.error }]}>
+            <AppText
+              accessibilityRole="alert"
+              style={[styles.errorText, { color: colors.error }]}
+            >
               {error}
             </AppText>
           ) : detail ? (
-            <ScrollView style={styles.scrollArea} contentContainerStyle={styles.scrollContent}>
+            <ScrollView
+              style={styles.scrollArea}
+              contentContainerStyle={styles.scrollContent}
+            >
               {/* Goal & Deadline Card */}
               {detail.plan.goal || detail.plan.deadline_at ? (
                 <Card style={styles.infoCard}>
                   {detail.plan.goal ? (
                     <View style={styles.infoRow}>
-                      <AppText style={[styles.infoLabel, { color: colors.textSubtle }]}>
+                      <AppText
+                        style={[styles.infoLabel, { color: colors.textSubtle }]}
+                      >
                         {strings.planning.goal}:
                       </AppText>
-                      <AppText style={styles.infoValue}>{detail.plan.goal}</AppText>
+                      <AppText style={styles.infoValue}>
+                        {detail.plan.goal}
+                      </AppText>
                     </View>
                   ) : null}
                   {detail.plan.deadline_at ? (
                     <View style={styles.infoRow}>
-                      <AppText style={[styles.infoLabel, { color: colors.textSubtle }]}>
+                      <AppText
+                        style={[styles.infoLabel, { color: colors.textSubtle }]}
+                      >
                         {strings.planning.deadline}:
                       </AppText>
                       <AppText style={styles.infoValue}>
@@ -276,13 +309,27 @@ export function PlanDetailModal({
               {/* Progress Summary */}
               <Card style={styles.progressCard} testID="plan-progress-card">
                 <View style={styles.progressHeader}>
-                  <AppText style={styles.progressTitle}>{strings.planning.progress}</AppText>
-                  <AppText style={styles.progressPercent}>{progressPercent}%</AppText>
+                  <AppText style={styles.progressTitle}>
+                    {strings.planning.progress}
+                  </AppText>
+                  <AppText style={styles.progressPercent}>
+                    {progressPercent}%
+                  </AppText>
                 </View>
-                <AppText style={[styles.progressSubtitle, { color: colors.textSubtle }]}>
+                <AppText
+                  style={[
+                    styles.progressSubtitle,
+                    { color: colors.textSubtle },
+                  ]}
+                >
                   {completedCount} of {totalTasksCount} tasks completed
                 </AppText>
-                <View style={[styles.progressBarBackground, { backgroundColor: colors.surfaceMuted }]}>
+                <View
+                  style={[
+                    styles.progressBarBackground,
+                    { backgroundColor: colors.surfaceMuted },
+                  ]}
+                >
                   <View
                     style={[
                       styles.progressBarFill,
@@ -297,26 +344,60 @@ export function PlanDetailModal({
 
               {/* Grouped Tasks */}
               {renderTaskSection(strings.planning.today, todayTasks, 'today')}
-              {renderTaskSection(strings.planning.upNext, upNextTasks, 'up-next')}
-              {renderTaskSection(strings.planning.scheduled, scheduledTasks, 'scheduled')}
-              {renderTaskSection(strings.planning.noDeadline, undatedTasks, 'undated')}
-              {renderTaskSection(strings.planning.completed, completedTasks, 'completed')}
+              {renderTaskSection(
+                strings.planning.upNext,
+                upNextTasks,
+                'up-next',
+              )}
+              {renderTaskSection(
+                strings.planning.scheduled,
+                scheduledTasks,
+                'scheduled',
+              )}
+              {renderTaskSection(
+                strings.planning.noDeadline,
+                undatedTasks,
+                'undated',
+              )}
+              {renderTaskSection(
+                strings.planning.completed,
+                completedTasks,
+                'completed',
+              )}
 
               {/* Context Notes */}
               {detail.context.length > 0 ? (
-                <View style={styles.sectionContainer} testID="plan-context-section">
-                  <AppText style={[styles.sectionHeading, { color: colors.textSubtle }]}>
+                <View
+                  style={styles.sectionContainer}
+                  testID="plan-context-section"
+                >
+                  <AppText
+                    style={[
+                      styles.sectionHeading,
+                      { color: colors.textSubtle },
+                    ]}
+                  >
                     {strings.planning.contextNotes} ({detail.context.length})
                   </AppText>
                   <View style={styles.contextList}>
                     {detail.context.map(item => (
                       <View
                         key={item.id}
-                        style={[styles.contextItem, { backgroundColor: colors.surfaceMuted }]}
+                        style={[
+                          styles.contextItem,
+                          { backgroundColor: colors.surfaceMuted },
+                        ]}
                         testID={`context-${item.id}`}
                       >
-                        <AppText style={styles.contextContent}>{item.content}</AppText>
-                        <AppText style={[styles.contextMeta, { color: colors.textSubtle }]}>
+                        <AppText style={styles.contextContent}>
+                          {item.content}
+                        </AppText>
+                        <AppText
+                          style={[
+                            styles.contextMeta,
+                            { color: colors.textSubtle },
+                          ]}
+                        >
                           {item.kind} • {item.created_at.slice(0, 10)}
                         </AppText>
                       </View>

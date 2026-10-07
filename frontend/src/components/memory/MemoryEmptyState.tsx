@@ -50,7 +50,8 @@ export function MemoryEmptyState({ text, testID }: MemoryEmptyStateProps) {
         ]}
       >
         <AppText style={[styles.hintText, { color: colors.textSubtle }]}>
-          Talk with your assistant to automatically form memories, or add one above.
+          Talk with your assistant to automatically form memories, or add one
+          above.
         </AppText>
       </View>
     </Card>

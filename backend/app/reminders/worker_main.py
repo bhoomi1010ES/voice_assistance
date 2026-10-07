@@ -7,7 +7,7 @@ import signal
 
 from app.core.config import get_settings
 from app.services.infrastructure import Infrastructure
-from app.services.push_delivery import UnavailablePushDeliveryProvider
+from app.services.push_delivery import create_push_delivery_provider
 
 from .worker_service import ReminderWorkerService
 
@@ -18,7 +18,7 @@ async def run() -> None:
     worker = ReminderWorkerService(
         settings,
         infrastructure.database,
-        UnavailablePushDeliveryProvider(),
+        create_push_delivery_provider(settings),
     )
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()

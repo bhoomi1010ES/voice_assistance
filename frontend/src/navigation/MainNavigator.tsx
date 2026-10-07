@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { strings } from '../i18n/strings';
 import { AppText } from '../components/ui/Primitives';
-import { BottomTabBar, PrimaryTabRoute } from '../components/navigation/BottomTabBar';
+import { BottomTabBar } from '../components/navigation/BottomTabBar';
 import { AssistantScreen } from '../screens/AssistantScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
 import { DiagnosticScreen } from '../screens/DiagnosticScreen';
@@ -14,7 +14,8 @@ import { TasksScreen } from '../screens/TasksScreen';
 import { useAuth } from '../auth/AuthProvider';
 import { useVoiceSocket } from '../voice/VoiceSocketProvider';
 import { useAppTheme } from '../design/ThemeProvider';
-import { radii, shadows, spacing, typography } from '../design/tokens';
+import { shadows, spacing, typography } from '../design/tokens';
+import { setupPushNotificationListeners } from '../notifications/PushNotificationService';
 
 export type MainRoute =
   | 'assistant'
@@ -31,6 +32,17 @@ export function MainNavigator() {
   const { colors } = useAppTheme();
   const insets = useSafeAreaInsets();
   const [route, setRoute] = useState<MainRoute>('assistant');
+  const [tasksInitialPage, setTasksInitialPage] = useState<
+    'tasks' | 'reminders'
+  >('tasks');
+
+  useEffect(() => {
+    const unsubscribe = setupPushNotificationListeners(controller, () => {
+      setRoute('tasks');
+      setTasksInitialPage('reminders');
+    });
+    return unsubscribe;
+  }, [controller]);
 
   const navigate = (nextRoute: MainRoute) => {
     setRoute(nextRoute);
@@ -91,11 +103,15 @@ export function MainNavigator() {
               style={styles.backButton}
               testID="nav-back-button"
             >
-              <Text style={[styles.backArrow, { color: colors.primary }]}>←</Text>
+              <Text style={[styles.backArrow, { color: colors.primary }]}>
+                ←
+              </Text>
             </Pressable>
           ) : (
             <View style={styles.brandIconContainer}>
-              <Text style={[styles.brandIcon, { color: colors.primary }]}>◉</Text>
+              <Text style={[styles.brandIcon, { color: colors.primary }]}>
+                ◉
+              </Text>
             </View>
           )}
 
@@ -136,12 +152,19 @@ export function MainNavigator() {
         {route === 'account' ? <AccountScreen /> : null}
         {route === 'sessions' ? <SessionsScreen /> : null}
         {route === 'memory' ? <MemoryScreen /> : null}
-        {route === 'tasks' ? <TasksScreen /> : null}
+        {route === 'tasks' ? (
+          <TasksScreen initialPage={tasksInitialPage} />
+        ) : null}
       </View>
 
       <BottomTabBar
         activeRoute={route}
-        onNavigate={tab => navigate(tab as MainRoute)}
+        onNavigate={tab => {
+          if (tab === 'tasks') {
+            setTasksInitialPage('tasks');
+          }
+          navigate(tab as MainRoute);
+        }}
       />
     </View>
   );

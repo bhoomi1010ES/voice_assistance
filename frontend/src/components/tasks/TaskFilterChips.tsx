@@ -164,7 +164,11 @@ export function TaskFilterChips({
             />
             <FilterChip
               count={reminderCounts?.failed}
-              label={reminderCounts?.failed ? `${strings.tasks.failed} (!)` : strings.tasks.failed}
+              label={
+                reminderCounts?.failed
+                  ? `${strings.tasks.failed} (!)`
+                  : strings.tasks.failed
+              }
               onPress={() => onReminderFilterChange('failed')}
               selected={reminderFilter === 'failed'}
               testID="reminders-filter-failed"

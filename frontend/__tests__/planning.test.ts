@@ -252,7 +252,9 @@ test('planning action receipt envelopes normalize across server and native forma
   expect(native?.planningReceipt?.savedActions).toHaveLength(1);
   expect(native?.planningReceipt?.savedActions[0].title).toBe('Pack boxes');
   expect(native?.planningReceipt?.duplicateActions).toHaveLength(1);
-  expect(native?.planningReceipt?.textSummary).toBe('Created 2 tasks for moving');
+  expect(native?.planningReceipt?.textSummary).toBe(
+    'Created 2 tasks for moving',
+  );
 });
 
 test('VoiceSocket receives planning actions, updates receipt snapshots, and increments version', async () => {
@@ -271,9 +273,7 @@ test('VoiceSocket receives planning actions, updates receipt snapshots, and incr
 
   const receipt1 = {
     batch_id: 'batch-1',
-    saved_actions: [
-      { id: 'act-1', title: 'Task 1', status: 'saved' },
-    ],
+    saved_actions: [{ id: 'act-1', title: 'Task 1', status: 'saved' }],
   };
 
   emit('server.planning.actions', {
@@ -289,9 +289,7 @@ test('VoiceSocket receives planning actions, updates receipt snapshots, and incr
   // Second receipt appends
   const receipt2 = {
     batch_id: 'batch-2',
-    saved_actions: [
-      { id: 'act-2', title: 'Task 2', status: 'saved' },
-    ],
+    saved_actions: [{ id: 'act-2', title: 'Task 2', status: 'saved' }],
     duplicate_actions: [
       { id: 'act-3', title: 'Task 3 duplicate', status: 'duplicate' },
     ],
@@ -329,9 +327,7 @@ test('planning receipt parser rejects oversized or malformed payloads', () => {
   expect(parsePlanningReceipt([])).toBeNull();
 
   // Array of actions is accepted as fallback
-  const arrayPayload = [
-    { title: 'Array task', status: 'saved' },
-  ];
+  const arrayPayload = [{ title: 'Array task', status: 'saved' }];
   const parsedArray = parsePlanningReceipt(arrayPayload);
   expect(parsedArray?.savedActions).toHaveLength(1);
   expect(parsedArray?.savedActions[0].title).toBe('Array task');
@@ -340,7 +336,10 @@ test('planning receipt parser rejects oversized or malformed payloads', () => {
   const actionWithoutTitle = parsePlanningAction({ id: '1' });
   expect(actionWithoutTitle?.title).toBe('Action');
 
-  const actionWithAltName = parsePlanningAction({ name: 'Alt Name', action: 'UPDATE_TASK' });
+  const actionWithAltName = parsePlanningAction({
+    name: 'Alt Name',
+    action: 'UPDATE_TASK',
+  });
   expect(actionWithAltName?.title).toBe('Alt Name');
   expect(actionWithAltName?.status).toBe('updated');
 });
@@ -348,16 +347,48 @@ test('planning receipt parser rejects oversized or malformed payloads', () => {
 test('plan task grouping partitions tasks correctly into chronological buckets', () => {
   const baseDate = new Date('2026-10-06T12:00:00Z');
   const todayStr = '2026-10-06';
-  const in7Days = new Date(baseDate.getTime() + 7 * 86400000).toISOString().slice(0, 10);
+  const in7Days = new Date(baseDate.getTime() + 7 * 86400000)
+    .toISOString()
+    .slice(0, 10);
 
   const sampleTasks = [
-    { id: '1', title: 'Due Today', due_at: '2026-10-06T18:00:00Z', status: 'pending' },
-    { id: '2', title: 'Overdue', due_at: '2026-10-01T09:00:00Z', status: 'pending' },
-    { id: '3', title: 'Up Next', due_at: '2026-10-10T12:00:00Z', status: 'pending' },
-    { id: '4', title: 'Later', due_at: '2026-11-01T12:00:00Z', status: 'pending' },
+    {
+      id: '1',
+      title: 'Due Today',
+      due_at: '2026-10-06T18:00:00Z',
+      status: 'pending',
+    },
+    {
+      id: '2',
+      title: 'Overdue',
+      due_at: '2026-10-01T09:00:00Z',
+      status: 'pending',
+    },
+    {
+      id: '3',
+      title: 'Up Next',
+      due_at: '2026-10-10T12:00:00Z',
+      status: 'pending',
+    },
+    {
+      id: '4',
+      title: 'Later',
+      due_at: '2026-11-01T12:00:00Z',
+      status: 'pending',
+    },
     { id: '5', title: 'No Deadline', due_at: null, status: 'pending' },
-    { id: '6', title: 'Completed Today', due_at: '2026-10-06T10:00:00Z', status: 'completed' },
-    { id: '7', title: 'Completed Past', due_at: '2026-10-01T10:00:00Z', status: 'completed' },
+    {
+      id: '6',
+      title: 'Completed Today',
+      due_at: '2026-10-06T10:00:00Z',
+      status: 'completed',
+    },
+    {
+      id: '7',
+      title: 'Completed Past',
+      due_at: '2026-10-01T10:00:00Z',
+      status: 'completed',
+    },
   ];
 
   const completed = sampleTasks.filter(t => t.status === 'completed');
@@ -389,7 +420,8 @@ test('plan task grouping partitions tasks correctly into chronological buckets',
   expect(undatedTasks).toHaveLength(1); // 'No Deadline'
   expect(completed).toHaveLength(2); // 'Completed Today', 'Completed Past'
 
-  const progressPercent = Math.round((completed.length / sampleTasks.length) * 100);
+  const progressPercent = Math.round(
+    (completed.length / sampleTasks.length) * 100,
+  );
   expect(progressPercent).toBe(29); // 2 / 7 = 28.57% -> 29%
 });
-

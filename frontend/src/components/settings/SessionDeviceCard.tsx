@@ -68,9 +68,7 @@ export function SessionDeviceCard({
               { backgroundColor: colors.surfaceMuted },
             ]}
           >
-            <AppText
-              style={[styles.revokedText, { color: colors.textSubtle }]}
-            >
+            <AppText style={[styles.revokedText, { color: colors.textSubtle }]}>
               {strings.sessions.revoked}
             </AppText>
           </View>
@@ -82,9 +80,7 @@ export function SessionDeviceCard({
           <ActionButton
             disabled={revoking}
             label={
-              revoking
-                ? strings.sessions.revoked
-                : strings.sessions.revoke
+              revoking ? strings.sessions.revoked : strings.sessions.revoke
             }
             onPress={onRevoke}
             style={styles.revokeButton}

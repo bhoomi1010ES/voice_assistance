@@ -146,7 +146,9 @@ class FakeVoiceAdapter implements VoiceSocketAdapter {
         sessionId: this.status.sessionId,
         turnId: null,
         responseId: null,
-        eventId: `native-status-pong-${this.status.sessionId}-${this.status.connectionGeneration ?? 0}`,
+        eventId: `native-status-pong-${this.status.sessionId}-${
+          this.status.connectionGeneration ?? 0
+        }`,
         timestampMs: 1,
         connectionGeneration: this.status.connectionGeneration,
       });

@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import { Alert, StyleSheet, View } from 'react-native';
-import { PlanningActionReceipt, PlanningReceiptPayload } from '../../plans/types';
+import {
+  PlanningActionReceipt,
+  PlanningReceiptPayload,
+} from '../../plans/types';
 import { strings } from '../../i18n/strings';
 import { ActionButton, AppText, Card } from '../ui/Primitives';
 import { useAppTheme } from '../../design/ThemeProvider';
@@ -54,7 +57,8 @@ export function PlanningReceiptCard({
               await onUndoAction(action);
             } catch (err: any) {
               setErrorMessage(
-                err?.code === 'REVISION_CONFLICT' || err?.message?.includes('conflict')
+                err?.code === 'REVISION_CONFLICT' ||
+                  err?.message?.includes('conflict')
                   ? strings.planning.staleUndoNotice
                   : strings.tasks.deliveryFailed,
               );
@@ -107,8 +111,12 @@ export function PlanningReceiptCard({
     <Card testID="planning-receipt-card" style={styles.card}>
       <View style={styles.headerRow}>
         <View style={styles.titleGroup}>
-          <AppText style={styles.title}>{strings.planning.receiptTitle}</AppText>
-          <View style={[styles.badge, { backgroundColor: colors.primaryContainer }]}>
+          <AppText style={styles.title}>
+            {strings.planning.receiptTitle}
+          </AppText>
+          <View
+            style={[styles.badge, { backgroundColor: colors.primaryContainer }]}
+          >
             <AppText style={[styles.badgeText, { color: colors.primary }]}>
               {allActions.length}
             </AppText>
@@ -133,7 +141,10 @@ export function PlanningReceiptCard({
       ) : null}
 
       {errorMessage ? (
-        <AppText accessibilityRole="alert" style={[styles.errorText, { color: colors.error }]}>
+        <AppText
+          accessibilityRole="alert"
+          style={[styles.errorText, { color: colors.error }]}
+        >
           {errorMessage}
         </AppText>
       ) : null}
@@ -146,26 +157,43 @@ export function PlanningReceiptCard({
           return (
             <View
               key={action.id}
-              style={[styles.actionItem, { backgroundColor: colors.surfaceMuted }]}
+              style={[
+                styles.actionItem,
+                { backgroundColor: colors.surfaceMuted },
+              ]}
               testID={`receipt-action-${action.id}`}
             >
               <View style={styles.actionHeader}>
                 <View style={styles.actionTitleContainer}>
                   <AppText style={styles.actionTitle}>{action.title}</AppText>
                   {action.scheduledAt ? (
-                    <AppText style={[styles.actionTime, { color: colors.textSubtle }]}>
+                    <AppText
+                      style={[styles.actionTime, { color: colors.textSubtle }]}
+                    >
                       {action.scheduledAt}
                     </AppText>
                   ) : null}
                   {action.targetId ? (
-                    <AppText style={[styles.targetIdText, { color: colors.textSubtle }]}>
+                    <AppText
+                      style={[
+                        styles.targetIdText,
+                        { color: colors.textSubtle },
+                      ]}
+                    >
                       ID: {action.targetId.slice(0, 8)}…
                     </AppText>
                   ) : null}
                 </View>
 
-                <View style={[styles.statusBadge, { backgroundColor: badge.bgColor }]}>
-                  <AppText style={[styles.statusBadgeText, { color: badge.textColor }]}>
+                <View
+                  style={[
+                    styles.statusBadge,
+                    { backgroundColor: badge.bgColor },
+                  ]}
+                >
+                  <AppText
+                    style={[styles.statusBadgeText, { color: badge.textColor }]}
+                  >
                     {badge.label}
                   </AppText>
                 </View>
@@ -181,7 +209,8 @@ export function PlanningReceiptCard({
                   />
                 ) : null}
 
-                {onUndoAction && (action.status === 'saved' || action.status === 'updated') ? (
+                {onUndoAction &&
+                (action.status === 'saved' || action.status === 'updated') ? (
                   <ActionButton
                     label={strings.planning.undoAction}
                     variant="quiet"

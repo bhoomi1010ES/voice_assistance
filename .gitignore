@@ -49,6 +49,12 @@ yarn-error.log
 .env.*
 !.env.example
 
+# Firebase credentials and client config
+*-firebase-adminsdk-*.json
+voice-assistance-*.json
+frontend/android/app/google-services.json
+**/google-services.json
+
 # Local MCP configuration may contain service credentials.
 .agents/mcp_config.json
 

@@ -104,7 +104,9 @@ export function parsePlanningState(input: unknown): PlanningState | null {
   };
 }
 
-export function parsePlanningAction(input: unknown): PlanningActionReceipt | null {
+export function parsePlanningAction(
+  input: unknown,
+): PlanningActionReceipt | null {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return null;
   }
@@ -118,7 +120,11 @@ export function parsePlanningAction(input: unknown): PlanningActionReceipt | nul
 
   const rawStatus = String(raw.status ?? '').toLowerCase();
   let status: PlanningActionReceipt['status'] = 'saved';
-  if (rawStatus === 'updated' || raw.action === 'UPDATE_TASK' || raw.operation === 'UPDATE_TASK') {
+  if (
+    rawStatus === 'updated' ||
+    raw.action === 'UPDATE_TASK' ||
+    raw.operation === 'UPDATE_TASK'
+  ) {
     status = 'updated';
   } else if (rawStatus === 'duplicate') {
     status = 'duplicate';
@@ -140,19 +146,39 @@ export function parsePlanningAction(input: unknown): PlanningActionReceipt | nul
   return {
     id,
     actionId: typeof raw.action_id === 'string' ? raw.action_id : null,
-    action: typeof raw.action === 'string' ? raw.action : typeof raw.operation === 'string' ? raw.operation : undefined,
-    operation: typeof raw.operation === 'string' ? raw.operation : typeof raw.action === 'string' ? raw.action : undefined,
+    action:
+      typeof raw.action === 'string'
+        ? raw.action
+        : typeof raw.operation === 'string'
+        ? raw.operation
+        : undefined,
+    operation:
+      typeof raw.operation === 'string'
+        ? raw.operation
+        : typeof raw.action === 'string'
+        ? raw.action
+        : undefined,
     title,
     status,
-    targetId: typeof raw.target_id === 'string' ? raw.target_id : typeof raw.id === 'string' ? raw.id : null,
+    targetId:
+      typeof raw.target_id === 'string'
+        ? raw.target_id
+        : typeof raw.id === 'string'
+        ? raw.id
+        : null,
     scheduledAt: typeof raw.scheduled_at === 'string' ? raw.scheduled_at : null,
     planId: typeof raw.plan_id === 'string' ? raw.plan_id : null,
     error: typeof raw.error === 'string' ? raw.error : null,
-    result: raw.result && typeof raw.result === 'object' && !Array.isArray(raw.result) ? (raw.result as Record<string, unknown>) : null,
+    result:
+      raw.result && typeof raw.result === 'object' && !Array.isArray(raw.result)
+        ? (raw.result as Record<string, unknown>)
+        : null,
   };
 }
 
-export function parsePlanningReceipt(input: unknown): PlanningReceiptPayload | null {
+export function parsePlanningReceipt(
+  input: unknown,
+): PlanningReceiptPayload | null {
   let value = input;
   if (typeof value === 'string') {
     if (value.length > 32768) {
@@ -169,7 +195,10 @@ export function parsePlanningReceipt(input: unknown): PlanningReceiptPayload | n
   }
   const raw = value as Record<string, unknown>;
 
-  const toList = (items: unknown, defaultStatus: PlanningActionReceipt['status']): PlanningActionReceipt[] => {
+  const toList = (
+    items: unknown,
+    defaultStatus: PlanningActionReceipt['status'],
+  ): PlanningActionReceipt[] => {
     if (!Array.isArray(items)) return [];
     const results: PlanningActionReceipt[] = [];
     for (const item of items) {
@@ -184,11 +213,24 @@ export function parsePlanningReceipt(input: unknown): PlanningReceiptPayload | n
     return results;
   };
 
-  const savedActions = toList(raw.saved_actions ?? raw.savedActions ?? raw.actions, 'saved');
-  const duplicateActions = toList(raw.duplicate_actions ?? raw.duplicateActions, 'duplicate');
-  const failedActions = toList(raw.failed_actions ?? raw.failedActions, 'failed');
+  const savedActions = toList(
+    raw.saved_actions ?? raw.savedActions ?? raw.actions,
+    'saved',
+  );
+  const duplicateActions = toList(
+    raw.duplicate_actions ?? raw.duplicateActions,
+    'duplicate',
+  );
+  const failedActions = toList(
+    raw.failed_actions ?? raw.failedActions,
+    'failed',
+  );
 
-  if (savedActions.length === 0 && duplicateActions.length === 0 && failedActions.length === 0) {
+  if (
+    savedActions.length === 0 &&
+    duplicateActions.length === 0 &&
+    failedActions.length === 0
+  ) {
     if (Array.isArray(raw)) {
       const list = toList(raw, 'saved');
       if (list.length > 0) {
@@ -203,13 +245,29 @@ export function parsePlanningReceipt(input: unknown): PlanningReceiptPayload | n
   }
 
   return {
-    batchId: typeof raw.batch_id === 'string' ? raw.batch_id : typeof raw.batchId === 'string' ? raw.batchId : null,
-    planId: typeof raw.plan_id === 'string' ? raw.plan_id : typeof raw.planId === 'string' ? raw.planId : null,
+    batchId:
+      typeof raw.batch_id === 'string'
+        ? raw.batch_id
+        : typeof raw.batchId === 'string'
+        ? raw.batchId
+        : null,
+    planId:
+      typeof raw.plan_id === 'string'
+        ? raw.plan_id
+        : typeof raw.planId === 'string'
+        ? raw.planId
+        : null,
     savedActions,
     duplicateActions,
     failedActions,
     summary: typeof raw.summary === 'string' ? raw.summary : null,
-    textSummary: typeof raw.text_summary === 'string' ? raw.text_summary : typeof raw.textSummary === 'string' ? raw.textSummary : null,
-    timestampMs: typeof raw.timestamp_ms === 'number' ? raw.timestamp_ms : Date.now(),
+    textSummary:
+      typeof raw.text_summary === 'string'
+        ? raw.text_summary
+        : typeof raw.textSummary === 'string'
+        ? raw.textSummary
+        : null,
+    timestampMs:
+      typeof raw.timestamp_ms === 'number' ? raw.timestamp_ms : Date.now(),
   };
 }

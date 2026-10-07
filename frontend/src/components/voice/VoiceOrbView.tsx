@@ -1,11 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import {
-  Animated,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAppTheme } from '../../design/ThemeProvider';
 import { radii, shadows, spacing, typography } from '../../design/tokens';
 import {
@@ -43,8 +37,7 @@ export function VoiceOrbView({
 
   const isListening =
     turnState === 'recording' || turnState === 'speech_detected';
-  const isThinking =
-    turnState === 'committing' || turnState === 'waiting';
+  const isThinking = turnState === 'committing' || turnState === 'waiting';
   const isSpeaking = playbackState === 'speaking';
   const isActive = isListening || isThinking || isSpeaking;
 

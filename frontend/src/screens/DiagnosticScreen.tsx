@@ -1303,15 +1303,23 @@ export function DiagnosticScreen() {
           />
           <StatusRow
             label="Playback frames written / presented"
-            value={`${Math.floor(status.playback.writtenPlaybackFrames)} / ${Math.floor(status.playback.presentedPlaybackFrames)}`}
+            value={`${Math.floor(
+              status.playback.writtenPlaybackFrames,
+            )} / ${Math.floor(status.playback.presentedPlaybackFrames)}`}
           />
           <StatusRow
             label="Reference readiness / timestamp"
-            value={`${yesNo(status.playback.referenceReady)} / ${status.playback.timestampConfidence}`}
+            value={`${yesNo(status.playback.referenceReady)} / ${
+              status.playback.timestampConfidence
+            }`}
           />
           <StatusRow
             label="Echo delay / similarity / coherence"
-            value={`${formatMilliseconds(status.playback.estimatedDelayMs)} / ${formatConfidence(status.playback.echoSimilarity)} / ${formatConfidence(status.playback.echoCoherence)}`}
+            value={`${formatMilliseconds(
+              status.playback.estimatedDelayMs,
+            )} / ${formatConfidence(
+              status.playback.echoSimilarity,
+            )} / ${formatConfidence(status.playback.echoCoherence)}`}
           />
           <StatusRow
             label="Near/far energy ratio"
@@ -1660,14 +1668,20 @@ export function DiagnosticScreen() {
               title="Capture Positive PCM"
               onPress={() => handleStartDiagnosticCapture(true)}
               disabled={
-                busy || !status.isRecording || wakeCapture.active || !pcmCaptureConsent
+                busy ||
+                !status.isRecording ||
+                wakeCapture.active ||
+                !pcmCaptureConsent
               }
             />
             <Button
               title="Capture Negative PCM"
               onPress={() => handleStartDiagnosticCapture(false)}
               disabled={
-                busy || !status.isRecording || wakeCapture.active || !pcmCaptureConsent
+                busy ||
+                !status.isRecording ||
+                wakeCapture.active ||
+                !pcmCaptureConsent
               }
             />
             <Button
@@ -1795,15 +1809,23 @@ export function DiagnosticScreen() {
           />
           <StatusRow
             label="Reference ready / missing"
-            value={`${Math.floor(audioProcessing.softwareAec.referenceReadyFrames)} / ${Math.floor(audioProcessing.softwareAec.referenceMissingFrames)}`}
+            value={`${Math.floor(
+              audioProcessing.softwareAec.referenceReadyFrames,
+            )} / ${Math.floor(
+              audioProcessing.softwareAec.referenceMissingFrames,
+            )}`}
           />
           <StatusRow
             label="Processed / bypassed"
-            value={`${Math.floor(audioProcessing.softwareAec.processedFrames)} / ${Math.floor(audioProcessing.softwareAec.bypassedFrames)}`}
+            value={`${Math.floor(
+              audioProcessing.softwareAec.processedFrames,
+            )} / ${Math.floor(audioProcessing.softwareAec.bypassedFrames)}`}
           />
           <StatusRow
             label="Last RMS input / output"
-            value={`${audioProcessing.softwareAec.lastInputRms.toFixed(1)} / ${audioProcessing.softwareAec.lastOutputRms.toFixed(1)}`}
+            value={`${audioProcessing.softwareAec.lastInputRms.toFixed(
+              1,
+            )} / ${audioProcessing.softwareAec.lastOutputRms.toFixed(1)}`}
           />
           {audioProcessing.softwareAec.lastError ? (
             <Text style={styles.errorText}>
@@ -2575,15 +2597,19 @@ function formatSileroEvent(event: SileroVadEvent | null): string {
   }
 
   const reference = event.playbackReferenceAvailable ? 'ready' : 'not-ready';
-  const delay = event.estimatedDelayMs == null ? 'N/A' : `${event.estimatedDelayMs} ms`;
-  const sourceFrames = event.sourceFrameSequenceStart == null ||
+  const delay =
+    event.estimatedDelayMs == null ? 'N/A' : `${event.estimatedDelayMs} ms`;
+  const sourceFrames =
+    event.sourceFrameSequenceStart == null ||
     event.sourceFrameSequenceEnd == null
-    ? 'N/A'
-    : `${event.sourceFrameSequenceStart}-${event.sourceFrameSequenceEnd}`;
-  return `${event.event} (${event.probability.toFixed(4)}) ` +
+      ? 'N/A'
+      : `${event.sourceFrameSequenceStart}-${event.sourceFrameSequenceEnd}`;
+  return (
+    `${event.event} (${event.probability.toFixed(4)}) ` +
     `state=${event.playbackState ?? 'N/A'} ref=${reference} ` +
     `delay=${delay} confidence=${event.timestampConfidence ?? 'N/A'} ` +
-    `frames=${sourceFrames} discontinuous=${event.discontinuous ? 'yes' : 'no'}`;
+    `frames=${sourceFrames} discontinuous=${event.discontinuous ? 'yes' : 'no'}`
+  );
 }
 
 function formatBargeInEvent(event: BargeInSemanticEvent | null): string {
@@ -2591,12 +2617,14 @@ function formatBargeInEvent(event: BargeInSemanticEvent | null): string {
     return 'NONE';
   }
   const response = event.responseId ?? 'NONE';
-  return `${event.event} state=${event.state} reason=${event.reason} ` +
+  return (
+    `${event.event} state=${event.state} reason=${event.reason} ` +
     `response=${response} playback=${event.playbackState} ` +
     `frames=${event.sourceFrameSequenceStart}-${event.sourceFrameSequenceEnd} ` +
     `inference=${event.inferenceIndex} ` +
     `capture=${event.captureStartNs}-${event.captureEndNs} ` +
-    `delay=${formatMilliseconds(event.estimatedDelayMs ?? null)}`;
+    `delay=${formatMilliseconds(event.estimatedDelayMs ?? null)}`
+  );
 }
 
 function formatBargeInStopAcknowledgement(
@@ -2605,7 +2633,8 @@ function formatBargeInStopAcknowledgement(
   if (!event) {
     return 'NONE';
   }
-  return `requested=${yesNo(event.localStopRequested === true)} ` +
+  return (
+    `requested=${yesNo(event.localStopRequested === true)} ` +
     `completed=${yesNo(event.localStopCompleted === true)} ` +
     `stopped=${yesNo(event.audioTrackStopped === true)} ` +
     `flushed=${yesNo(event.audioTrackFlushed === true)} ` +
@@ -2613,7 +2642,10 @@ function formatBargeInStopAcknowledgement(
     `pending=${yesNo(event.localStopReleasePending === true)} ` +
     `latency=${formatMilliseconds(event.localStopLatencyMs ?? null)} ` +
     `reason=${event.stopReason ?? 'N/A'} ` +
-    `detectNs=${event.monotonicNs} stopNs=${event.stopRequestedMonotonicNs ?? 'N/A'}`;
+    `detectNs=${event.monotonicNs} stopNs=${
+      event.stopRequestedMonotonicNs ?? 'N/A'
+    }`
+  );
 }
 
 function StatusRow({ label, value }: { label: string; value: string }) {

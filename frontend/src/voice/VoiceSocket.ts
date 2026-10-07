@@ -2010,7 +2010,8 @@ export class VoiceSocket {
           this.setSnapshot({
             planningReceipts: allActions,
             recentPlanningReceipt: event.planningReceipt,
-            planningReceiptVersion: (this.snapshot.planningReceiptVersion ?? 0) + 1,
+            planningReceiptVersion:
+              (this.snapshot.planningReceiptVersion ?? 0) + 1,
             planningError: null,
           });
         }

@@ -46,10 +46,14 @@ export function MemoryConfirmModal({
         </View>
         <View style={styles.titleContainer}>
           <AppText style={[styles.title, { color: colors.error }]}>
-            {isSingle ? strings.memory.deleteTitle : strings.memory.deleteAllTitle}
+            {isSingle
+              ? strings.memory.deleteTitle
+              : strings.memory.deleteAllTitle}
           </AppText>
           <AppText style={[styles.body, { color: colors.textMuted }]}>
-            {isSingle ? strings.memory.deleteBody : strings.memory.deleteAllBody}
+            {isSingle
+              ? strings.memory.deleteBody
+              : strings.memory.deleteAllBody}
           </AppText>
         </View>
       </View>

@@ -129,21 +129,23 @@ describe('Settings Presentational Components & SessionsScreen', () => {
   });
 
   test('SessionsScreen loads and revokes sessions and devices', async () => {
-    const fetchImpl = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
-      if (url.includes('/sessions') && init?.method === 'DELETE') {
-        return response(204, null);
-      }
-      if (url.includes('/devices') && init?.method === 'DELETE') {
-        return response(204, null);
-      }
-      if (url.includes('/sessions')) {
-        return response(200, mockSessions);
-      }
-      if (url.includes('/devices')) {
-        return response(200, mockDevices);
-      }
-      return response(200, {});
-    });
+    const fetchImpl = jest
+      .fn()
+      .mockImplementation((url: string, init?: RequestInit) => {
+        if (url.includes('/sessions') && init?.method === 'DELETE') {
+          return response(204, null);
+        }
+        if (url.includes('/devices') && init?.method === 'DELETE') {
+          return response(204, null);
+        }
+        if (url.includes('/sessions')) {
+          return response(200, mockSessions);
+        }
+        if (url.includes('/devices')) {
+          return response(200, mockDevices);
+        }
+        return response(200, {});
+      });
 
     const controller = new AuthController({
       fetchImpl,
@@ -163,7 +165,7 @@ describe('Settings Presentational Components & SessionsScreen', () => {
     });
 
     await act(async () => {
-      fetchImpl.mockImplementation((url: string, init?: RequestInit) => {
+      fetchImpl.mockImplementation((url: string, _init?: RequestInit) => {
         if (url.endsWith('/auth/login')) {
           return response(200, {
             token_type: 'bearer',
@@ -188,7 +190,9 @@ describe('Settings Presentational Components & SessionsScreen', () => {
       await Promise.resolve();
     });
 
-    expect(renderer!.root.findByProps({ testID: 'sessions-screen' })).toBeTruthy();
+    expect(
+      renderer!.root.findByProps({ testID: 'sessions-screen' }),
+    ).toBeTruthy();
     expect(fetchImpl).toHaveBeenCalledWith(
       expect.stringContaining('/sessions'),
       expect.anything(),

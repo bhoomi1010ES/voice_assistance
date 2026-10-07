@@ -899,6 +899,9 @@ type NativeVoiceModule = {
   ) => Promise<boolean>;
   readAuthTokens: () => Promise<StoredAuthTokens | null>;
   clearAuthTokens: () => Promise<boolean>;
+  storeDeviceId: (deviceId: string) => Promise<boolean>;
+  readDeviceId: () => Promise<string | null>;
+  clearDeviceId: () => Promise<boolean>;
   connectVoiceGateway: (url: string) => Promise<VoiceGatewayStatus>;
   disconnectVoiceGateway: () => Promise<VoiceGatewayStatus>;
   startVoiceSession: (
@@ -1111,6 +1114,18 @@ export async function readAuthTokens(): Promise<StoredAuthTokens | null> {
 
 export async function clearAuthTokens(): Promise<boolean> {
   return requireNativeVoiceModule().clearAuthTokens();
+}
+
+export async function storeDeviceId(deviceId: string): Promise<boolean> {
+  return requireNativeVoiceModule().storeDeviceId(deviceId);
+}
+
+export async function readDeviceId(): Promise<string | null> {
+  return requireNativeVoiceModule().readDeviceId();
+}
+
+export async function clearDeviceId(): Promise<boolean> {
+  return requireNativeVoiceModule().clearDeviceId();
 }
 
 export async function connectVoiceGateway(
