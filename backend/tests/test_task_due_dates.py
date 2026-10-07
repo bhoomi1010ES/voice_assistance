@@ -7,7 +7,12 @@ from datetime import UTC, datetime
 import pytest
 
 from app.core.clock import FrozenClock
-from app.llm.task_tools import register_task_tools
+from app.llm.reminder_tools import CreateReminderArguments, normalize_create_reminder_arguments
+from app.llm.task_tools import (
+    CreateTaskArguments,
+    normalize_create_task_arguments,
+    register_task_tools,
+)
 from app.llm.tool_loop import (
     InMemoryToolIdempotencyStore,
     ToolExecutionContext,
@@ -80,6 +85,115 @@ def test_task_without_date_keeps_due_at_empty() -> None:
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("clock_text", "expected"),
+    [
+        ("at 2.45 PM", datetime(2026, 10, 7, 9, 15, tzinfo=UTC)),
+        ("at 2:45 PM", datetime(2026, 10, 7, 9, 15, tzinfo=UTC)),
+        ("at 2.45 p.m.", datetime(2026, 10, 7, 9, 15, tzinfo=UTC)),
+        ("2.45 PM", datetime(2026, 10, 7, 9, 15, tzinfo=UTC)),
+        ("around 14.45", datetime(2026, 10, 7, 9, 15, tzinfo=UTC)),
+        ("by 14:45", datetime(2026, 10, 7, 9, 15, tzinfo=UTC)),
+        ("at 2.45 AM", datetime(2026, 10, 6, 21, 15, tzinfo=UTC)),
+        ("at 12.00 AM", datetime(2026, 10, 6, 18, 30, tzinfo=UTC)),
+        ("at 12.00 PM", datetime(2026, 10, 7, 6, 30, tzinfo=UTC)),
+    ],
+)
+def test_dotted_and_colon_clock_times_preserve_minutes_and_meridiem(
+    clock_text: str, expected: datetime
+) -> None:
+    assert (
+        resolve_task_due_at(
+            due_at=None,
+            due_expression=None,
+            source_transcript=f"Remind me to call Parth {clock_text} on 7 October",
+            now_utc=datetime(2026, 10, 6, 18, tzinfo=UTC),
+            timezone_name="Asia/Kolkata",
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("prefix", "clock_text"),
+    [
+        (prefix, clock_text)
+        for prefix in ("at ", "")
+        for clock_text in (
+            "2.75 PM",
+            "2:75 PM",
+            "2.5 PM",
+            "2:5 PM",
+            "2.450 PM",
+            "2:45:30 PM",
+            "2.45.30 PM",
+            "2..45 PM",
+            "2:abc PM",
+            "123 PM",
+            "25.45",
+            "13.45 PM",
+        )
+        if prefix or "PM" in clock_text
+    ],
+)
+def test_malformed_clock_is_rejected_instead_of_creating_a_different_time(
+    clock_text: str,
+    prefix: str,
+) -> None:
+    with pytest.raises(TaskDueDateResolutionError):
+        resolve_task_due_at(
+            due_at=None,
+            due_expression=None,
+            source_transcript=f"Remind me to call Parth {prefix}{clock_text} on 7 October",
+            now_utc=datetime(2026, 10, 6, 18, tzinfo=UTC),
+            timezone_name="Asia/Kolkata",
+        )
+
+
+def test_dotted_explicit_time_still_rejects_a_past_deadline() -> None:
+    with pytest.raises(TaskDueDateResolutionError, match="future"):
+        resolve_task_due_at(
+            due_at=None,
+            due_expression=None,
+            source_transcript="Remind me to call Parth on 7 October at 2.45 PM",
+            now_utc=datetime(2026, 10, 7, 9, 16, tzinfo=UTC),
+            timezone_name="Asia/Kolkata",
+        )
+
+
+def test_unrelated_decimal_does_not_become_a_clock_time() -> None:
+    assert resolve_task_due_at(
+        due_at=None,
+        due_expression=None,
+        source_transcript="Create a task to buy 2.45 kg of rice on 7 October",
+        now_utc=datetime(2026, 10, 6, 18, tzinfo=UTC),
+        timezone_name="Asia/Kolkata",
+    ) == datetime(2026, 10, 7, 18, 29, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("tool_name", ["task", "reminder"])
+def test_task_and_reminder_tools_resolve_the_reported_dotted_time(tool_name: str) -> None:
+    context = ToolExecutionContext(
+        user_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=uuid.uuid4(),
+        scopes=frozenset({"tasks:write", "reminders:write"}),
+        clock=_clock("2026-10-07T09:08:12.164+00:00"),
+        user_timezone="Asia/Kolkata",
+        source_transcript="Remind me to call Parth on 7 October at 2.45 PM",
+    )
+    expected = datetime(2026, 10, 7, 9, 15, tzinfo=UTC)
+    if tool_name == "task":
+        result = normalize_create_task_arguments(context, CreateTaskArguments(title="Call Parth"))
+        assert result.due_at == expected
+    else:
+        result = normalize_create_reminder_arguments(
+            context, CreateReminderArguments(title="Call Parth")
+        )
+        assert result.trigger_at == expected
 
 
 @pytest.mark.parametrize("clock", ["four PM", "four p.m.", "4 p.m.", "four P. M."])

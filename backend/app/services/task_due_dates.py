@@ -45,13 +45,17 @@ TEMPORAL_WORDS = frozenset(
 )
 
 _TIME_PATTERN = re.compile(
-    r"\b(?:at|around|by)\s+(?P<hour>\d{1,2})"
-    r"(?::(?P<minute>\d{2}))?\s*(?P<meridiem>a\.?m\.?|p\.?m\.?)?\b",
+    r"\b(?:at|around|by)\s+(?P<hour>\d+)"
+    r"(?:[:.](?P<minute>\d+))?\s*(?P<meridiem>a\.?m\.?|p\.?m\.?)?\b",
     re.IGNORECASE,
 )
 _TIME_ONLY_PATTERN = re.compile(
-    r"\b(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*"
+    r"(?<![\w:.])(?P<hour>\d+)(?:[:.](?P<minute>\d+))?\s*"
     r"(?P<meridiem>a\.?m\.?|p\.?m\.?)\b",
+    re.IGNORECASE,
+)
+_CLOCK_FRAGMENT_PATTERN = re.compile(
+    r"(?<![\w:.])\d+(?:[:.][\w:.]+)+\s*(?:am|pm)\b",
     re.IGNORECASE,
 )
 _MONTH_DATE_PATTERN = re.compile(
@@ -87,7 +91,11 @@ class TaskDueDateResolutionError(ValueError):
 
 def has_temporal_expression(value: str) -> bool:
     normalized = _normalize(value)
-    if _TIME_PATTERN.search(normalized) or _TIME_ONLY_PATTERN.search(normalized):
+    if (
+        _TIME_PATTERN.search(normalized)
+        or _TIME_ONLY_PATTERN.search(normalized)
+        or _CLOCK_FRAGMENT_PATTERN.search(normalized)
+    ):
         return True
     if _RELATIVE_DURATION_PATTERN.search(normalized):
         return True
@@ -288,9 +296,18 @@ def _resolve_calendar_date(
 def _parse_clock_time(value: str) -> time | None:
     match = _TIME_PATTERN.search(value) or _TIME_ONLY_PATTERN.search(value)
     if match is None:
+        if _CLOCK_FRAGMENT_PATTERN.search(value):
+            raise TaskDueDateResolutionError("task due time has an unsupported clock format")
         return None
+    # Do not silently accept the hour/minutes prefix of an unsupported clock,
+    # or reinterpret its trailing minute digits as a separate AM/PM hour.
+    if re.match(r"[:.][\w:.]", value[match.end() :]):
+        raise TaskDueDateResolutionError("task due time has an unsupported clock format")
     hour = int(match.group("hour"))
-    minute = int(match.group("minute") or 0)
+    minute_text = match.group("minute")
+    if minute_text is not None and len(minute_text) != 2:
+        raise TaskDueDateResolutionError("task due time must use two-digit minutes")
+    minute = int(minute_text or 0)
     meridiem = (match.group("meridiem") or "").replace(".", "").casefold()
     if minute > 59:
         raise TaskDueDateResolutionError("task due time has an invalid minute")
