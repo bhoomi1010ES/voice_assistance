@@ -79,10 +79,17 @@ _WEEKDAY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _RELATIVE_DURATION_PATTERN = re.compile(
-    r"\bin\s+(?P<amount>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
-    r"(?P<unit>minute|minutes|hour|hours)\b",
+    r"\b(?:in|after|within)\s+"
+    r"(?P<amount>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
+    r"(?P<unit>minute|minutes|hour|hours)\b"
+    r"(?:\s+from\s+(?:now|the\s+current\s+time)\b)?",
     re.IGNORECASE,
 )
+_RELATIVE_DURATION_LIKE_PATTERN = re.compile(
+    r"\b(?:in|after|within)\s+(?:\w+\s+){0,2}(?:minutes?|hours?)\b",
+    re.IGNORECASE,
+)
+CONFIRMED_TIME_GRACE_SECONDS = 120
 
 
 class TaskDueDateResolutionError(ValueError):
@@ -97,7 +104,9 @@ def has_temporal_expression(value: str) -> bool:
         or _CLOCK_FRAGMENT_PATTERN.search(normalized)
     ):
         return True
-    if _RELATIVE_DURATION_PATTERN.search(normalized):
+    if _RELATIVE_DURATION_PATTERN.search(normalized) or _RELATIVE_DURATION_LIKE_PATTERN.search(
+        normalized
+    ):
         return True
     if _MONTH_DATE_PATTERN.search(normalized) or _ISO_DATE_PATTERN.search(normalized):
         return True
@@ -117,6 +126,9 @@ def resolve_task_due_at(
     source_transcript: str | None,
     now_utc: datetime,
     timezone_name: str,
+    label: str = "task due date",
+    allow_date_only: bool = True,
+    allow_past_grace_seconds: int = 0,
 ) -> datetime | None:
     """Resolve model task arguments into one future, aware UTC timestamp.
 
@@ -133,16 +145,30 @@ def resolve_task_due_at(
     expression = transcript if has_temporal_expression(transcript) else model_expression
 
     if expression:
-        resolved = _parse_expression(expression, now, timezone_name)
+        resolved = _parse_expression(
+            expression,
+            now,
+            timezone_name,
+            label=label,
+            allow_date_only=allow_date_only,
+        )
         if resolved <= now:
-            raise TaskDueDateResolutionError("resolved task due date must be in the future")
+            if (
+                allow_past_grace_seconds <= 0
+                or (now - resolved).total_seconds() > allow_past_grace_seconds
+            ):
+                raise TaskDueDateResolutionError(f"resolved {label} must be in the future")
         return resolved
 
     if due_at is None:
         return None
     normalized_due_at = _require_aware_utc(due_at, "task due_at")
     if normalized_due_at <= now:
-        raise TaskDueDateResolutionError("task due date must be in the future")
+        if (
+            allow_past_grace_seconds <= 0
+            or (now - normalized_due_at).total_seconds() > allow_past_grace_seconds
+        ):
+            raise TaskDueDateResolutionError(f"{label} must be in the future")
     return normalized_due_at
 
 
@@ -173,7 +199,14 @@ def normalize_absolute_due_at(
     return resolved
 
 
-def _parse_expression(expression: str, now_utc: datetime, timezone_name: str) -> datetime:
+def _parse_expression(
+    expression: str,
+    now_utc: datetime,
+    timezone_name: str,
+    *,
+    label: str = "task due date",
+    allow_date_only: bool = True,
+) -> datetime:
     normalized = _normalize(expression)
     if _AMBIGUOUS_NUMERIC_DATE_PATTERN.search(normalized) and not _ISO_DATE_PATTERN.search(
         normalized
@@ -206,6 +239,8 @@ def _parse_expression(expression: str, now_utc: datetime, timezone_name: str) ->
         unit = duration_match.group("unit")
         delta = timedelta(minutes=amount) if unit.startswith("minute") else timedelta(hours=amount)
         return (now_utc + delta).astimezone(UTC)
+    if _RELATIVE_DURATION_LIKE_PATTERN.search(normalized):
+        raise TaskDueDateResolutionError(f"{label} expression is not supported")
 
     local_time = _parse_clock_time(normalized)
     local_date = _resolve_calendar_date(
@@ -223,13 +258,21 @@ def _parse_expression(expression: str, now_utc: datetime, timezone_name: str) ->
         if candidate <= now_utc:
             local_date += timedelta(days=1)
     if local_date is None:
-        raise TaskDueDateResolutionError("task due date expression is not supported")
+        raise TaskDueDateResolutionError(f"{label} expression is not supported")
     if local_time is None:
+        if not allow_date_only:
+            raise TaskDueDateResolutionError("reminder date requires a clock time")
         # A date-only task request denotes a deadline on that local calendar
         # day. End-of-day is deterministic and avoids making the task overdue
         # at the start of the requested date.
         local_time = time(23, 59)
-    return _localize_strict(datetime.combine(local_date, local_time), zone, label="task due date")
+    return _localize_strict(datetime.combine(local_date, local_time), zone, label=label)
+
+
+def has_relative_duration_expression(value: str | None) -> bool:
+    """Whether text contains a supported relative duration clause."""
+
+    return bool(_RELATIVE_DURATION_PATTERN.search(_normalize(value or "")))
 
 
 def _resolve_calendar_date(

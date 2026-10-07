@@ -4334,6 +4334,7 @@ function isConversationToolStatus(
     value &&
       [
         'understanding',
+        'clarification_required',
         'confirmation_required',
         'approved',
         'executing',

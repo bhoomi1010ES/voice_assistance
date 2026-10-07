@@ -76,6 +76,16 @@ class DeviceTimeContext:
         return self.current_instant_utc().astimezone(self.zone)
 
 
+@dataclass(frozen=True)
+class DeviceTimeClock:
+    """Clock adapter that advances a validated phone epoch monotonically."""
+
+    context: DeviceTimeContext
+
+    def now_utc(self) -> datetime:
+        return self.context.current_instant_utc()
+
+
 def valid_timezone(value: str | None) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None

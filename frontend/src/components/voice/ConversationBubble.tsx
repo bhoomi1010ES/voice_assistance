@@ -240,6 +240,7 @@ function ToolBubble({ message }: { message: ConversationToolMessage }) {
   const { colors } = useAppTheme();
   const statusText = {
     understanding: strings.assistant.toolUnderstanding,
+    clarification_required: strings.assistant.toolNeedsTime,
     confirmation_required: strings.assistant.toolConfirmationRequired,
     approved: strings.assistant.toolApproved,
     executing: strings.assistant.toolExecuting,

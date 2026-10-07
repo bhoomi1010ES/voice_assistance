@@ -115,6 +115,7 @@ class ToolExecutionContext:
     timezone_source: str = "device"
     device_time_context: DeviceTimeContext | None = None
     source_transcript: str | None = None
+    allow_past_time_grace: bool = False
     cancellation_check: Callable[[], bool] | None = None
     authorization_check: Callable[[str], Awaitable[bool] | bool] | None = None
     tool_execution_started: Callable[[LLMToolCall, float], Awaitable[None] | None] | None = None

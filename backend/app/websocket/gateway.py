@@ -20,7 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.async_utils import await_cleanup
-from app.core.clock import Clock, DeviceEpochClock, SystemClock
+from app.core.clock import Clock, SystemClock
 from app.core.config import Settings
 from app.llm.context import (
     VOICE_SYSTEM_PROMPT_VERSION,
@@ -75,6 +75,7 @@ from app.services.conversation_logging import (
     build_timing_payload,
 )
 from app.services.device_time import (
+    DeviceTimeClock,
     DeviceTimeContext,
     build_device_time_context,
     format_utc_offset,
@@ -83,7 +84,7 @@ from app.services.device_time import (
 )
 from app.services.latency_trace import LatencyTracer, latency_span
 from app.services.structured_reads import format_local_datetime
-from app.services.task_due_dates import format_local_due_at
+from app.services.task_due_dates import format_local_due_at, has_temporal_expression
 from app.services.tool_idempotency import PostgresToolIdempotencyStore
 from app.services.voice_confirmation import (
     PendingConfirmation,
@@ -320,7 +321,7 @@ class VoiceGateway:
         self._session_total_bytes = 0
         self._session_client_metadata: dict[str, Any] | None = None
         self._device_time_context: DeviceTimeContext | None = None
-        self._device_clock: Clock | None = None
+        self._pending_temporal_clarification: dict[str, str] | None = None
         self._active_timezone_source = "device"
         self._active_timezone = "UTC"
         self._last_response_id: uuid.UUID | None = None
@@ -1789,6 +1790,15 @@ class VoiceGateway:
     ) -> dict[str, Any]:
         if not transcript.strip():
             return {"status": "failed", "error": "empty_transcript"}
+        pending_temporal = getattr(self, "_pending_temporal_clarification", None)
+        self._pending_temporal_clarification = None
+        if pending_temporal and has_temporal_expression(transcript):
+            original = pending_temporal.get("original_transcript", "").strip()
+            title = pending_temporal.get("title", "").strip()
+            if original:
+                transcript = f"{original} {transcript.strip()}"
+            elif title:
+                transcript = f"Remind me to {title} {transcript.strip()}"
         planning_result = await self._resolve_planning_voice(
             session_id=session_id,
             turn_id=turn_id,
@@ -2337,8 +2347,15 @@ class VoiceGateway:
                                     await self.db.rollback()
                                     status = "failed"
                                     failure_code = "llm_tool_unauthorized"
+                        is_temporal_clarification = (
+                            event.event_type == "tool_execution_failed"
+                            and event.tool_call.name in {"create_task", "create_reminder"}
+                            and event.error_code == "llm_tool_temporal_resolution_failed"
+                        )
                         status = (
-                            "cancelled"
+                            "clarification_required"
+                            if is_temporal_clarification
+                            else "cancelled"
                             if failure_code == "llm_cancelled"
                             else "failed"
                             if failure_code is not None
@@ -2346,6 +2363,23 @@ class VoiceGateway:
                             if event.event_type == "tool_execution_completed"
                             else ("cancelled" if event.error_code == "llm_cancelled" else "failed")
                         )
+                        if is_temporal_clarification:
+                            temporal_tool_name = event.tool_call.name
+                            call_arguments = event.tool_call.arguments
+                            if not isinstance(call_arguments, dict):
+                                with contextlib.suppress(json.JSONDecodeError):
+                                    call_arguments = json.loads(
+                                        event.tool_call.arguments_json or "{}"
+                                    )
+                            if not isinstance(call_arguments, dict):
+                                call_arguments = {}
+                            title = call_arguments.get("title")
+                            if isinstance(title, str) and title.strip() and transcript.strip():
+                                self._pending_temporal_clarification = {
+                                    "title": title.strip(),
+                                    "original_transcript": transcript.strip(),
+                                    "tool_name": temporal_tool_name,
+                                }
                         await self._send_tool_status(
                             session_id=session_id,
                             turn_id=turn_id,
@@ -2355,13 +2389,8 @@ class VoiceGateway:
                             status=status,
                             error_code=event.error_code,
                         )
-                        if (
-                            event.event_type == "tool_execution_failed"
-                            and event.tool_call.name in {"create_task", "create_reminder"}
-                            and event.error_code == "llm_tool_temporal_resolution_failed"
-                        ):
+                        if is_temporal_clarification:
                             task_date_clarification_required = True
-                            temporal_tool_name = event.tool_call.name
                             self._trace_latency(
                                 session_id=session_id,
                                 turn_id=turn_id,
@@ -2479,7 +2508,7 @@ class VoiceGateway:
 
         if task_date_clarification_required:
             item = "reminder" if temporal_tool_name == "create_reminder" else "task"
-            text = f"I couldn't resolve that {item} date or time. What date and time should I use?"
+            text = f"What date and time should I use for that {item}?"
             await self._emit_routed_final_text(
                 session_id=session_id,
                 turn_id=turn_id,
@@ -4169,6 +4198,7 @@ class VoiceGateway:
                 }
             ),
             confirmed_tool_call_ids=frozenset({claimed.tool_call_id}),
+            allow_past_time_grace=True,
             db=self.db,
             clock=self._trusted_user_clock(),
             user_timezone=claimed.user_timezone,
@@ -5640,7 +5670,8 @@ class VoiceGateway:
     def _trusted_user_clock(self) -> Clock:
         """Return device time for user-facing temporal tools when available."""
 
-        return getattr(self, "_device_clock", None) or self._application_clock()
+        context = getattr(self, "_device_time_context", None)
+        return DeviceTimeClock(context) if context is not None else self._application_clock()
 
     def _refresh_device_time_context(
         self,
@@ -5655,7 +5686,6 @@ class VoiceGateway:
             fallback_timezone=self.settings.voice_default_timezone,
             legacy_timezone=legacy_timezone,
         )
-        self._device_clock = DeviceEpochClock(self._device_time_context.device_epoch_ms)
         LOGGER.info(
             "TIME_CONTEXT",
             extra={

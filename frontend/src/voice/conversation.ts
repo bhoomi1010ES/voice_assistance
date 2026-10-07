@@ -22,6 +22,7 @@ export type ConversationAssistantStatus =
 
 export type ConversationToolStatus =
   | 'understanding'
+  | 'clarification_required'
   | 'confirmation_required'
   | 'approved'
   | 'executing'
@@ -168,11 +169,13 @@ const TOOL_STATUS_TRANSITIONS: Record<
   ReadonlySet<ConversationToolStatus>
 > = {
   understanding: new Set([
+    'clarification_required',
     'confirmation_required',
     'executing',
     'failed',
     'cancelled',
   ]),
+  clarification_required: new Set(),
   confirmation_required: new Set(['approved', 'failed', 'cancelled']),
   approved: new Set(['executing', 'failed', 'cancelled']),
   executing: new Set(['success', 'failed', 'cancelled']),

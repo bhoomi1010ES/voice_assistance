@@ -14,6 +14,7 @@ from app.services.device_time import timezone_for_request
 from app.services.recurrence import RecurrenceResolutionError, validate_recurrence_rule
 from app.services.task_due_dates import (
     TaskDueDateResolutionError,
+    has_relative_duration_expression,
     has_temporal_expression,
     normalize_clock_expression,
     resolve_task_due_at,
@@ -232,7 +233,8 @@ def resolve_time(
         if "REMINDER" in proposal.operation:
             return _fail("missing_time")
         return _fail("")
-    if _ANCHOR.search(expression):
+    relative_duration = has_relative_duration_expression(expression)
+    if _ANCHOR.search(expression) and not relative_duration:
         reason = (
             "unsupported_offset"
             if re.search(r"\b(?:days?|hours?|minutes?)\b", expression, re.I)
@@ -291,10 +293,7 @@ def resolve_time(
     if not cleaned:
         return _fail("missing_time")
     matched = re.fullmatch(grammar, cleaned, re.I)
-    duration = re.fullmatch(
-        r"in (?:\d+|one|two|three|four|five|six|seven|eight|nine|ten) (?:minutes?|hours?)",
-        cleaned,
-    )
+    duration = has_relative_duration_expression(cleaned)
     if not matched and not duration:
         return _fail("unsupported_temporal_expression")
     clock_text = (matched["clock"] or "").strip() if matched else ""

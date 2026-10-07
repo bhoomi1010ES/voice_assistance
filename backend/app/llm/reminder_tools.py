@@ -18,7 +18,11 @@ from app.services.structured_reads import (
     normalize_query_terms,
     resolve_local_day_bounds,
 )
-from app.services.task_due_dates import TaskDueDateResolutionError, resolve_task_due_at
+from app.services.task_due_dates import (
+    CONFIRMED_TIME_GRACE_SECONDS,
+    TaskDueDateResolutionError,
+    resolve_task_due_at,
+)
 
 LOGGER = logging.getLogger("voice-assistance-backend")
 
@@ -99,6 +103,11 @@ def _resolve_trigger(
             source_transcript=context.source_transcript,
             now_utc=context.clock.now_utc(),
             timezone_name=context.user_timezone,
+            label="reminder trigger time",
+            allow_date_only=False,
+            allow_past_grace_seconds=(
+                CONFIRMED_TIME_GRACE_SECONDS if context.allow_past_time_grace else 0
+            ),
         )
         if resolved is not None:
             LOGGER.info(
