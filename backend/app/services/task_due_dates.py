@@ -93,9 +93,8 @@ def has_temporal_expression(value: str) -> bool:
         return True
     if _MONTH_DATE_PATTERN.search(normalized) or _ISO_DATE_PATTERN.search(normalized):
         return True
-    if (
-        _AMBIGUOUS_NUMERIC_DATE_PATTERN.search(normalized)
-        and not _ISO_DATE_PATTERN.search(normalized)
+    if _AMBIGUOUS_NUMERIC_DATE_PATTERN.search(normalized) and not _ISO_DATE_PATTERN.search(
+        normalized
     ):
         return True
     if _WEEKDAY_PATTERN.search(normalized):
@@ -140,7 +139,7 @@ def resolve_task_due_at(
 
 
 def format_local_due_at(due_at: datetime, timezone_name: str) -> str:
-    """Return a canonical local ISO timestamp for confirmation display."""
+    """Return a local ISO timestamp for machine payloads, preserving the instant."""
 
     zone = _load_timezone(timezone_name)
     return _require_aware_utc(due_at, "task due_at").astimezone(zone).isoformat()
@@ -168,9 +167,8 @@ def normalize_absolute_due_at(
 
 def _parse_expression(expression: str, now_utc: datetime, timezone_name: str) -> datetime:
     normalized = _normalize(expression)
-    if (
-        _AMBIGUOUS_NUMERIC_DATE_PATTERN.search(normalized)
-        and not _ISO_DATE_PATTERN.search(normalized)
+    if _AMBIGUOUS_NUMERIC_DATE_PATTERN.search(normalized) and not _ISO_DATE_PATTERN.search(
+        normalized
     ):
         raise TaskDueDateResolutionError("task due date is ambiguous")
     zone = _load_timezone(timezone_name)
@@ -308,11 +306,42 @@ def _parse_clock_time(value: str) -> time | None:
     return time(hour=hour, minute=minute)
 
 
-def _normalize(value: str) -> str:
+def normalize_clock_expression(value: str) -> str:
+    """Normalize spoken clock hours without changing evidence or calendar numbers."""
+
     normalized = value.casefold()
-    normalized = re.sub(r"\ba\s*\.?\s*m\.?\b", "am", normalized)
-    normalized = re.sub(r"\bp\s*\.?\s*m\.?\b", "pm", normalized)
+    normalized = re.sub(r"\b([ap])\s*\.?\s*m\b\.?", r"\1m", normalized)
+    hours = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+        "eleven": 11,
+        "twelve": 12,
+    }
+    names = "|".join(hours)
+    # A word is a clock hour only with a clock preposition or AM/PM suffix.
+    normalized = re.sub(
+        rf"\b(?P<hour>{names})\b(?=\s*(?:am|pm)\b)",
+        lambda match: str(hours[match["hour"]]),
+        normalized,
+    )
+    normalized = re.sub(
+        rf"\b(?P<prefix>at|around|by)\s+(?P<hour>{names})\b",
+        lambda match: f"{match['prefix']} {hours[match['hour']]}",
+        normalized,
+    )
     return " ".join(normalized.split())
+
+
+def _normalize(value: str) -> str:
+    return normalize_clock_expression(value)
 
 
 def _load_timezone(timezone_name: str) -> ZoneInfo:

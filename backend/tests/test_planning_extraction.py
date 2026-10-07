@@ -449,6 +449,77 @@ def test_compact_wire_reconstructs_unicode_offsets_and_keeps_clause_actors_indep
         assert text[p.temporal.start : p.temporal.start + p.temporal.length] == p.temporal.text
 
 
+@pytest.mark.parametrize("clock", ["four p.m.", "4 p.m.", "four PM", "four P. M."])
+def test_meeting_abbreviations_and_spoken_hours_keep_grounded_evidence(clock):
+    from app.planning.wire import source_clauses
+
+    text = f"We have a client meeting Friday at {clock}"
+    clauses = source_clauses(text)
+    envelope = parse_envelope(
+        json.dumps({"actions": [["reminder", 0, "client meeting", f"Friday at {clock}", "team"]]}),
+        8,
+        clauses=clauses,
+    )
+    result = validate(envelope, text, replace(SNAPSHOT, timezone="Asia/Kolkata"))[0]
+    assert len(clauses) == 1
+    assert result.disposition == "AUTO"
+    assert result.scheduled_at == datetime(2026, 10, 9, 10, 30, tzinfo=UTC)
+    evidence = envelope.actions[0].temporal
+    assert text[evidence.start : evidence.start + evidence.length] == f"Friday at {clock}"
+
+
+def test_clock_abbreviation_preserves_next_sentence_and_temporal_continuation():
+    from app.planning.wire import source_clauses
+
+    text = "We have a meeting Friday at four p.m. I need a report Monday."
+    clauses = source_clauses(text)
+    assert [clause.text for clause in clauses] == [
+        "We have a meeting Friday at four p.m.",
+        "I need a report Monday.",
+    ]
+    text = "Remind me to write at four p.m. tomorrow."
+    clauses = source_clauses(text)
+    assert [clause.text for clause in clauses] == [text]
+    for clause in clauses:
+        assert text[clause.start : clause.start + clause.length] == clause.text
+
+
+def test_spoken_hour_without_am_pm_still_requires_clarification():
+    text = "We have a client meeting Friday at four."
+    result = decisions(
+        text,
+        proposal(
+            text, "client meeting", "Friday at four", operation="CREATE_REMINDER", actor="team"
+        ),
+    )[0]
+    assert result.disposition == "CLARIFY"
+    assert result.reason == "ambiguous_time"
+
+
+def test_clock_abbreviation_cannot_crop_negation_before_temporal_continuation():
+    text = "I don't need a meeting at four p.m. tomorrow."
+    result = decisions(text, proposal(text, "meeting", "tomorrow", source=span(text, "tomorrow.")))[
+        0
+    ]
+    assert result.disposition == "NO_ACTION"
+
+
+def test_clock_abbreviation_cannot_crop_hypothetical_after_temporal_continuation():
+    text = "We have a meeting at four p.m. tomorrow if the client agrees."
+    result = decisions(
+        text,
+        proposal(
+            text,
+            "meeting",
+            "at four p.m.",
+            operation="CREATE_REMINDER",
+            actor="team",
+            source=span(text, "We have a meeting at four p.m."),
+        ),
+    )[0]
+    assert result.disposition == "NO_ACTION"
+
+
 @pytest.mark.parametrize(
     "row",
     [

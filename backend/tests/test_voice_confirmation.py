@@ -710,6 +710,34 @@ def test_confirmation_prompt_identifies_action_and_spoken_choices() -> None:
     assert "Say yes to approve, or no to reject." in prompt
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "field"),
+    [
+        ("create_task", "due_at"),
+        ("create_reminder", "trigger_at"),
+        ("update_task", "due_at"),
+        ("update_reminder", "trigger_at"),
+    ],
+)
+def test_confirmation_speaks_local_calendar_time_and_keeps_machine_timestamps(tool_name, field):
+    from app.websocket.gateway import _confirmation_due_at_local, _confirmation_due_at_utc
+
+    pending = _pending(_principal(), uuid.uuid4())
+    pending.tool_name = tool_name
+    pending.user_timezone = "Asia/Kolkata"
+    pending.validated_tool_arguments[field] = "2026-10-07T10:30:00+00:00"
+    original = dict(pending.validated_tool_arguments)
+
+    prompt = VoiceGateway._confirmation_prompt_text(pending)
+
+    assert "scheduled for 7 October 2026 at 4:00 PM" in prompt
+    assert "T10:30" not in prompt and "+05:30" not in prompt
+    assert "Say yes to approve, or no to reject." in prompt
+    assert _confirmation_due_at_utc(original) == "2026-10-07T10:30:00+00:00"
+    assert _confirmation_due_at_local(pending) == "2026-10-07T16:00:00+05:30"
+    assert pending.validated_tool_arguments == original
+
+
 def test_memory_forget_confirmation_prompt_does_not_expose_memory_content() -> None:
     principal = _principal()
     memory_id = uuid.uuid4()

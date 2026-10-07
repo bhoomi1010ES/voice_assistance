@@ -34,6 +34,9 @@ VOICE_TOOL_ROUTING_INSTRUCTIONS = """Tool-routing policy:
   meeting, appointment, event, or to-do, MUST first call the read-only
   list_tasks tool. Treat its results as authoritative and match natural
   speech-recognition spelling variations when identifying the requested item.
+- Speak scheduled dates and times in readable calendar and AM/PM form using
+  the tool's local_due_at or local_trigger_at and timezone. Do not read raw
+  ISO timestamps or use the UTC due_at/trigger_at clock as local time.
 - Answer other informational questions and ordinary conversation without a tool.
 - For an explicit task or reminder request, MUST first call the registered
   create_task tool with only the user-provided task fields.

@@ -9,11 +9,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.planning.policy import AUTOMATIC_OPERATION_FIELDS, CONFIRMATION_OPERATIONS
 from app.planning.types import Decision, Envelope, PlanningSnapshot, Proposal, Span
+from app.planning.wire import sentence_boundary_text
 from app.services.device_time import timezone_for_request
 from app.services.recurrence import RecurrenceResolutionError, validate_recurrence_rule
 from app.services.task_due_dates import (
     TaskDueDateResolutionError,
     has_temporal_expression,
+    normalize_clock_expression,
     resolve_task_due_at,
 )
 
@@ -142,9 +144,7 @@ def _reminder_title_matches(existing: str, proposed: str, source: str) -> bool:
         return True
     existing_words, proposed_words = _words(existing), _words(proposed)
     return bool(
-        existing_words
-        and existing_words == proposed_words
-        and existing_words <= _words(source)
+        existing_words and existing_words == proposed_words and existing_words <= _words(source)
     )
 
 
@@ -157,10 +157,11 @@ def _valid_span(span: Span, transcript: str) -> bool:
 
 def _sentence(transcript: str, span: Span) -> str:
     # Inspect surrounding sentence so cropping cannot remove negation or attribution.
-    start = max(transcript.rfind(mark, 0, span.start) for mark in ".!?\n") + 1
+    boundaries = sentence_boundary_text(transcript)
+    start = max(boundaries.rfind(mark, 0, span.start) for mark in ".!?\n") + 1
     end = span.start + span.length
-    ends = [index for mark in ".!?\n" if (index := transcript.find(mark, end)) >= 0]
-    if span.text.rstrip().endswith((".", "!", "?")):
+    ends = [index for mark in ".!?\n" if (index := boundaries.find(mark, end)) >= 0]
+    if boundaries[span.start : end].rstrip().endswith((".", "!", "?")):
         pass
     elif ends:
         end = min(ends) + 1
@@ -191,7 +192,9 @@ def _temporal_affinity(proposal: Proposal) -> bool:
         return True
     offset = proposal.temporal.start - proposal.source.start
     end = offset + proposal.temporal.length
-    separators = list(re.finditer(r"[,;.!?\n]|\band\b(?=\s+(?:by|on|we|i)\b)", text, re.I))
+    separators = list(
+        re.finditer(r"[,;.!?\n]|\band\b(?=\s+(?:by|on|we|i)\b)", sentence_boundary_text(text), re.I)
+    )
     start = max((match.end() for match in separators if match.end() <= offset), default=0)
     stop = min((match.start() for match in separators if match.start() >= end), default=len(text))
     return _words(proposal.title) <= _words(text[start:stop])
@@ -277,6 +280,7 @@ def resolve_time(
     # Explicit IANA zones/known spoken aliases are resolved separately.
     cleaned = re.sub(r"\b[A-Za-z]+/[A-Za-z_]+(?:/[A-Za-z_]+)?\b", "", expression).casefold().strip()
     cleaned = re.sub(r"^(?:by|on)\s+", "", cleaned)
+    cleaned = normalize_clock_expression(cleaned)
     if not cleaned:
         return None, zone, "missing_time"
     matched = re.fullmatch(grammar, cleaned, re.I)
@@ -567,7 +571,10 @@ def validate(
         )
         is_pronoun = (
             _is_pronoun_reference(title)
-            or (proposal.target_mention is not None and _is_pronoun_reference(proposal.target_mention))
+            or (
+                proposal.target_mention is not None
+                and _is_pronoun_reference(proposal.target_mention)
+            )
             or (
                 update
                 and bool(
@@ -589,9 +596,7 @@ def validate(
             matches = []
             if snapshot.recent_receipt and snapshot.recent_receipt.saved_actions:
                 recent_ids = {
-                    str(a.get("id"))
-                    for a in snapshot.recent_receipt.saved_actions
-                    if a.get("id")
+                    str(a.get("id")) for a in snapshot.recent_receipt.saved_actions if a.get("id")
                 }
                 recent_matches = [t for t in scoped_candidates if str(t.id) in recent_ids]
                 if recent_matches:
@@ -610,7 +615,11 @@ def validate(
                     if kind == "task"
                     else _reminder_title_matches(t.title, title, proposal.source.text)
                 )
-                and (kind == "plan" or decision.plan_ordinal is None and t.plan_id == decision.plan_id)
+                and (
+                    kind == "plan"
+                    or decision.plan_ordinal is None
+                    and t.plan_id == decision.plan_id
+                )
             ]
         if update:
             if len(matches) != 1 or not snapshot.complete:
@@ -648,9 +657,7 @@ def validate(
         )
         key = (
             proposal.operation,
-            _plan_name(proposal.title)
-            if proposal.operation == "CREATE_PLAN"
-            else normalized_title,
+            _plan_name(proposal.title) if proposal.operation == "CREATE_PLAN" else normalized_title,
             decision.plan_id,
             decision.plan_ordinal,
             at,

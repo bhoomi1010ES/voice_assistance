@@ -53,13 +53,15 @@ def _summarize_row(row: dict[str, Any], collection_name: str) -> str:
     title = " ".join(str(row.get("title") or singular_name).split())
     if len(title) > MAX_TITLE_CHARACTERS:
         title = title[: MAX_TITLE_CHARACTERS - 1].rstrip() + "…"
-    timestamp = (
+    timestamp = row.get("due_at") if collection_name == "tasks" else row.get("trigger_at")
+    timestamp = timestamp or (
         row.get("local_due_at") if collection_name == "tasks" else row.get("local_trigger_at")
     )
-    timestamp = timestamp or (
-        row.get("due_at") if collection_name == "tasks" else row.get("trigger_at")
+    timezone = row.get("timezone")
+    local_time = format_local_datetime(
+        timestamp if isinstance(timestamp, str) else None,
+        timezone if isinstance(timezone, str) else None,
     )
-    local_time = format_local_datetime(timestamp if isinstance(timestamp, str) else None)
     if local_time:
         return f"{singular_name.capitalize()} '{title}' is scheduled for {local_time}"
     return f"{singular_name.capitalize()} '{title}'"

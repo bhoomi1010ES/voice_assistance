@@ -14,6 +14,70 @@ from app.routing.formatters import format_structured_read_answer
 from app.services.structured_reads import resolve_local_day_bounds
 
 
+@pytest.mark.parametrize("collection", ["tasks", "reminders"])
+@pytest.mark.parametrize(
+    ("timezone", "instant", "expected"),
+    [
+        ("Asia/Kolkata", "2026-10-08T18:29:00+00:00", "8 October 2026 at 11:59 PM"),
+        ("Asia/Kolkata", "2026-10-07T20:00:00+00:00", "8 October 2026 at 1:30 AM"),
+        ("America/New_York", "2026-03-08T13:00:00+00:00", "8 March 2026 at 9:00 AM"),
+    ],
+)
+def test_saved_item_answers_convert_utc_database_values_to_item_timezone(
+    collection, timezone, instant, expected
+):
+    import json
+
+    canonical = "due_at" if collection == "tasks" else "trigger_at"
+    # PostgreSQL timestamptz normalizes even the 'local' column to UTC.
+    row = {
+        "title": "Review",
+        canonical: instant,
+        "local_" + canonical: instant,
+        "timezone": timezone,
+    }
+    answer = format_structured_read_answer(
+        tool_name="list_" + collection,
+        result_content=json.dumps({"ok": True, "result": {collection: [row]}}),
+        success=True,
+        read_arguments={},
+    )
+    assert expected in answer
+    assert instant not in answer
+
+
+@pytest.mark.parametrize("collection", ["tasks", "reminders"])
+@pytest.mark.parametrize("offset_free_reload", [False, True])
+def test_tool_payload_reconstructs_local_offset_from_canonical_instant(
+    collection, offset_free_reload
+):
+    from app.llm.reminder_tools import _reminder_result
+    from app.llm.task_tools import _task_result
+
+    instant = datetime(2026, 10, 8, 18, 29, tzinfo=UTC)
+    stored = instant.replace(tzinfo=None) if offset_free_reload else instant
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="Review",
+        description=None,
+        body=None,
+        status="pending",
+        priority="normal",
+        due_at=stored,
+        trigger_at=stored,
+        local_due_at=stored,
+        local_trigger_at=stored,
+        timezone="Asia/Kolkata",
+        timezone_source="device",
+        plan_id=None,
+    )
+    result = _task_result(item) if collection == "tasks" else _reminder_result(item)
+    canonical = "due_at" if collection == "tasks" else "trigger_at"
+    assert result[canonical] == instant.isoformat()
+    assert result["local_" + canonical] == "2026-10-08T23:59:00+05:30"
+    assert item.due_at == item.local_due_at == stored
+
+
 class RecordingDatabase:
     def __init__(self) -> None:
         self.statement = None

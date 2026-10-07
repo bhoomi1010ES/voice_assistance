@@ -13,7 +13,11 @@ from app.llm.errors import LLMToolError, LLMToolTemporalResolutionError
 from app.llm.tool_loop import ToolExecutionContext, ToolRegistry
 from app.models import Plan, Reminder, Task
 from app.services.recurrence import RecurrenceResolutionError, validate_recurrence_rule
-from app.services.structured_reads import normalize_query_terms, resolve_local_day_bounds
+from app.services.structured_reads import (
+    format_stored_datetime,
+    normalize_query_terms,
+    resolve_local_day_bounds,
+)
 from app.services.task_due_dates import TaskDueDateResolutionError, resolve_task_due_at
 
 LOGGER = logging.getLogger("voice-assistance-backend")
@@ -363,10 +367,8 @@ def _reminder_result(reminder: Reminder) -> dict[str, Any]:
         "reminder_id": str(reminder.id),
         "title": reminder.title,
         "body": reminder.body,
-        "trigger_at": reminder.trigger_at.isoformat(),
-        "local_trigger_at": (
-            reminder.local_trigger_at.isoformat() if reminder.local_trigger_at is not None else None
-        ),
+        "trigger_at": format_stored_datetime(reminder.trigger_at, "UTC"),
+        "local_trigger_at": format_stored_datetime(reminder.trigger_at, reminder.timezone),
         "timezone": reminder.timezone,
         "timezone_source": reminder.timezone_source,
         "status": reminder.status,

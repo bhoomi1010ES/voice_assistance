@@ -70,13 +70,27 @@ def test_supported_relative_and_absolute_expressions(expression: str, expected: 
 
 
 def test_task_without_date_keeps_due_at_empty() -> None:
+    assert (
+        resolve_task_due_at(
+            due_at=None,
+            due_expression=None,
+            source_transcript="Create a task to submit the report.",
+            now_utc=datetime(2026, 9, 3, 18, 0, tzinfo=UTC),
+            timezone_name="Asia/Kolkata",
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("clock", ["four PM", "four p.m.", "4 p.m.", "four P. M."])
+def test_spoken_and_abbreviated_clock_hours_use_local_time(clock):
     assert resolve_task_due_at(
         due_at=None,
         due_expression=None,
-        source_transcript="Create a task to submit the report.",
-        now_utc=datetime(2026, 9, 3, 18, 0, tzinfo=UTC),
+        source_transcript=f"Remind me to write Friday at {clock}",
+        now_utc=datetime(2026, 10, 6, 12, tzinfo=UTC),
         timezone_name="Asia/Kolkata",
-    ) is None
+    ) == datetime(2026, 10, 9, 10, 30, tzinfo=UTC)
 
 
 def test_date_only_task_uses_end_of_day_in_device_timezone() -> None:

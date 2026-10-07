@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.planning.policy import PlanningConsent
 
-EXTRACTOR_VERSION = "plan-extract-v9"
+EXTRACTOR_VERSION = "plan-extract-v10"
 MAX_TRANSCRIPT_CHARS = 8192
 MAX_OUTPUT_CHARS = 16384
 

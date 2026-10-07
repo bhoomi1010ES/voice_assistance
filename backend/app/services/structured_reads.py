@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
 from typing import Literal
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ReadDateWindow = Literal["today", "tomorrow"]
 
@@ -39,12 +39,29 @@ def normalize_query_terms(values: list[str]) -> tuple[str, ...]:
     )
 
 
-def format_local_datetime(value: str | None) -> str | None:
+def format_stored_datetime(value: datetime | None, timezone_name: str) -> str | None:
+    """Serialize a stored UTC instant in a zone, including SQLite's offset-free reloads.
+
+    Only database values use this UTC convention; untrusted scheduling arguments
+    must still pass the strict scheduling resolver.
+    """
+
+    if value is None:
+        return None
+    instant = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return instant.astimezone(ZoneInfo(timezone_name)).isoformat()
+
+
+def format_local_datetime(value: str | None, timezone_name: str | None = None) -> str | None:
     if not value:
         return None
     try:
         local = datetime.fromisoformat(value)
-    except ValueError:
+        if timezone_name:
+            if local.tzinfo is None or local.utcoffset() is None:
+                return None
+            local = local.astimezone(ZoneInfo(timezone_name))
+    except (ValueError, ZoneInfoNotFoundError):
         return None
     hour = local.strftime("%I").lstrip("0") or "0"
     return (

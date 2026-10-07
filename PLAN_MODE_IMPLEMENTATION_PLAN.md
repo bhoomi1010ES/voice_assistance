@@ -392,6 +392,7 @@ PM-0 through PM-5 source and focused checks are present. PM-2 passed its frozen 
 
 **Release gate remains unmet:** actual spoken UI/voice enable/conversation/correction/disable and Android reminder receipt are not demonstrated. The user confirmed notifications are not enabled or developed; fake-provider worker delivery does not replace actual notification evidence. Only generated disposable owners were enabled inside acceptance processes. Application rollout remains disabled and no measured cohort was promoted. Rollback tests change the running settings object; editing `.env` requires restarting the backend. Existing scheduled reminders remain scheduled through rollback. Clean migration upgrade/downgrade and interrupted-batch recovery beyond fail-closed behavior were not exercised. See the [acceptance record](docs/20261006_151525_pm6_acceptance_rollout_.md).
 
+
 ## 14. Acceptance matrix
 
 | Scenario | Required result |

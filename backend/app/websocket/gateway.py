@@ -82,6 +82,7 @@ from app.services.device_time import (
     valid_timezone,
 )
 from app.services.latency_trace import LatencyTracer, latency_span
+from app.services.structured_reads import format_local_datetime
 from app.services.task_due_dates import format_local_due_at
 from app.services.tool_idempotency import PostgresToolIdempotencyStore
 from app.services.voice_confirmation import (
@@ -959,11 +960,7 @@ class VoiceGateway:
                             "state_version": result["state_version"],
                         },
                     }
-                    text = (
-                        "Plan Mode is on."
-                        if mode == "plan"
-                        else "Plan Mode is off."
-                    )
+                    text = "Plan Mode is on." if mode == "plan" else "Plan Mode is off."
                     if selection is not None:
                         text = (
                             f"Selected plan {result['active_plan_name']}."
@@ -1726,35 +1723,59 @@ class VoiceGateway:
         guard = getattr(self, "cancel_guard", None)
         try:
             receipt = await execute_turn(
-                observer, executor, principal=self.principal, session_id=session_id,
-                turn_id=turn_id, response_id=response_id, transcript=transcript,
+                observer,
+                executor,
+                principal=self.principal,
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                transcript=transcript,
                 now_utc=context.current_instant_utc() if context else self.clock.now_utc(),
-                timezone=self._user_timezone(), device_time_context=context,
+                timezone=self._user_timezone(),
+                device_time_context=context,
                 cancel_guard=(lambda: not guard.can_emit(response_id)) if guard else None,
             )
             if receipt is None:
                 return None
             if guard is not None and not guard.can_emit(response_id):
                 return {"status": "cancelled", "planning_execution": True}
-            await self._send(server_event(
-                "server.planning.actions", session_id=session_id, turn_id=turn_id,
-                response_id=response_id, receipt=receipt.to_dict(),
-            ))
+            await self._send(
+                server_event(
+                    "server.planning.actions",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    receipt=receipt.to_dict(),
+                )
+            )
             if any(item.get("operation") == "CREATE_PLAN" for item in receipt.saved_actions):
-                await self._send(server_event(
-                    "server.planning.state", session_id=session_id, turn_id=turn_id,
-                    response_id=response_id, planning=await self._planning_snapshot(session_id),
-                ))
+                await self._send(
+                    server_event(
+                        "server.planning.state",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        response_id=response_id,
+                        planning=await self._planning_snapshot(session_id),
+                    )
+                )
             text = receipt.text_summary
         except PlanningError as error:
-            await self._send(server_event(
-                "server.planning.error", session_id=session_id, turn_id=turn_id,
-                response_id=response_id, code=str(error),
-            ))
+            await self._send(
+                server_event(
+                    "server.planning.error",
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    code=str(error),
+                )
+            )
             text = "Planning could not complete this turn. Please review your saved items."
         await self._emit_routed_final_text(
-            session_id=session_id, turn_id=turn_id, response_id=response_id,
-            text=text, route=RouteName.TASK_ACTION,
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            text=text,
+            route=RouteName.TASK_ACTION,
         )
         return {"status": "completed", "planning_execution": True}
 
@@ -1777,7 +1798,9 @@ class VoiceGateway:
         if planning_result is not None:
             return planning_result
         planning_result = await self._execute_planning_turn(
-            session_id=session_id, turn_id=turn_id, response_id=response_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            response_id=response_id,
             transcript=transcript,
         )
         if planning_result is not None:
@@ -1790,7 +1813,9 @@ class VoiceGateway:
             self._planning_scheduled_turns = scheduled
             context = getattr(self, "_device_time_context", None)
             observer.schedule(
-                principal=self.principal, session_id=session_id, turn_id=turn_id,
+                principal=self.principal,
+                session_id=session_id,
+                turn_id=turn_id,
                 transcript=transcript,
                 now_utc=context.current_instant_utc() if context else self.clock.now_utc(),
                 timezone=self._user_timezone(),
@@ -3821,7 +3846,7 @@ class VoiceGateway:
         details: list[str] = []
         if title:
             details.append(f'titled "{title[:160]}"')
-        due_at = _confirmation_due_at_local(pending)
+        due_at = format_local_datetime(_confirmation_due_at_local(pending), pending.user_timezone)
         if due_at:
             details.append(f"scheduled for {due_at}")
         detail_text = f" ({', '.join(details)})" if details else ""
@@ -6507,7 +6532,7 @@ def _transcript_delivery_log_fields(event: Any) -> dict[str, Any]:
 
 
 def _confirmation_due_at_utc(arguments: dict[str, Any]) -> str | None:
-    value = arguments.get("due_at")
+    value = arguments.get("due_at") or arguments.get("trigger_at")
     if not isinstance(value, str):
         return None
     try:

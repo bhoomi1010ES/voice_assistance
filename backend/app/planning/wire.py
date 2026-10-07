@@ -66,6 +66,24 @@ def output_schema(max_actions: int) -> dict:
     }
 
 
+def sentence_boundary_text(transcript: str) -> str:
+    """Mask clock abbreviation dots with equal-length text for boundary scanning."""
+
+    def mask(match: re.Match) -> str:
+        value = match[0]
+        # The final period still ends a sentence, unless a temporal continuation
+        # follows it (for example "four p.m. tomorrow").
+        continuation = re.match(
+            r"\s+(?:today|tomorrow|tonight|on|in|by|next)\b",
+            transcript[match.end() :],
+            re.I,
+        )
+        keep_last = value.endswith(".") and not continuation
+        return value[:-1].replace(".", "_") + "." if keep_last else value.replace(".", "_")
+
+    return re.sub(r"\b[ap]\.\s*m\b\.?", mask, transcript, flags=re.I)
+
+
 def source_clauses(transcript: str) -> tuple[Span, ...]:
     clauses = []
     boundary = re.compile(
@@ -73,7 +91,7 @@ def source_clauses(transcript: str) -> tuple[Span, ...]:
         r"wednesday\b|thursday\b|friday\b|saturday\b|sunday\b))",
         re.I,
     )
-    for sentence in re.finditer(r"[^.!?\n]+[.!?]?", transcript):
+    for sentence in re.finditer(r"[^.!?\n]+[.!?]?", sentence_boundary_text(transcript)):
         start = sentence.start()
         for separator in (*boundary.finditer(sentence[0]), None):
             end = sentence.start() + separator.start() if separator else sentence.end()

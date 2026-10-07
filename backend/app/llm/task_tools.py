@@ -12,7 +12,11 @@ from sqlalchemy import or_, select
 from app.llm.errors import LLMToolError, LLMToolTemporalResolutionError
 from app.llm.tool_loop import ToolExecutionContext, ToolRegistry
 from app.models import ConversationTurn, Plan, Task
-from app.services.structured_reads import normalize_query_terms, resolve_local_day_bounds
+from app.services.structured_reads import (
+    format_stored_datetime,
+    normalize_query_terms,
+    resolve_local_day_bounds,
+)
 from app.services.task_due_dates import TaskDueDateResolutionError, resolve_task_due_at
 
 LOGGER = logging.getLogger("voice-assistance-backend")
@@ -325,8 +329,8 @@ def _task_result(task: Task) -> dict[str, Any]:
         "description": task.description,
         "status": task.status,
         "priority": task.priority,
-        "due_at": task.due_at.isoformat() if task.due_at is not None else None,
-        "local_due_at": task.local_due_at.isoformat() if task.local_due_at is not None else None,
+        "due_at": format_stored_datetime(task.due_at, "UTC"),
+        "local_due_at": format_stored_datetime(task.due_at, task.timezone),
         "timezone": task.timezone,
         "timezone_source": task.timezone_source,
         "plan_id": str(task.plan_id) if task.plan_id is not None else None,
