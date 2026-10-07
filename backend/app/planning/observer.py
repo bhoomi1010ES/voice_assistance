@@ -42,7 +42,7 @@ class PlanningObserver:
             self.settings.plan_extraction_max_concurrent,
             getattr(self.llm, "background_capacity", self.settings.llm_max_concurrent_requests - 1),
         )
-        if len(self.tasks) >= capacity:
+        if len(self.tasks) + getattr(self, "foreground_count", 0) >= capacity:
             self._metric(session_id, turn_id, {"status": "capacity_skip"})
             return None
         task = asyncio.create_task(

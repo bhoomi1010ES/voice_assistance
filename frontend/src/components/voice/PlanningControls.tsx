@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, Switch, View } from 'react-native';
 import { useAuth } from '../../auth/AuthProvider';
 import { listPlans } from '../../plans/api';
 import { Plan } from '../../plans/types';
@@ -63,63 +63,69 @@ export function PlanningControls({ onOpenPlanDetail }: PlanningControlsProps) {
   }, [available, controller, planning?.mode, refresh]);
 
   const disabled = !available || Boolean(planningPending);
+  const isPlanMode = planning?.mode === 'plan';
 
   const activePlan = plans.find(p => p.id === planning?.activePlanId) ?? null;
 
   return (
     <Card testID="planning-controls" style={styles.card}>
-      {/* Header and Persistent Plan Mode Indicator */}
-      <View style={styles.headerRow}>
-        <View style={styles.titleGroup}>
-          <AppText style={styles.sectionTitle}>{strings.planning.plan}</AppText>
-          {planning?.mode === 'plan' ? (
-            <View
-              style={[styles.badge, { backgroundColor: colors.primaryContainer }]}
-              testID="planning-mode-on-badge"
-            >
-              <AppText style={[styles.badgeText, { color: colors.primary }]}>
-                {strings.planning.on}
-              </AppText>
-            </View>
-          ) : null}
-        </View>
-
+      <AppText style={styles.sectionTitle}>{strings.planning.mode}</AppText>
+      <View style={styles.modeToggleRow}>
         <AppText
-          style={[styles.statusText, { color: colors.textSubtle }]}
-          accessibilityLiveRegion="polite"
+          style={[
+            styles.modeLabel,
+            !isPlanMode && styles.selectedModeLabel,
+            {
+              color: isPlanMode ? colors.textSubtle : colors.text,
+            },
+          ]}
         >
-          {!available
-            ? strings.planning.unavailable
-            : planning?.mode === 'plan'
-            ? strings.planning.on
-            : strings.planning.normal}
+          {strings.planning.normal}
+        </AppText>
+        <Switch
+          accessibilityLabel={strings.planning.plan}
+          accessibilityHint={strings.planning.modeToggleHint}
+          accessibilityState={{
+            checked: isPlanMode,
+            disabled,
+            busy: Boolean(planningPending),
+          }}
+          disabled={disabled}
+          value={isPlanMode}
+          onValueChange={enabled => {
+            if (!disabled && enabled !== isPlanMode) {
+              socket.setPlanningMode(enabled ? 'plan' : 'normal');
+            }
+          }}
+          trackColor={{ false: colors.disabled, true: colors.primary }}
+          thumbColor={colors.surface}
+          ios_backgroundColor={colors.disabled}
+          style={styles.modeSwitch}
+          testID="planning-mode-toggle"
+        />
+        <AppText
+          style={[
+            styles.modeLabel,
+            styles.planModeLabel,
+            isPlanMode && styles.selectedModeLabel,
+            {
+              color: isPlanMode ? colors.text : colors.textSubtle,
+            },
+          ]}
+        >
+          {strings.planning.plan}
         </AppText>
       </View>
-
-      {/* Mode Selector Buttons */}
-      <View style={styles.modeButtonGroup}>
-        <ActionButton
-          label={strings.planning.normal}
-          accessibilityLabel={strings.planning.normal}
-          accessibilityState={{
-            selected: planning?.mode === 'normal',
-            disabled,
-          }}
-          disabled={disabled || planning?.mode === 'normal'}
-          variant={planning?.mode === 'normal' ? 'primary' : 'secondary'}
-          onPress={() => socket.setPlanningMode('normal')}
-          testID="mode-btn-normal"
-        />
-        <ActionButton
-          label={strings.planning.plan}
-          accessibilityLabel={strings.planning.plan}
-          accessibilityState={{ selected: planning?.mode === 'plan', disabled }}
-          disabled={disabled || planning?.mode === 'plan'}
-          variant={planning?.mode === 'plan' ? 'primary' : 'secondary'}
-          onPress={() => socket.setPlanningMode('plan')}
-          testID="mode-btn-plan"
-        />
-      </View>
+      <AppText
+        style={[styles.statusText, { color: colors.textSubtle }]}
+        accessibilityLiveRegion="polite"
+      >
+        {!available
+          ? strings.planning.unavailable
+          : isPlanMode
+          ? strings.planning.on
+          : strings.planning.normal}
+      </AppText>
 
       {/* Feedback Messages */}
       {planningPending ? (
@@ -129,15 +135,25 @@ export function PlanningControls({ onOpenPlanDetail }: PlanningControlsProps) {
       ) : null}
 
       {planningError ? (
-        <AppText accessibilityRole="alert" style={[styles.feedbackText, { color: colors.error }]}>
+        <AppText
+          accessibilityRole="alert"
+          style={[styles.feedbackText, { color: colors.error }]}
+        >
           {planningError}
         </AppText>
       ) : null}
 
       {/* Explanation of automatic tasks & reminders */}
       {planning?.mode === 'plan' ? (
-        <View style={[styles.explanationBox, { backgroundColor: colors.surfaceMuted }]}>
-          <AppText style={[styles.explanationText, { color: colors.textSubtle }]}>
+        <View
+          style={[
+            styles.explanationBox,
+            { backgroundColor: colors.surfaceMuted },
+          ]}
+        >
+          <AppText
+            style={[styles.explanationText, { color: colors.textSubtle }]}
+          >
             {strings.planning.planModeExplanation}
           </AppText>
         </View>
@@ -149,14 +165,24 @@ export function PlanningControls({ onOpenPlanDetail }: PlanningControlsProps) {
           <View style={styles.activePlanCard}>
             <View style={styles.activePlanHeader}>
               <View>
-                <AppText style={[styles.activePlanLabel, { color: colors.textSubtle }]}>
+                <AppText
+                  style={[styles.activePlanLabel, { color: colors.textSubtle }]}
+                >
                   {strings.planning.activePlan}
                 </AppText>
-                <AppText style={styles.activePlanName} testID="active-plan-name">
+                <AppText
+                  style={styles.activePlanName}
+                  testID="active-plan-name"
+                >
                   {planning.activePlanName ?? strings.planning.noPlan}
                 </AppText>
                 {activePlan?.goal ? (
-                  <AppText style={[styles.activePlanGoal, { color: colors.textSubtle }]}>
+                  <AppText
+                    style={[
+                      styles.activePlanGoal,
+                      { color: colors.textSubtle },
+                    ]}
+                  >
                     {activePlan.goal}
                   </AppText>
                 ) : null}
@@ -175,7 +201,9 @@ export function PlanningControls({ onOpenPlanDetail }: PlanningControlsProps) {
 
           {/* Plan Selector List */}
           <View style={styles.planPickerHeader}>
-            <AppText style={[styles.planPickerTitle, { color: colors.textSubtle }]}>
+            <AppText
+              style={[styles.planPickerTitle, { color: colors.textSubtle }]}
+            >
               {strings.planning.selectPlan}
             </AppText>
             <ActionButton
@@ -187,13 +215,18 @@ export function PlanningControls({ onOpenPlanDetail }: PlanningControlsProps) {
           </View>
 
           {loading ? (
-            <AppText style={[styles.feedbackText, { color: colors.textSubtle }]}>
+            <AppText
+              style={[styles.feedbackText, { color: colors.textSubtle }]}
+            >
               {strings.planning.loading}
             </AppText>
           ) : null}
 
           {loadError ? (
-            <AppText accessibilityRole="alert" style={[styles.feedbackText, { color: colors.error }]}>
+            <AppText
+              accessibilityRole="alert"
+              style={[styles.feedbackText, { color: colors.error }]}
+            >
               {strings.planning.loadError}
             </AppText>
           ) : null}
@@ -214,7 +247,9 @@ export function PlanningControls({ onOpenPlanDetail }: PlanningControlsProps) {
                 accessibilityState={{
                   selected: planning.activePlanId === plan.id,
                 }}
-                variant={planning.activePlanId === plan.id ? 'primary' : 'quiet'}
+                variant={
+                  planning.activePlanId === plan.id ? 'primary' : 'quiet'
+                }
                 disabled={disabled || planning.activePlanId === plan.id}
                 onPress={() => socket.selectPlan(plan.id)}
                 testID={`select-plan-${plan.id}`}
@@ -232,35 +267,34 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     padding: spacing.md,
   },
-  headerRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  titleGroup: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: spacing.xs,
-  },
   sectionTitle: {
-    fontSize: typography.heading,
+    fontSize: typography.body,
     fontWeight: '700',
   },
-  badge: {
-    borderRadius: radii.sm,
-    paddingHorizontal: spacing.xs,
-    paddingVertical: 2,
-  },
-  badgeText: {
-    fontSize: typography.caption,
-    fontWeight: '600',
-  },
-  statusText: {
-    fontSize: typography.body,
-  },
-  modeButtonGroup: {
+  modeToggleRow: {
+    alignItems: 'center',
     flexDirection: 'row',
     gap: spacing.sm,
+    minHeight: 48,
+  },
+  modeLabel: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: typography.label,
+    fontWeight: '400',
+  },
+  selectedModeLabel: {
+    fontWeight: '700',
+  },
+  planModeLabel: {
+    textAlign: 'right',
+  },
+  modeSwitch: {
+    flexShrink: 0,
+    minHeight: 48,
+  },
+  statusText: {
+    fontSize: typography.caption,
   },
   feedbackText: {
     fontSize: typography.caption,

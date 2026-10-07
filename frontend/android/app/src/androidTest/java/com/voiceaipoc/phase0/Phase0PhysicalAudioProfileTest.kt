@@ -31,7 +31,7 @@ class Phase0PhysicalAudioProfileTest {
             context = context,
             config = config,
             diagnosticSession = diagnosticSession,
-            pcmDataCallback = AudioEngine.PcmDataCallback { _, _ -> },
+            pcmDataCallback = AudioEngine.PcmDataCallback { _, _, _, _, _ -> },
         )
 
         try {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -1382,6 +1383,17 @@ async def test_pm4_gate_realistic_multi_turn_continuity_and_privacy(storage, too
         assert len(receipt1.saved_actions) == 2
         apollo_id = receipt1.plan_id
         deck_task_id = receipt1.saved_actions[1]["id"]
+        # Creating/selecting a plan advances durable consent; later turns read fresh state.
+        state = await db.scalar(select(PlanningSession).where(
+            PlanningSession.session_id == session_a,
+            PlanningSession.user_id == principal_a.user_id,
+        ))
+        assert state.active_plan_id == apollo_id
+        assert state.state_version == 2
+        snap1 = replace(snap1, consent=replace(
+            snap1.consent, state_version=state.state_version,
+            expected_state_version=state.state_version,
+        ))
 
         # Turn 2: Pronoun Rescheduling: "Move that to Friday at 3pm"
         turn2_id = await create_turn(db, principal_a, session_a)

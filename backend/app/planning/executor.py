@@ -15,16 +15,16 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.clock import SystemClock
+from app.core.clock import FrozenClock
 from app.core.config import Settings
 from app.llm.errors import LLMToolError
 from app.llm.tool_loop import (
@@ -36,17 +36,16 @@ from app.llm.tool_loop import (
 )
 from app.llm.types import LLMToolCall
 from app.models import (
+    ConversationTurn,
     Plan,
-    PlanContextItem,
     PlanningAction,
     PlanningBatch,
     Reminder,
     Task,
+    User,
 )
 from app.planning.policy import (
     AUTOMATIC_OPERATION_FIELDS,
-    CONFIRMATION_OPERATIONS,
-    automatic_operation_allowed,
     planning_capabilities,
 )
 from app.planning.resolution import identity
@@ -92,16 +91,60 @@ class PlanningExecutor:
         cancel_guard: Callable[[], bool] | None = None,
     ) -> PlanningReceipt:
         capabilities = planning_capabilities(self.settings, snapshot.consent)
-        if not decisions:
+        if (
+            not capabilities.persist_proposals
+            or snapshot.consent.user_id != principal.user_id
+            or snapshot.consent.session_id != session_id
+            or not decisions
+        ):
             return PlanningReceipt(
                 batch_id=uuid.uuid4(),
                 plan_id=snapshot.active_plan_id,
                 plan_name=self._active_plan_name(snapshot),
                 has_changes=False,
+                text_summary="No changes were made.",
             )
 
-        batch_id = uuid.uuid4()
         source_digest = hashlib.sha256(transcript.encode("utf-8")).hexdigest()
+        async with execution_barrier(db, principal, session_id, snapshot.consent.state_version):
+            turn = await db.scalar(
+                select(ConversationTurn)
+                .where(
+                    ConversationTurn.id == turn_id,
+                    ConversationTurn.user_id == principal.user_id,
+                    ConversationTurn.session_id == session_id,
+                )
+                .with_for_update()
+            )
+            if turn is None or turn.status in {"cancelled", "timed_out", "disconnected"}:
+                raise PlanningError("planning_source_unavailable")
+            existing = await db.scalar(
+                select(PlanningBatch).where(
+                    PlanningBatch.turn_id == turn_id,
+                    PlanningBatch.user_id == principal.user_id,
+                )
+            )
+            if existing is not None:
+                if existing.source_digest != source_digest:
+                    raise PlanningError("planning_replay_source_changed")
+                first = await db.scalar(
+                    select(PlanningAction)
+                    .where(
+                        PlanningAction.batch_id == existing.id,
+                        PlanningAction.user_id == principal.user_id,
+                    )
+                    .order_by(PlanningAction.ordinal)
+                    .limit(1)
+                )
+                stored = (first.result_json or {}).get("_planning_receipt") if first else None
+                if stored is None or existing.status not in {"completed", "failed"}:
+                    # Interrupted batches are never reconstructed from a new model response.
+                    raise PlanningError("planning_batch_incomplete")
+                receipt = PlanningReceipt.from_dict(stored)
+                await db.commit()
+                return receipt
+
+        batch_id = uuid.uuid4()
         batch = PlanningBatch(
             id=batch_id,
             user_id=principal.user_id,
@@ -128,7 +171,9 @@ class PlanningExecutor:
 
             payload = {
                 "proposal": decision.proposal.model_dump(mode="json"),
-                "scheduled_at": decision.scheduled_at.isoformat() if decision.scheduled_at else None,
+                "scheduled_at": decision.scheduled_at.isoformat()
+                if decision.scheduled_at
+                else None,
                 "timezone": decision.timezone,
                 "plan_ordinal": decision.plan_ordinal,
                 "resolved_at": snapshot.now_utc.isoformat(),
@@ -218,6 +263,8 @@ class PlanningExecutor:
             transaction_groups = self._partition_transaction_groups(auto_items)
 
             for group in transaction_groups:
+                if not planning_capabilities(self.settings, snapshot.consent).automatic_writes:
+                    break
                 if cancel_guard is not None and cancel_guard():
                     LOGGER.info("Planning execution cancelled by cancel guard")
                     break
@@ -225,12 +272,26 @@ class PlanningExecutor:
                 group_success = False
                 group_results: list[tuple[PlanningAction, Decision, dict[str, Any]]] = []
                 coupled_task_id: uuid.UUID | None = None
+                previous_plan_id, previous_plan_name = created_plan_id, created_plan_name
 
                 try:
                     async with execution_barrier(
                         db, principal, session_id, snapshot.consent.state_version
                     ):
-                        for ordinal, decision, action in group:
+                        if not planning_capabilities(
+                            self.settings, snapshot.consent
+                        ).automatic_writes:
+                            raise PlanningError("planning_execution_disabled")
+                        # Serialize inferred creates across all sessions for this owner.
+                        # NO KEY UPDATE remains compatible with foreign-key key-share locks.
+                        await db.scalar(
+                            select(User.id)
+                            .where(User.id == principal.user_id)
+                            .with_for_update(key_share=True)
+                        )
+                        for _ordinal, decision, action in group:
+                            if decision.proposal.operation not in AUTOMATIC_OPERATION_FIELDS:
+                                raise PlanningError("planning_operation_denied")
                             effective_plan_id = (
                                 created_plan_id
                                 if (decision.plan_ordinal is not None or decision.plan_id is None)
@@ -241,7 +302,10 @@ class PlanningExecutor:
                                 effective_plan_id = None
 
                             # Check target revision for updates
-                            if decision.target_id is not None and decision.target_revision is not None:
+                            if (
+                                decision.target_id is not None
+                                and decision.target_revision is not None
+                            ):
                                 rev_ok = await self._verify_target_revision(
                                     db, principal.user_id, decision
                                 )
@@ -274,6 +338,16 @@ class PlanningExecutor:
                                 coupled_task_id=coupled_task_id,
                                 user_timezone=user_timezone,
                             )
+                            if (
+                                tool_name == "update_reminder"
+                                and "recurrence_rule" not in tool_args
+                            ):
+                                tool_args["recurrence_rule"] = await db.scalar(
+                                    select(Reminder.recurrence_rule).where(
+                                        Reminder.id == decision.target_id,
+                                        Reminder.user_id == principal.user_id,
+                                    )
+                                )
                             tool = self.tool_executor.registry.get(tool_name)
                             if tool is not None:
                                 validated_tool_args = tool.arguments_model.model_validate(tool_args)
@@ -283,7 +357,7 @@ class PlanningExecutor:
                                         session_id=session_id,
                                         turn_id=turn_id,
                                         response_id=response_id,
-                                        clock=SystemClock(),
+                                        clock=FrozenClock(snapshot.now_utc),
                                         user_timezone=user_timezone,
                                         device_time_context=device_time_context,
                                     )
@@ -324,12 +398,17 @@ class PlanningExecutor:
                                     }
                                 ),
                                 db=db,
-                                clock=SystemClock(),
+                                clock=FrozenClock(snapshot.now_utc),
                                 user_timezone=user_timezone,
                                 device_time_context=device_time_context,
                                 cancellation_check=cancel_guard,
                                 planning_grants=(grant,),
                                 planner_budget=budget,
+                                authorization_check=lambda _: (
+                                    planning_capabilities(
+                                        self.settings, snapshot.consent
+                                    ).automatic_writes
+                                ),
                             )
 
                             call = LLMToolCall(
@@ -340,7 +419,11 @@ class PlanningExecutor:
 
                             res = await self.tool_executor.execute(call, context=exec_context)
                             if not res.success:
-                                LOGGER.warning("Tool execution failed [%s]: error_code=%s, content=%s", tool_name, res.error_code, res.content)
+                                LOGGER.warning(
+                                    "Tool execution failed [%s]: error_code=%s",
+                                    tool_name,
+                                    res.error_code,
+                                )
                                 raise LLMToolError(res.error_code or "execution_failed")
 
                             res_data = json.loads(res.content)
@@ -349,6 +432,7 @@ class PlanningExecutor:
                                 if p_id_str:
                                     created_plan_id = uuid.UUID(p_id_str)
                                     created_plan_name = res_data["result"].get("name")
+                                    effective_plan_id = created_plan_id
                             elif tool_name == "create_task" and "result" in res_data:
                                 t_id_str = res_data["result"].get("task_id")
                                 if t_id_str:
@@ -361,11 +445,19 @@ class PlanningExecutor:
                             group_results.append((action, decision, res_data))
 
                         # Commit this transaction group before emitting any success
+                        if not planning_capabilities(
+                            self.settings, snapshot.consent
+                        ).automatic_writes:
+                            raise PlanningError("planning_execution_disabled")
                         await db.commit()
                         group_success = True
 
                 except PlanningError as error:
                     await db.rollback()
+                    created_plan_id, created_plan_name = previous_plan_id, previous_plan_name
+                    await db.refresh(batch)
+                    for stored_action in actions_by_ordinal.values():
+                        await db.refresh(stored_action)
                     LOGGER.warning("Planning barrier aborted group: %s", error)
                     await self._mark_group_failed(db, [a for _, _, a in group], str(error))
                     for _, d, a in group:
@@ -374,12 +466,23 @@ class PlanningExecutor:
                                 "action_id": str(a.id),
                                 "operation": d.proposal.operation,
                                 "title": d.proposal.title,
+                                "status": "failed",
                                 "error": str(error),
                             }
                         )
                 except Exception as error:  # noqa: BLE001
                     await db.rollback()
-                    err_msg = str(error) if str(error) else getattr(error, "code", "execution_failed")
+                    created_plan_id, created_plan_name = previous_plan_id, previous_plan_name
+                    await db.refresh(batch)
+                    for stored_action in actions_by_ordinal.values():
+                        await db.refresh(stored_action)
+                    # Keep source-bearing provider/database errors out of logs and receipts.
+                    err_msg = (
+                        str(error)
+                        if isinstance(error, LLMToolError)
+                        and str(error) in {"revision_conflict", "execution_failed"}
+                        else getattr(error, "code", "execution_failed")
+                    )
                     LOGGER.warning("Transaction group execution failed: %s", err_msg)
                     await self._mark_group_failed(db, [a for _, _, a in group], err_msg)
                     for _, d, a in group:
@@ -412,18 +515,40 @@ class PlanningExecutor:
                                 "action_id": str(a.id),
                                 "action": d.proposal.operation,
                                 "operation": d.proposal.operation,
-                                "title": d.proposal.title,
-                                "scheduled_at": d.scheduled_at.isoformat() if d.scheduled_at else None,
+                                "title": (res_data.get("result") or {}).get("title")
+                                or (res_data.get("result") or {}).get("name")
+                                or d.proposal.title,
+                                "status": "updated"
+                                if (
+                                    d.proposal.operation.startswith("UPDATE_")
+                                    or d.proposal.operation == "COMPLETE_TASK"
+                                )
+                                else "saved",
+                                "scheduled_at": d.scheduled_at.isoformat()
+                                if d.scheduled_at
+                                else None,
                                 "plan_id": str(a.plan_id) if a.plan_id else None,
                                 "result": res_data.get("result") if res_data else None,
                             }
                         )
 
+            for ordinal, decision in enumerate(decisions):
+                action = actions_by_ordinal[ordinal]
+                if decision.disposition == "AUTO" and action.status == "pending":
+                    action.status = "cancelled"
+                    action.reason = "planning_execution_revoked"
+                    failed_actions.append(
+                        {
+                            "action_id": str(action.id),
+                            "operation": decision.proposal.operation,
+                            "title": decision.proposal.title,
+                            "error": action.reason,
+                        }
+                    )
+
         # Update batch status
         all_failed = bool(failed_actions and not saved_actions and not duplicate_actions)
         batch.status = "failed" if all_failed else "completed"
-        await db.commit()
-
         has_changes = bool(saved_actions or pending_confirmations)
         text_summary = self._generate_summary(
             saved_actions=saved_actions,
@@ -434,7 +559,7 @@ class PlanningExecutor:
             plan_name=created_plan_name,
         )
 
-        return PlanningReceipt(
+        receipt = PlanningReceipt(
             batch_id=batch_id,
             plan_id=created_plan_id,
             plan_name=created_plan_name,
@@ -446,6 +571,36 @@ class PlanningExecutor:
             has_changes=has_changes,
             text_summary=text_summary,
         )
+        try:
+            async with execution_barrier(
+                db, principal, session_id, snapshot.consent.state_version
+            ) as state:
+                # Source erasure can occur between independent commits. Never restore it.
+                persisted_digest = await db.scalar(
+                    select(PlanningBatch.source_digest).where(
+                        PlanningBatch.id == batch_id,
+                        PlanningBatch.user_id == principal.user_id,
+                    )
+                )
+                if persisted_digest != source_digest:
+                    raise PlanningError("planning_source_unavailable")
+                first_action = actions_by_ordinal[0]
+                first_action.result_json = {
+                    **(first_action.result_json or {}),
+                    "_planning_receipt": receipt.to_dict(),
+                }
+                if (
+                    created_plan_id != snapshot.active_plan_id
+                    and created_plan_id is not None
+                    and planning_capabilities(self.settings, snapshot.consent).automatic_writes
+                ):
+                    state.active_plan_id = created_plan_id
+                    state.state_version += 1
+                await db.commit()
+        except PlanningError:
+            await db.rollback()
+            raise
+        return receipt
 
     def _partition_transaction_groups(
         self,
@@ -464,10 +619,10 @@ class PlanningExecutor:
             ):
                 next_dec = items[i + 1][1]
                 # Couple if titles/mentions match or recurrence/schedule aligns
-                if (
-                    identity(decision.proposal.title) == identity(next_dec.proposal.title)
-                    or (next_dec.proposal.target_mention and next_dec.proposal.target_mention.casefold() in decision.proposal.title.casefold())
-                    or (decision.scheduled_at and next_dec.scheduled_at and decision.scheduled_at.date() == next_dec.scheduled_at.date())
+                if identity(decision.proposal.title) == identity(next_dec.proposal.title) or (
+                    next_dec.proposal.target_mention
+                    and next_dec.proposal.target_mention.casefold()
+                    in decision.proposal.title.casefold()
                 ):
                     groups.append([items[i], items[i + 1]])
                     i += 2
@@ -525,7 +680,7 @@ class PlanningExecutor:
             target_ident = identity(decision.proposal.title)
             for t in existing_tasks:
                 if identity(t.title) == target_ident:
-                    if decision.scheduled_at is None or t.due_at == decision.scheduled_at:
+                    if t.due_at == decision.scheduled_at:
                         return True
         elif decision.proposal.operation == "CREATE_REMINDER":
             existing_reminders = (
@@ -539,7 +694,11 @@ class PlanningExecutor:
             ).all()
             target_ident = identity(decision.proposal.title)
             for r in existing_reminders:
-                if identity(r.title) == target_ident and r.trigger_at == decision.scheduled_at:
+                if (
+                    identity(r.title) == target_ident
+                    and r.trigger_at == decision.scheduled_at
+                    and r.recurrence_rule == decision.proposal.recurrence
+                ):
                     return True
         return False
 
@@ -552,6 +711,9 @@ class PlanningExecutor:
         user_timezone: str,
     ) -> tuple[str, dict[str, Any]]:
         op = decision.proposal.operation
+        rename = bool(
+            re.search(r"\b(?:rename|retitle)\b", decision.proposal.source.text, re.I)
+        )
         if op == "CREATE_PLAN":
             return "create_plan", {
                 "name": decision.proposal.title,
@@ -560,13 +722,17 @@ class PlanningExecutor:
                 "timezone": decision.timezone or user_timezone,
             }
         if op == "UPDATE_PLAN":
-            return "update_plan", {
-                "plan_id": str(decision.target_id),
-                "name": decision.proposal.title,
-                "goal": decision.proposal.content,
-                "deadline_at": decision.scheduled_at.isoformat() if decision.scheduled_at else None,
-                "timezone": decision.timezone or user_timezone,
-            }
+            args: dict[str, Any] = {"plan_id": str(decision.target_id)}
+            if rename:
+                args["name"] = decision.proposal.title
+            if decision.proposal.content is not None:
+                args["goal"] = decision.proposal.content
+            if decision.scheduled_at is not None:
+                args["deadline_at"] = decision.scheduled_at.isoformat()
+                args["timezone"] = decision.timezone or user_timezone
+            if decision.target_revision is not None:
+                args["expected_revision"] = decision.target_revision
+            return "update_plan", args
         if op == "ADD_PLAN_CONTEXT":
             return "add_plan_context", {
                 "plan_id": str(effective_plan_id),
@@ -574,7 +740,7 @@ class PlanningExecutor:
                 "kind": "note",
             }
         if op == "CREATE_TASK":
-            args: dict[str, Any] = {
+            args = {
                 "title": decision.proposal.title,
                 "notes": decision.proposal.content,
                 "due_at": decision.scheduled_at.isoformat() if decision.scheduled_at else None,
@@ -584,12 +750,13 @@ class PlanningExecutor:
             args["planning_action_id"] = str(action.id)
             return "create_task", args
         if op == "UPDATE_TASK":
-            args = {
-                "task_id": str(decision.target_id),
-                "title": decision.proposal.title,
-                "notes": decision.proposal.content,
-                "due_at": decision.scheduled_at.isoformat() if decision.scheduled_at else None,
-            }
+            args = {"task_id": str(decision.target_id)}
+            if rename:
+                args["title"] = decision.proposal.title
+            if decision.proposal.content is not None:
+                args["notes"] = decision.proposal.content
+            if decision.scheduled_at is not None:
+                args["due_at"] = decision.scheduled_at.isoformat()
             if decision.target_revision is not None:
                 args["expected_revision"] = decision.target_revision
             if effective_plan_id:
@@ -617,13 +784,15 @@ class PlanningExecutor:
             args["planning_action_id"] = str(action.id)
             return "create_reminder", args
         if op == "UPDATE_REMINDER":
-            args = {
-                "reminder_id": str(decision.target_id),
-                "title": decision.proposal.title,
-                "body": decision.proposal.content,
-                "trigger_at": decision.scheduled_at.isoformat() if decision.scheduled_at else None,
-                "recurrence_rule": decision.proposal.recurrence,
-            }
+            args = {"reminder_id": str(decision.target_id)}
+            if rename:
+                args["title"] = decision.proposal.title
+            if decision.proposal.content is not None:
+                args["body"] = decision.proposal.content
+            if decision.scheduled_at is not None:
+                args["trigger_at"] = decision.scheduled_at.isoformat()
+            if decision.proposal.recurrence is not None:
+                args["recurrence_rule"] = decision.proposal.recurrence
             if decision.target_revision is not None:
                 args["expected_revision"] = decision.target_revision
             if effective_plan_id:
@@ -672,7 +841,9 @@ class PlanningExecutor:
         if decision.proposal.operation in {"ARCHIVE_PLAN", "DELETE_PLAN"} and decision.target_id:
             tool_args = {
                 "plan_id": str(decision.target_id),
-                "status": "archived" if decision.proposal.operation == "ARCHIVE_PLAN" else "deleted",
+                "status": "archived"
+                if decision.proposal.operation == "ARCHIVE_PLAN"
+                else "deleted",
             }
             if decision.target_revision is not None:
                 tool_args["expected_revision"] = decision.target_revision
@@ -752,8 +923,8 @@ class PlanningExecutor:
         plan_name: str | None,
     ) -> str:
         parts: list[str] = []
-        tasks_saved = [a for a in saved_actions if "TASK" in a.get("operation", "")]
-        reminders_saved = [a for a in saved_actions if "REMINDER" in a.get("operation", "")]
+        tasks_saved = [a for a in saved_actions if a.get("operation") == "CREATE_TASK"]
+        reminders_saved = [a for a in saved_actions if a.get("operation") == "CREATE_REMINDER"]
         plans_saved = [a for a in saved_actions if a.get("operation") == "CREATE_PLAN"]
         context_saved = [a for a in saved_actions if a.get("operation") == "ADD_PLAN_CONTEXT"]
 
@@ -783,6 +954,18 @@ class PlanningExecutor:
 
         if duplicate_actions:
             parts.append(f"{len(duplicate_actions)} item(s) were already on your list.")
+
+        for operation, verb, noun in (
+            ("UPDATE_TASK", "Updated", "task"),
+            ("COMPLETE_TASK", "Completed", "task"),
+            ("UPDATE_REMINDER", "Updated", "reminder"),
+            ("UPDATE_PLAN", "Updated", "plan"),
+        ):
+            items = [a for a in saved_actions if a.get("operation") == operation]
+            if len(items) == 1:
+                parts.append(f"{verb} {noun} '{items[0]['title']}'.")
+            elif items:
+                parts.append(f"{verb} {len(items)} {noun}s.")
 
         if pending_confirmations:
             parts.append(

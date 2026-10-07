@@ -272,15 +272,12 @@ class VoiceGateway:
         else:
             from app.planning.executor import PlanningExecutor
 
-            self.planning_executor = getattr(app_state, "planning_executor", None)
-            if self.planning_executor is None:
-                self.planning_executor = PlanningExecutor(
-                    settings=settings,
-                    tool_executor=self.tool_loop.executor,
-                    confirmation_service=self.confirmation_store,
-                )
-                if app_state is not None:
-                    app_state.planning_executor = self.planning_executor
+            # The tool store belongs to this connection's transaction, never an app singleton.
+            self.planning_executor = PlanningExecutor(
+                settings=settings,
+                tool_executor=self.tool_loop.executor,
+                confirmation_service=self.confirmation_store,
+            )
         self.owner = VoiceRegistryOwner(
             user_id=principal.user_id,
             device_id=principal.device_id,
@@ -815,7 +812,7 @@ class VoiceGateway:
         )
         await self._handle_session_start(restart_message)
 
-    async def _planning_snapshot(self) -> dict:
+    async def _planning_snapshot(self, session_id=None) -> dict:
         if not self.settings.plan_mode_enabled:
             return {
                 "available": False,
@@ -825,8 +822,16 @@ class VoiceGateway:
                 "active_plan_id": None,
             }
         async with self.session_factory() as db:
-            state = await locked_state(db, self.principal, self._active_session_id())
+            from app.planning.policy import planning_capabilities
+            from app.planning.repository import _consent
+
+            session_id = session_id or self._active_session_id()
+            await locked_state(db, self.principal, session_id)
+            state, consent = await _consent(db, self.principal, session_id)
             result = await snapshot(db, state, available=True)
+            result["automatic_actions_available"] = planning_capabilities(
+                self.settings, consent
+            ).automatic_writes
             await db.commit()
             return result
 
@@ -866,7 +871,7 @@ class VoiceGateway:
             return
         try:
             async with self.session_factory() as db:
-                result = await change_state(
+                await change_state(
                     db,
                     self.principal,
                     session_id,
@@ -904,7 +909,7 @@ class VoiceGateway:
                 "server.planning.state",
                 session_id=session_id,
                 request_event_id=message.event_id,
-                planning=result,
+                planning=await self._planning_snapshot(session_id),
             )
         )
 
@@ -955,7 +960,7 @@ class VoiceGateway:
                         },
                     }
                     text = (
-                        "Plan Mode is on. Automatic organization is not available yet."
+                        "Plan Mode is on."
                         if mode == "plan"
                         else "Plan Mode is off."
                     )
@@ -984,6 +989,7 @@ class VoiceGateway:
                 )
             )
         if result is not None:
+            result = await self._planning_snapshot(session_id)
             await self._send(
                 server_event(
                     "server.planning.state",
@@ -1709,6 +1715,49 @@ class VoiceGateway:
                 self._stt_finalize_task = None
                 self._stt_finalize_cancel_requested = False
 
+    async def _execute_planning_turn(self, *, session_id, turn_id, response_id, transcript):
+        observer = getattr(self, "planning_observer", None)
+        executor = getattr(self, "planning_executor", None)
+        if observer is None or executor is None:
+            return None
+        from app.planning.runtime import execute_turn
+
+        context = getattr(self, "_device_time_context", None)
+        guard = getattr(self, "cancel_guard", None)
+        try:
+            receipt = await execute_turn(
+                observer, executor, principal=self.principal, session_id=session_id,
+                turn_id=turn_id, response_id=response_id, transcript=transcript,
+                now_utc=context.current_instant_utc() if context else self.clock.now_utc(),
+                timezone=self._user_timezone(), device_time_context=context,
+                cancel_guard=(lambda: not guard.can_emit(response_id)) if guard else None,
+            )
+            if receipt is None:
+                return None
+            if guard is not None and not guard.can_emit(response_id):
+                return {"status": "cancelled", "planning_execution": True}
+            await self._send(server_event(
+                "server.planning.actions", session_id=session_id, turn_id=turn_id,
+                response_id=response_id, receipt=receipt.to_dict(),
+            ))
+            if any(item.get("operation") == "CREATE_PLAN" for item in receipt.saved_actions):
+                await self._send(server_event(
+                    "server.planning.state", session_id=session_id, turn_id=turn_id,
+                    response_id=response_id, planning=await self._planning_snapshot(session_id),
+                ))
+            text = receipt.text_summary
+        except PlanningError as error:
+            await self._send(server_event(
+                "server.planning.error", session_id=session_id, turn_id=turn_id,
+                response_id=response_id, code=str(error),
+            ))
+            text = "Planning could not complete this turn. Please review your saved items."
+        await self._emit_routed_final_text(
+            session_id=session_id, turn_id=turn_id, response_id=response_id,
+            text=text, route=RouteName.TASK_ACTION,
+        )
+        return {"status": "completed", "planning_execution": True}
+
     async def _stream_llm_response(
         self,
         *,
@@ -1723,6 +1772,12 @@ class VoiceGateway:
             session_id=session_id,
             turn_id=turn_id,
             response_id=response_id,
+            transcript=transcript,
+        )
+        if planning_result is not None:
+            return planning_result
+        planning_result = await self._execute_planning_turn(
+            session_id=session_id, turn_id=turn_id, response_id=response_id,
             transcript=transcript,
         )
         if planning_result is not None:

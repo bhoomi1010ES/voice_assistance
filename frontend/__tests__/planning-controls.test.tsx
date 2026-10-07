@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactTestRenderer, { act } from 'react-test-renderer';
+import { Switch } from 'react-native';
 import { PlanningControls } from '../src/components/voice/PlanningControls';
 import { ActionButton } from '../src/components/ui/Primitives';
 import { TestProviders } from '../src/testing/TestProviders';
@@ -40,7 +41,7 @@ beforeEach(() => {
 });
 afterEach(() => act(() => renderer?.unmount()));
 
-test('selector uses server mode and disables both controls until acknowledgement', async () => {
+test('toggle requests both modes and stays on the server mode until acknowledgement', async () => {
   await act(async () => {
     renderer = ReactTestRenderer.create(
       <TestProviders>
@@ -48,13 +49,12 @@ test('selector uses server mode and disables both controls until acknowledgement
       </TestProviders>,
     );
   });
-  const button = () =>
-    renderer.root
-      .findAllByType(ActionButton)
-      .find(item => item.props.label === 'Plan mode')!;
-  act(() => button().props.onPress());
+  const toggle = () => renderer.root.findByType(Switch);
+  expect(toggle().props.value).toBe(false);
+  act(() => toggle().props.onValueChange(true));
   expect(setPlanningMode).toHaveBeenCalledWith('plan');
-  expect(button().props.accessibilityState.selected).toBe(false);
+  expect(toggle().props.value).toBe(false);
+  expect(toggle().props.accessibilityState.checked).toBe(false);
   (useVoiceSocket as jest.Mock).mockReturnValue({
     ...snapshot,
     planningPending: true,
@@ -66,12 +66,28 @@ test('selector uses server mode and disables both controls until acknowledgement
       </TestProviders>,
     ),
   );
-  expect(button().props.disabled).toBe(true);
+  expect(toggle().props.disabled).toBe(true);
+  expect(toggle().props.accessibilityState.busy).toBe(true);
+  act(() => toggle().props.onValueChange(true));
+  expect(setPlanningMode).toHaveBeenCalledTimes(1);
   (useVoiceSocket as jest.Mock).mockReturnValue({
     ...snapshot,
-    connection: 'reconnecting',
-    planning: null,
+    planning: { ...snapshot.planning, mode: 'plan' },
   });
+  await act(async () =>
+    renderer.update(
+      <TestProviders>
+        <PlanningControls />
+      </TestProviders>,
+    ),
+  );
+  expect(toggle().props.value).toBe(true);
+  expect(toggle().props.accessibilityState.checked).toBe(true);
+  expect(toggle().props.disabled).toBe(false);
+  act(() => toggle().props.onValueChange(false));
+  expect(setPlanningMode).toHaveBeenLastCalledWith('normal');
+  expect(toggle().props.value).toBe(true);
+  (useVoiceSocket as jest.Mock).mockReturnValue(snapshot);
   act(() =>
     renderer.update(
       <TestProviders>
@@ -79,7 +95,29 @@ test('selector uses server mode and disables both controls until acknowledgement
       </TestProviders>,
     ),
   );
-  expect(button().props.disabled).toBe(true);
+  expect(toggle().props.value).toBe(false);
+});
+
+test.each([
+  ['unavailable', { planning: { ...snapshot.planning, available: false } }],
+  ['reconnecting', { connection: 'reconnecting' }],
+  ['session not ready', { session: 'starting' }],
+  ['no server snapshot', { planning: null }],
+])('toggle cannot change mode when %s', async (_, state) => {
+  (useVoiceSocket as jest.Mock).mockReturnValue({ ...snapshot, ...state });
+  await act(async () => {
+    renderer = ReactTestRenderer.create(
+      <TestProviders>
+        <PlanningControls />
+      </TestProviders>,
+    );
+  });
+  const toggle = renderer.root.findByType(Switch);
+  expect(toggle.props.disabled).toBe(true);
+  expect(toggle.props.accessibilityState.disabled).toBe(true);
+  act(() => toggle.props.onValueChange(true));
+  expect(setPlanningMode).not.toHaveBeenCalled();
+  expect(listPlans).not.toHaveBeenCalled();
 });
 
 test('active plan is selected through the socket after loading owned plans', async () => {

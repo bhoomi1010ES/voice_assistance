@@ -59,7 +59,8 @@ def recognize_plan_selection(transcript: str) -> str | None:
     if text.lower() in {"clear active plan", "deselect plan", "clear plan", "no plan"}:
         return ""
     match = re.fullmatch(
-        r"(?:select|use|switch to|focus on|work on|open)\s+(?:the\s+)?(?:plan|project)?\s*(.{1,255})",
+        r"(?:select|use|switch to|focus on|work on|open)\s+(?:the\s+)?"
+        r"(?:plan|project)?\s*(.{1,255})",
         text,
         flags=re.IGNORECASE,
     )
@@ -307,10 +308,10 @@ async def revoke_auth_state(
 async def execution_barrier(
     db: AsyncSession, principal: AuthPrincipal, session_id: uuid.UUID, expected_version: int
 ):
-    """Future executor seam; caller commits mutation/receipt inside this guard.
+    """Caller commits mutations/receipts while holding fresh owned consent locks.
 
-    This is a freshness barrier, never a tool authorization grant. PM-1 has no
-    caller executing inferred actions. Disabled acknowledgement follows commit,
+    This is a freshness barrier, never a tool authorization grant.
+    Disabled acknowledgement follows commit,
     so an older automatic commit cannot land after that acknowledgement.
     """
     state = await locked_state(db, principal, session_id, create=False)

@@ -860,6 +860,9 @@ async def test_today_task_query_uses_owner_scoped_db_and_skips_rag_and_model() -
     task = SimpleNamespace(
         id=task_id,
         title="Dentist appointment",
+        plan_id=None,
+        planning_action_id=None,
+        revision=1,
         description=None,
         status="pending",
         priority="normal",
@@ -900,6 +903,9 @@ async def test_medicine_time_query_reads_reminders_and_does_not_answer_current_t
     reminder = SimpleNamespace(
         id=uuid.uuid4(),
         title="Take medicine",
+        plan_id=None,
+        planning_action_id=None,
+        revision=1,
         body="Morning medication",
         trigger_at=datetime(2026, 9, 25, 14, tzinfo=UTC),
         local_trigger_at=datetime(2026, 9, 25, 7, tzinfo=UTC),

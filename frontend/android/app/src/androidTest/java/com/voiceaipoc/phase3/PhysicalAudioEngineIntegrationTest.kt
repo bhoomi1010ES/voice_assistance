@@ -32,7 +32,7 @@ class PhysicalAudioEngineIntegrationTest {
         val engine = AudioEngine(
             context = context,
             config = config,
-            pcmDataCallback = AudioEngine.PcmDataCallback { _, samplesRead ->
+            pcmDataCallback = AudioEngine.PcmDataCallback { _, samplesRead, _, _, _ ->
                 frameCount.incrementAndGet()
                 if (samplesRead != config.frameSizeSamples) invalidFrame.set(true)
             },

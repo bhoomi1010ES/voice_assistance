@@ -1,5 +1,7 @@
 export const strings = {
   planning: {
+    mode: 'Conversation mode',
+    modeToggleHint: 'Turn on for Plan mode or off for Normal mode.',
     normal: 'Normal mode',
     plan: 'Plan mode',
     on: 'Plan Mode is on',

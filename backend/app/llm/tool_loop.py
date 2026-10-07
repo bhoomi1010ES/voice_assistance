@@ -7,8 +7,6 @@ import json
 import logging
 import time
 import uuid
-
-logger = logging.getLogger(__name__)
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -36,6 +34,8 @@ from app.llm.types import (
     LLMToolDefinition,
 )
 from app.services.device_time import DeviceTimeContext, format_local_time
+
+logger = logging.getLogger(__name__)
 
 ToolHandler = Callable[["ToolExecutionContext", BaseModel], Awaitable[Any]]
 ToolArgumentNormalizer = Callable[["ToolExecutionContext", BaseModel], BaseModel]
@@ -325,9 +325,12 @@ class ToolExecutor:
                     grant.user_id == context.user_id
                     and grant.session_id == context.session_id
                     and grant.turn_id == context.turn_id
+                    and call.tool_call_id == f"plan_act_{grant.action_id}"
                     and grant.tool_name == call.name
                     and grant.argument_digest == arg_digest
-                    and (grant.expires_at_monotonic is None or now_mono <= grant.expires_at_monotonic)
+                    and (
+                        grant.expires_at_monotonic is None or now_mono <= grant.expires_at_monotonic
+                    )
                 ):
                     if grant.target_id is not None:
                         arg_target = (

@@ -1,7 +1,7 @@
 # Conversational Plan Mode implementation plan
 
 **Verified:** 2026-10-06, America/Los_Angeles.
-**Status:** PM-0 contracts/baseline, PM-1 source and PM-2 shadow extraction/evaluation are implemented. PM-2 passed the frozen live corpus gate on 2026-10-06 at the unchanged 3000 ms deadline in two consecutive full runs. Local PostgreSQL shadow-write isolation and disable serialization are verified. PM-3 onward and full native/automatic-execution acceptance remain pending; planning defaults remain disabled. See the [frozen PM-0 contract](docs/PLAN_MODE_CONTRACT_V1.md), [implementation-start baseline](docs/20261005_172513_pm0_baseline.json), [PM-1 work record](docs/20261005_171305_pm1_durable_planning_mode_.md) and [PM-2 calibration/acceptance record](docs/20261006_105227_pm2_quality_calibration_.md).
+**Status:** PM-0 through PM-5 source is implemented. PM-2 passed its frozen live corpus gate at 3000 ms. PM-6 is partially verified: focused regressions, PostgreSQL/Redis checks, selected-provider persistence/correction/disable and physical Android payload parsing pass. Full spoken Android acceptance, full held-out persistence, real reminder receipt and cohort rollout remain pending. Notifications are not developed, as confirmed by the user. Planning defaults remain disabled. See the [PM-6 acceptance record](docs/20261006_151525_pm6_acceptance_rollout_.md), [frozen contract](docs/PLAN_MODE_CONTRACT_V1.md) and [PM-2 acceptance record](docs/20261006_105227_pm2_quality_calibration_.md).
 **Scope:** The conversational Plan Mode described in the supplied `Pasted text.txt`.  
 **Parent plan:** [implementation.md](implementation.md). Related boundaries: [router plan](plan.md) and [OKF plan](OKF_IMPLEMENTATION_PLAN.md).
 
@@ -28,7 +28,7 @@ Expected: one XYZ plan, technology context, three tasks, and one push reminder a
 - [x] Implement PM-1 in the explicitly requested code-change task; see the work record.
 - [x] Complete PM-0 baseline, frozen contract, labeled fixtures and conservative rollout policy in the subsequent explicitly requested task.
 - [x] Implement PM-2 extraction/validation/observation/proposal storage and measure selected-provider quality; keep its unmet quality gate visible.
-- [ ] Implement the remaining phases.
+- [ ] Complete PM-6 end-to-end acceptance and controlled rollout.
 
 The working tree already contained backend/frontend code edits, plan edits, and the untracked `0020_user_knowledge_mode.py` migration before this task. These are existing owner changes and must be preserved. Historical OKF/router documents contain dated snapshots; their old migration heads and flag values are not current-source facts.
 
@@ -304,7 +304,7 @@ Existing task mutations are implemented in REST endpoints and tool handlers rath
 
 ## 13. Implementation phases and todo
 
-PM-0 contracts, PM-1 source and PM-2 source/evaluation items are implemented and covered by focused checks. PM-2's live quality gate is not met; PM-3 onward are pending. The frozen PM-0 contract governs behavior. Live PostgreSQL and Android acceptance remain separate from source/test completion.
+PM-0 through PM-5 source and focused checks are present. PM-2 passed its frozen live quality gate. PM-3/PM-4/PM-5 completion entries describe source and test coverage; the PM-6 audit adds runtime execution wiring and separate live/database/native evidence. The full PM-6 release gate remains unmet. The frozen contract continues to govern behavior.
 
 ### PM-0 — Freeze contracts and baseline
 
@@ -339,11 +339,9 @@ PM-0 contracts, PM-1 source and PM-2 source/evaluation items are implemented and
 
 **Gate:** grounded proposals are accurate enough for the defined corpus; no shadow-created task/reminder/memory exists.
 
-**PM-2 validation:** 674 focused backend checks passed, including real PostgreSQL shadow/replay write isolation and disable serialization. Ruff, format and targeted whitespace checks passed. Compact structured extraction reconstructs exact evidence spans on the server; actor/time/context/overflow checks remain conservative. Duplicate title variants require grounded, owned, unique matches and preserve recurrence. Ordinary model requests retain their defaults. Shadow creates zero tasks, reminders, plans, context items, proposal batches/actions or memories; extractor `on` still stores pending proposals only and never executes them.
+**PM-2 validation:** 674 focused backend checks passed, including real PostgreSQL shadow/replay write isolation and disable serialization. Ruff, format and targeted whitespace checks passed. Compact structured extraction reconstructs exact evidence spans on the server; actor/time/context/overflow checks remain conservative. Duplicate title variants require grounded, owned, unique matches and preserve recurrence. Ordinary model requests retain their defaults. Shadow creates zero tasks, reminders, plans, context items, proposal batches/actions or memories. The PM-2 observer stores permitted proposals in `on` and never executes them; PM-6 adds the separately consented foreground execution path.
 
-**PM-2 gate passed for the frozen corpus:** selected-provider `plan-extract-v9` completed two consecutive full evaluations at the unchanged 3000 ms runtime deadline. The [first passing run](docs/pm2_v9_live_corpus_3000ms_acceptance_2.json) matched 21/21 expected automatic candidates (100% precision/recall); the [confirmation run](docs/pm2_v9_live_corpus_3000ms_acceptance_3.json) matched 20/21 (100% precision, 95.2% recall). Both passed development and held-out gates independently, recovered 3/3 held-out positives, correctl
-
-y handled 1/1 ambiguity, 1/1 duplicate and 1/1 overflow, and observed zero false automatic candidates, temporal errors, extraction failures or timeouts. Reports share identical implementation hashes and the frozen corpus checksum. Labels, model, thresholds and deadline were unchanged.
+**PM-2 gate passed for the frozen corpus:** selected-provider `plan-extract-v9` completed two consecutive full evaluations at the unchanged 3000 ms runtime deadline. The [first passing run](docs/pm2_v9_live_corpus_3000ms_acceptance_2.json) matched 21/21 expected automatic candidates (100% precision/recall); the [confirmation run](docs/pm2_v9_live_corpus_3000ms_acceptance_3.json) matched 20/21 (100% precision, 95.2% recall). Both passed development and held-out gates independently, recovered 3/3 held-out positives, correctly handled 1/1 ambiguity, 1/1 duplicate and 1/1 overflow, and observed zero false automatic candidates, temporal errors, extraction failures or timeouts. Reports share identical implementation hashes and the frozen corpus checksum. Labels, model, thresholds and deadline were unchanged.
 
 **Measured limits:** only three held-out positive candidates exist. The earlier frozen [run 1](docs/pm2_v9_live_corpus_3000ms_acceptance_1.json) had one deadline miss despite 21/21 positive recovery; all trials remain recorded. Ten counterbalanced [foreground pairs](docs/pm2_v9_paired_latency_3000ms_acceptance.json) completed all foreground requests, with median added latency 107 ms; one background extraction reached its deadline under contention. These are corpus results and bounded background behavior, not a production latency guarantee. The backend was restarted and returned healthy/ready from Windows. Feature/extraction/automatic-write defaults remain off and the owner allowlist remains empty. See the [work record](docs/20261006_105227_pm2_quality_calibration_.md).
 
@@ -381,14 +379,18 @@ y handled 1/1 ambiguity, 1/1 duplicate and 1/1 overflow, and observed zero false
 
 ### PM-6 — Acceptance and controlled rollout
 
-- [ ] Run focused backend tests plus PostgreSQL/Redis integration checks for migrations, transactions, grants, concurrent dedupe, restart, worker delivery and privacy.
-- [ ] Run focused frontend tests/type checks and targeted native transport tests; build/install only when native transport changes require a device artifact.
+- [x] Run focused backend tests plus PostgreSQL/Redis integration checks for migrations, transactions, grants, concurrent dedupe, restart, worker delivery and privacy.
+- [x] Run focused frontend tests/type checks and targeted native transport tests; build/install only when native transport changes require a device artifact.
 - [ ] Validate held-out end-to-end conversation corpus and existing Normal-mode/router regressions.
 - [ ] Capture actual provider and physical Android evidence for enable -> conversation -> persisted multi-action plan -> correction -> reminder receipt -> disable -> Normal.
 - [ ] Enable only explicit disposable/test owners first, then a measured cohort, while preserving existing router/voice release gates.
-- [ ] Demonstrate rollback: feature/execution switches revoke grants immediately and keep existing saved data readable; scheduled reminders continue unless explicitly cancelled.
+- [x] Demonstrate rollback: feature/execution switches revoke grants immediately and keep existing saved data readable; scheduled reminders continue unless explicitly cancelled.
 
 **Gate:** all critical policy/ownership/replay/race cases pass; live evidence covers the intended UI and voice flow. Existing unrelated acceptance gates remain separate.
+
+**PM-6 partial validation, 2026-10-06:** 607 focused backend checks passed; 14 PostgreSQL/live-provider checks passed, plus a separate deployed-migration readiness check and two PostgreSQL/Redis infrastructure checks. Targeted Jest checks passed 19/19 and TypeScript passed. Five native unit checks and five payload-parser instrumentation checks passed on physical Android. The selected provider saved a grouped plan with two tasks, updated the same task, recognized a duplicate and stopped planning after disable in disposable PostgreSQL schemas. The 13-turn held-out extraction evaluation passed its quality gate at 3000 ms (3/3 actionable labels; zero false actions/timeouts). This is extraction validation plus a separate synthetic persistence flow, not full held-out end-to-end persistence acceptance.
+
+**Release gate remains unmet:** actual spoken UI/voice enable/conversation/correction/disable and Android reminder receipt are not demonstrated. The user confirmed notifications are not enabled or developed; fake-provider worker delivery does not replace actual notification evidence. Only generated disposable owners were enabled inside acceptance processes. Application rollout remains disabled and no measured cohort was promoted. Rollback tests change the running settings object; editing `.env` requires restarting the backend. Existing scheduled reminders remain scheduled through rollback. Clean migration upgrade/downgrade and interrupted-batch recovery beyond fail-closed behavior were not exercised. See the [acceptance record](docs/20261006_151525_pm6_acceptance_rollout_.md).
 
 ## 14. Acceptance matrix
 
@@ -424,4 +426,4 @@ Release requirements include zero observed unauthorized/destructive/external act
 
 ## 15. Completion definition
 
-The feature is complete when a user can explicitly enable Plan Mode, speak actionable plans naturally, receive accurate saved tasks/reminders and organized context without repeated organizational confirmation, correct the same plan across turns, and disable the mode reliably. All writes must remain owned, grounded, audited, replay-safe and governed by the operation-specific confirmation policy. PM-0 contracts/baseline, PM-1 source and PM-2 shadow extraction/evaluation are implemented. PM-2 passed its frozen corpus gate at 3000 ms; real PostgreSQL shadow isolation and disable serialization also pass. PM-3 onward, automatic execution and full native/end-to-end acceptance remain pending.
+The feature is complete when a user can explicitly enable Plan Mode, speak actionable plans naturally, receive accurate saved tasks/reminders and organized context without repeated organizational confirmation, correct the same plan across turns, and disable the mode reliably. All writes must remain owned, grounded, audited, replay-safe and governed by the operation-specific confirmation policy. PM-0 through PM-5 source is present. PM-2 passed its frozen corpus gate at 3000 ms. PM-6 verified bounded foreground execution, disposable PostgreSQL persistence/rollback/privacy, live-provider corrections and physical payload parsing. The full spoken Android flow, full held-out persistence acceptance, real notification delivery and controlled cohort rollout remain pending; the feature is not released.

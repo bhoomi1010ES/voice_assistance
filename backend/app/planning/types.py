@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -111,8 +112,26 @@ class PlanningReceipt:
     has_changes: bool = False
     text_summary: str = ""
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> PlanningReceipt:
+        return cls(
+            batch_id=UUID(value["batch_id"]),
+            plan_id=UUID(value["plan_id"]) if value.get("plan_id") else None,
+            plan_name=value.get("plan_name"),
+            saved_actions=tuple(
+                {**item, "id": UUID(item["id"])} if item.get("id") else dict(item)
+                for item in value.get("saved_actions", ())
+            ),
+            duplicate_actions=tuple(value.get("duplicate_actions", ())),
+            pending_confirmations=tuple(value.get("pending_confirmations", ())),
+            failed_actions=tuple(value.get("failed_actions", ())),
+            clarifications=tuple(value.get("clarifications", ())),
+            has_changes=bool(value.get("has_changes")),
+            text_summary=value.get("text_summary", ""),
+        )
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "batch_id": str(self.batch_id),
             "plan_id": str(self.plan_id) if self.plan_id else None,
             "plan_name": self.plan_name,
@@ -124,4 +143,4 @@ class PlanningReceipt:
             "has_changes": self.has_changes,
             "text_summary": self.text_summary,
         }
-
+        return json.loads(json.dumps(payload, default=str))

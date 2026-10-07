@@ -22,7 +22,13 @@ from app.models import (
 )
 from app.planning.policy import PlanningConsent, planning_capabilities
 from app.planning.service import PlanningError, locked_state
-from app.planning.types import EXTRACTOR_VERSION, Decision, PlanningSnapshot, Target
+from app.planning.types import (
+    EXTRACTOR_VERSION,
+    Decision,
+    PlanningReceipt,
+    PlanningSnapshot,
+    Target,
+)
 
 
 async def _source(db, principal, session_id, turn_id, transcript):
@@ -144,6 +150,21 @@ async def claim(db, settings, principal, session_id, turn_id, transcript, now_ut
             "state_version": consent.state_version,
         },
     }
+    recent = await db.scalar(
+        select(PlanningAction.result_json)
+        .join(PlanningBatch, PlanningBatch.id == PlanningAction.batch_id)
+        .where(
+            PlanningBatch.user_id == principal.user_id,
+            PlanningBatch.session_id == session_id,
+            PlanningBatch.turn_id != turn_id,
+            PlanningBatch.status == "completed",
+            PlanningAction.user_id == principal.user_id,
+            PlanningAction.ordinal == 0,
+        )
+        .order_by(PlanningBatch.created_at.desc(), PlanningBatch.id.desc())
+        .limit(1)
+    )
+    recent_receipt = (recent or {}).get("_planning_receipt")
     snapshot = PlanningSnapshot(
         consent,
         now_utc,
@@ -153,6 +174,7 @@ async def claim(db, settings, principal, session_id, turn_id, transcript, now_ut
         tuple(targets),
         tuple(context),
         complete,
+        PlanningReceipt.from_dict(recent_receipt) if recent_receipt else None,
     )
     await db.commit()  # No model request holds a consent/voice/turn lock.
     return snapshot
@@ -167,6 +189,8 @@ async def finish(
     snapshot: PlanningSnapshot,
     decisions: tuple[Decision, ...],
     metrics: dict,
+    *,
+    persist_proposals: bool = True,
 ):
     state, consent = await _consent(db, principal, snapshot.consent.session_id)
     capabilities = planning_capabilities(settings, consent)
@@ -184,7 +208,7 @@ async def finish(
             **metrics,
         },
     }
-    if capabilities.persist_proposals and metrics["status"] == "validated":
+    if persist_proposals and capabilities.persist_proposals and metrics["status"] == "validated":
         batch_id = uuid4()
         db.add(
             PlanningBatch(
