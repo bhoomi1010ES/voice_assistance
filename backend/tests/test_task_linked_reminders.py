@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.api.dependencies import get_current_principal, get_db
+from app.core.clock import FrozenClock
+from app.core.config import Settings
 from app.llm.task_tools import (
     CompleteTaskArguments,
     CreateTaskArguments,
@@ -22,7 +24,7 @@ from app.llm.task_tools import (
     delete_task_handler,
 )
 from app.llm.tool_loop import ToolExecutionContext
-from app.main import app
+from app.main import create_app
 from app.models import (
     AuthSession,
     ConversationTurn,
@@ -39,6 +41,7 @@ from app.models import (
 )
 from app.services.auth import AuthPrincipal
 from app.services.task_linked_reminders import has_real_clock, sync_linked_reminder_for_task
+from tests.test_support import NoopSTTService
 
 
 class AsyncDB:
@@ -357,7 +360,11 @@ async def test_sync_linked_reminder_skips_and_cancels_on_eod_date_only(storage) 
         assert reminders[0].status == "cancelled"
 
 
-def test_rest_api_task_lifecycle_syncs_linked_reminder(storage) -> None:
+def test_rest_api_task_lifecycle_syncs_linked_reminder(storage, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.api.tasks.SystemClock", lambda: FrozenClock(datetime(2026, 10, 8, 0, 0, tzinfo=UTC))
+    )
+    app = create_app(settings=Settings(_env_file=None), stt_service=NoopSTTService())
     engine, owners = storage
 
     async def database():
@@ -386,9 +393,7 @@ def test_rest_api_task_lifecycle_syncs_linked_reminder(storage) -> None:
 
         with Session(engine, expire_on_commit=False) as sync:
             reminders = list(
-                sync.scalars(
-                    select(Reminder).where(Reminder.task_id == uuid.UUID(task_id))
-                ).all()
+                sync.scalars(select(Reminder).where(Reminder.task_id == uuid.UUID(task_id))).all()
             )
             assert len(reminders) == 1
             assert reminders[0].status == "scheduled"
@@ -406,9 +411,7 @@ def test_rest_api_task_lifecycle_syncs_linked_reminder(storage) -> None:
 
         with Session(engine, expire_on_commit=False) as sync:
             reminders = list(
-                sync.scalars(
-                    select(Reminder).where(Reminder.task_id == uuid.UUID(task_id))
-                ).all()
+                sync.scalars(select(Reminder).where(Reminder.task_id == uuid.UUID(task_id))).all()
             )
             assert len(reminders) == 1
             assert reminders[0].status == "scheduled"
@@ -419,9 +422,7 @@ def test_rest_api_task_lifecycle_syncs_linked_reminder(storage) -> None:
 
         with Session(engine, expire_on_commit=False) as sync:
             reminders = list(
-                sync.scalars(
-                    select(Reminder).where(Reminder.task_id == uuid.UUID(task_id))
-                ).all()
+                sync.scalars(select(Reminder).where(Reminder.task_id == uuid.UUID(task_id))).all()
             )
             assert len(reminders) == 1
             assert reminders[0].status == "cancelled"
@@ -471,9 +472,7 @@ def test_rest_api_task_lifecycle_syncs_linked_reminder(storage) -> None:
         assert del_resp.status_code == 204
 
         with Session(engine, expire_on_commit=False) as sync:
-            del_reminder = sync.scalar(
-                select(Reminder).where(Reminder.id == del_reminder_id)
-            )
+            del_reminder = sync.scalar(select(Reminder).where(Reminder.id == del_reminder_id))
             assert del_reminder is not None
             assert del_reminder.status == "cancelled"
 

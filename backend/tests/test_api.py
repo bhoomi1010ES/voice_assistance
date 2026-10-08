@@ -68,7 +68,10 @@ def test_health_does_not_require_dependencies() -> None:
 
 
 def test_ready_reports_missing_connection_urls_without_crashing() -> None:
-    app = create_app(settings=Settings(_env_file=None), stt_service=NoopSTTService())
+    app = create_app(
+        settings=Settings(_env_file=None, database_url=None, redis_url=None),
+        stt_service=NoopSTTService(),
+    )
 
     with TestClient(app) as client:
         response = client.get("/ready")

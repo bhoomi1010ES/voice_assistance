@@ -218,6 +218,15 @@ async function prepareTurn(
     eventId: 'session-ready',
     timestampMs: 1,
   });
+  // AUD-BARGE-01: session-ready requires a current server heartbeat before capture.
+  adapter.emitEvent({
+    event: 'server.pong',
+    sessionId: SESSION_ID,
+    turnId: null,
+    responseId: null,
+    eventId: 'audit-initial-heartbeat',
+    timestampMs: 1,
+  });
   await socket.startTurn();
   adapter.emitEvent({
     event: 'server.turn.ready',

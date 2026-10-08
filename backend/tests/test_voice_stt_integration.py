@@ -144,6 +144,7 @@ def _receive_turn_completed(
     deadline = time.monotonic() + timeout_seconds
     intermediate: list[dict] = []
     allowed_intermediate = {
+        "assistant.thinking",
         "assistant.text.delta",
         "assistant.text.final",
         "server.pong",
@@ -335,11 +336,12 @@ def test_stt_gateway_emits_partial_final_and_persists_metadata(stt_client) -> No
         )
         assert completed["llm_status"] == "completed"
         assert [event["type"] for event in intermediate] == [
+            "assistant.thinking",
             "assistant.text.delta",
             "assistant.text.final",
         ]
-        assert intermediate[0]["delta"] == "Deterministic response."
-        assert intermediate[1]["text"] == "Deterministic response."
+        assert intermediate[1]["delta"] == "Deterministic response."
+        assert intermediate[2]["text"] == "Deterministic response."
         socket.send_json({"type": "client.session.end", "reason": "test_complete"})
         assert socket.receive_json()["type"] == "server.session.ending"
         assert socket.receive_json()["type"] == "server.session.ended"
@@ -412,6 +414,7 @@ def test_stt_gateway_cancellation_allows_next_turn(stt_client) -> None:
         )
         assert completed["llm_status"] == "completed"
         assert [event["type"] for event in intermediate] == [
+            "assistant.thinking",
             "assistant.text.delta",
             "assistant.text.final",
         ]

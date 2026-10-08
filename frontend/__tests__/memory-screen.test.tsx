@@ -140,6 +140,68 @@ async function renderMemory(
   return { controller, renderer: renderer! };
 }
 
+test.each([5, 7])(
+  'AUD-MEM-04: latest five and View all preserve newest-first records (%i items)',
+  async count => {
+    const records = Array.from({ length: count }, (_, index) => ({
+      ...memory,
+      id: `audit-memory-${index}`,
+      content: `Audit memory ${index + 1}`,
+      created_at: `2026-01-0${index + 1}T00:00:00Z`,
+    }));
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(response(200, tokenResponse))
+      .mockResolvedValueOnce(
+        response(200, {
+          enabled: true,
+          knowledge_mode: 'rag',
+          okf_available: false,
+          timezone: 'UTC',
+          locale: 'en',
+          version: 0,
+        }),
+      )
+      .mockResolvedValueOnce(response(200, records));
+    const { renderer } = await renderMemory(fetchImpl);
+    const displayedContents = () =>
+      renderer.root
+        .findAllByProps({ testID: 'memory-item-content' })
+        .filter(item => typeof item.type === 'string')
+        .map(item => item.props.children);
+    const newestFirst = [...records].reverse().map(item => item.content);
+    expect(displayedContents()).toEqual(newestFirst.slice(0, 5));
+
+    if (count === 5) {
+      expect(
+        renderer.root.findAllByProps({ testID: 'memory-view-all' }),
+      ).toHaveLength(0);
+    } else {
+      await act(async () => {
+        renderer.root
+          .findByProps({ testID: 'memory-view-all' })
+          .props.onPress();
+      });
+      expect(displayedContents()).toEqual(newestFirst);
+      expect(
+        renderer.root.findByProps({ testID: 'memory-view-all' }).props
+          .accessibilityState.expanded,
+      ).toBe(true);
+      await act(async () => {
+        renderer.root
+          .findByProps({ testID: 'memory-view-all' })
+          .props.onPress();
+      });
+      expect(displayedContents()).toEqual(newestFirst.slice(0, 5));
+    }
+    // Expanding/collapsing the loaded list must not write or refetch records.
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      renderer.unmount();
+    });
+  },
+);
+
 test('memory UI reviews, edits, deletes, and excludes the active voice session', async () => {
   const updated = { ...memory, content: 'I prefer jasmine tea.' };
   const session = { id: 'voice-session-1' };

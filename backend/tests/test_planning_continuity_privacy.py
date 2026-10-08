@@ -3,18 +3,14 @@ from __future__ import annotations
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
-from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import (
     JSON,
     CheckConstraint,
-    Computed,
     ForeignKeyConstraint,
     MetaData,
     StaticPool,
-    String,
     Text,
     create_engine,
     event,
@@ -23,6 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
+from app.core.clock import SystemClock
 from app.core.config import Settings
 from app.llm.errors import LLMToolError
 from app.llm.plan_tools import register_plan_tools
@@ -55,7 +52,6 @@ from app.models import (
 )
 from app.planning.context_promotion import (
     MemoryPromotionError,
-    can_promote_context_to_memory,
     promote_plan_context_to_memory,
 )
 from app.planning.executor import PlanningExecutor
@@ -78,7 +74,6 @@ from app.planning.types import (
     Span,
     Target,
 )
-from app.core.clock import SystemClock
 from app.services.auth import AuthPrincipal
 from app.services.voice_confirmation import InMemoryVoiceConfirmationStore
 
@@ -98,7 +93,9 @@ def make_proposal(
     temporal = None
     if temporal_text and temporal_text in src_text:
         rel_start = src_text.index(temporal_text)
-        temporal = Span(start=start_offset + rel_start, length=len(temporal_text), text=temporal_text)
+        temporal = Span(
+            start=start_offset + rel_start, length=len(temporal_text), text=temporal_text
+        )
     elif temporal_text:
         temporal = Span(start=start_offset, length=len(temporal_text), text=temporal_text)
     return Proposal(
@@ -172,13 +169,13 @@ class AsyncDB:
         self.sync.delete(row)
 
 
-async def create_turn(db: AsyncDB, principal: AuthPrincipal, session_id: uuid.UUID, turn_number: int | None = None) -> uuid.UUID:
+async def create_turn(
+    db: AsyncDB, principal: AuthPrincipal, session_id: uuid.UUID, turn_number: int | None = None
+) -> uuid.UUID:
     turn_id = uuid.uuid4()
     if turn_number is None:
         existing = db.sync.scalars(
-            select(ConversationTurn.turn_number).where(
-                ConversationTurn.session_id == session_id
-            )
+            select(ConversationTurn.turn_number).where(ConversationTurn.session_id == session_id)
         ).all()
         turn_number = (max(existing) + 1) if existing else 1
     turn = ConversationTurn(
@@ -198,6 +195,7 @@ def storage():
     engine = create_engine(
         "sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
     )
+
     def on_connect(conn, _):
         conn.create_function("btrim", 1, lambda s: s.strip() if s is not None else "")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -333,6 +331,8 @@ def settings(storage):
         plan_execution_mode="execute",
         plan_confirmation_mode="voice",
         memory_write_enabled=True,
+        stt_api_key="audit-synthetic-memory-key",
+        embedding_api_url="https://memory.invalid/v1/embeddings",
         voice_confirmation_ttl_seconds=300,
         voice_default_timezone="America/Los_Angeles",
     )
@@ -367,9 +367,7 @@ async def test_pronoun_resolution_against_recent_receipt(storage, tool_executor,
 
         recent_receipt = PlanningReceipt(
             batch_id=uuid.uuid4(),
-            saved_actions=(
-                {"id": task.id, "action": "CREATE_TASK", "title": task.title},
-            ),
+            saved_actions=({"id": task.id, "action": "CREATE_TASK", "title": task.title},),
             has_changes=True,
         )
 
@@ -387,9 +385,7 @@ async def test_pronoun_resolution_against_recent_receipt(storage, tool_executor,
             timezone="America/Los_Angeles",
             active_plan_id=None,
             plans=(),
-            targets=(
-                Target(task.id, "task", task.title, None, task.revision, task.due_at),
-            ),
+            targets=(Target(task.id, "task", task.title, None, task.revision, task.due_at),),
             context=(),
             recent_receipt=recent_receipt,
         )
@@ -471,9 +467,7 @@ async def test_pronoun_resolution_single_scoped_candidate(storage, tool_executor
             timezone="America/Los_Angeles",
             active_plan_id=None,
             plans=(),
-            targets=(
-                Target(task.id, "task", task.title, None, task.revision, None),
-            ),
+            targets=(Target(task.id, "task", task.title, None, task.revision, None),),
             context=(),
             recent_receipt=None,  # No recent receipt, but only 1 candidate
         )
@@ -679,6 +673,7 @@ async def test_duplicate_paraphrases(storage):
             context=(),
         )
         from app.planning.resolution import resolve_time
+
         target_due, _, _ = resolve_time(dummy_prop, dummy_snap)
 
         task = Task(
@@ -704,9 +699,7 @@ async def test_duplicate_paraphrases(storage):
             timezone="America/Los_Angeles",
             active_plan_id=None,
             plans=(),
-            targets=(
-                Target(task.id, "task", task.title, None, 1, task.due_at),
-            ),
+            targets=(Target(task.id, "task", task.title, None, 1, task.due_at),),
             context=(),
         )
 
@@ -1049,7 +1042,9 @@ async def test_replay_after_midnight_preserves_scheduled_time(storage, tool_exec
         target_due = now_utc + timedelta(days=2)
 
         dec = make_decision(
-            proposal=make_proposal("CREATE_TASK", "deploy release", text="deploy release tomorrow at 5pm"),
+            proposal=make_proposal(
+                "CREATE_TASK", "deploy release", text="deploy release tomorrow at 5pm"
+            ),
             disposition="AUTO",
             scheduled_at=target_due,
         )
@@ -1168,7 +1163,9 @@ async def test_confirmed_archive_plan_semantics(storage, tool_executor, settings
     engine, owners = storage
     principal, session_id = owners[0]
     confirmation_store = InMemoryVoiceConfirmationStore()
-    planning_executor = PlanningExecutor(settings, tool_executor, confirmation_service=confirmation_store)
+    planning_executor = PlanningExecutor(
+        settings, tool_executor, confirmation_service=confirmation_store
+    )
 
     with Session(engine, expire_on_commit=False) as sync_db:
         db = AsyncDB(sync_db)
@@ -1179,7 +1176,9 @@ async def test_confirmed_archive_plan_semantics(storage, tool_executor, settings
         db.add(plan)
         await db.flush()
 
-        task = Task(user_id=principal.user_id, plan_id=plan.id, title="Linked task", status="pending")
+        task = Task(
+            user_id=principal.user_id, plan_id=plan.id, title="Linked task", status="pending"
+        )
         db.add(task)
         await db.commit()
 
@@ -1202,7 +1201,9 @@ async def test_confirmed_archive_plan_semantics(storage, tool_executor, settings
         )
 
         dec_archive = make_decision(
-            proposal=make_proposal("ARCHIVE_PLAN", "Archive project to archive", classification="CORRECTION"),
+            proposal=make_proposal(
+                "ARCHIVE_PLAN", "Archive project to archive", classification="CORRECTION"
+            ),
             disposition="CONFIRM",
             reason="consequential",
             target_id=plan.id,
@@ -1233,6 +1234,7 @@ async def test_confirmed_archive_plan_semantics(storage, tool_executor, settings
 
         # Execute confirmed tool
         from app.llm.plan_tools import UpdatePlanArguments, update_plan_handler
+
         ctx = ToolExecutionContext(
             db=db,
             user_id=principal.user_id,
@@ -1320,13 +1322,17 @@ async def test_stale_undo_fails_with_revision_conflict(storage):
 
 
 @pytest.mark.asyncio
-async def test_pm4_gate_realistic_multi_turn_continuity_and_privacy(storage, tool_executor, settings):
+async def test_pm4_gate_realistic_multi_turn_continuity_and_privacy(
+    storage, tool_executor, settings
+):
     """PM-4 Gate: Multi-turn continuity preserves state across turns and cannot cross privacy boundaries."""
     engine, owners = storage
     principal_a, session_a = owners[0]
     principal_b, session_b = owners[1]
     confirmation_store = InMemoryVoiceConfirmationStore()
-    planning_executor = PlanningExecutor(settings, tool_executor, confirmation_service=confirmation_store)
+    planning_executor = PlanningExecutor(
+        settings, tool_executor, confirmation_service=confirmation_store
+    )
 
     with Session(engine, expire_on_commit=False) as sync_db:
         db = AsyncDB(sync_db)
@@ -1353,7 +1359,9 @@ async def test_pm4_gate_realistic_multi_turn_continuity_and_privacy(storage, too
         )
 
         dec_plan = make_decision(
-            proposal=make_proposal("CREATE_PLAN", "Apollo", text="start project Apollo", classification="PROJECT"),
+            proposal=make_proposal(
+                "CREATE_PLAN", "Apollo", text="start project Apollo", classification="PROJECT"
+            ),
             disposition="AUTO",
             plan_ordinal=0,
         )
@@ -1384,16 +1392,22 @@ async def test_pm4_gate_realistic_multi_turn_continuity_and_privacy(storage, too
         apollo_id = receipt1.plan_id
         deck_task_id = receipt1.saved_actions[1]["id"]
         # Creating/selecting a plan advances durable consent; later turns read fresh state.
-        state = await db.scalar(select(PlanningSession).where(
-            PlanningSession.session_id == session_a,
-            PlanningSession.user_id == principal_a.user_id,
-        ))
+        state = await db.scalar(
+            select(PlanningSession).where(
+                PlanningSession.session_id == session_a,
+                PlanningSession.user_id == principal_a.user_id,
+            )
+        )
         assert state.active_plan_id == apollo_id
         assert state.state_version == 2
-        snap1 = replace(snap1, consent=replace(
-            snap1.consent, state_version=state.state_version,
-            expected_state_version=state.state_version,
-        ))
+        snap1 = replace(
+            snap1,
+            consent=replace(
+                snap1.consent,
+                state_version=state.state_version,
+                expected_state_version=state.state_version,
+            ),
+        )
 
         # Turn 2: Pronoun Rescheduling: "Move that to Friday at 3pm"
         turn2_id = await create_turn(db, principal_a, session_a)
@@ -1404,7 +1418,16 @@ async def test_pm4_gate_realistic_multi_turn_continuity_and_privacy(storage, too
             timezone="America/Los_Angeles",
             active_plan_id=apollo_id,
             plans=(Target(apollo_id, "plan", "Apollo", apollo_id, 1),),
-            targets=(Target(deck_task_id, "task", deck_task.title, apollo_id, deck_task.revision, deck_task.due_at),),
+            targets=(
+                Target(
+                    deck_task_id,
+                    "task",
+                    deck_task.title,
+                    apollo_id,
+                    deck_task.revision,
+                    deck_task.due_at,
+                ),
+            ),
             context=(),
             recent_receipt=receipt1,
         )
@@ -1485,7 +1508,16 @@ async def test_pm4_gate_realistic_multi_turn_continuity_and_privacy(storage, too
             timezone="America/Los_Angeles",
             active_plan_id=apollo_id,
             plans=(Target(apollo_id, "plan", "Apollo", apollo_id, 1),),
-            targets=(Target(deck_task_id, "task", deck_task.title, apollo_id, deck_task.revision, deck_task.due_at),),
+            targets=(
+                Target(
+                    deck_task_id,
+                    "task",
+                    deck_task.title,
+                    apollo_id,
+                    deck_task.revision,
+                    deck_task.due_at,
+                ),
+            ),
             context=(),
             recent_receipt=receipt2,
         )

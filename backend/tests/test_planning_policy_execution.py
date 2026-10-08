@@ -12,14 +12,10 @@ Verifies:
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import json
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
-from typing import Any
 
 import pytest
 from sqlalchemy import JSON, ForeignKeyConstraint, MetaData, create_engine, event, select
@@ -27,9 +23,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from app.core.clock import SystemClock
+from app.core.clock import FrozenClock, SystemClock
 from app.core.config import Settings
-from app.llm.errors import LLMToolError
 from app.llm.plan_tools import register_plan_tools
 from app.llm.reminder_tools import register_reminder_tools
 from app.llm.task_tools import register_task_tools
@@ -62,11 +57,9 @@ from app.planning.executor import PlanningExecutor
 from app.planning.policy import PlanningConsent
 from app.planning.types import (
     Decision,
-    PlanningReceipt,
     PlanningSnapshot,
     Proposal,
     Span,
-    Target,
 )
 from app.services.auth import AuthPrincipal
 from app.services.voice_confirmation import InMemoryVoiceConfirmationStore
@@ -153,13 +146,13 @@ class AsyncDB:
         self.sync.refresh(row)
 
 
-async def create_turn(db: AsyncDB, principal: AuthPrincipal, session_id: uuid.UUID, turn_number: int | None = None) -> uuid.UUID:
+async def create_turn(
+    db: AsyncDB, principal: AuthPrincipal, session_id: uuid.UUID, turn_number: int | None = None
+) -> uuid.UUID:
     turn_id = uuid.uuid4()
     if turn_number is None:
         existing = db.sync.scalars(
-            select(ConversationTurn.turn_number).where(
-                ConversationTurn.session_id == session_id
-            )
+            select(ConversationTurn.turn_number).where(ConversationTurn.session_id == session_id)
         ).all()
         turn_number = (max(existing) + 1) if existing else 1
     turn = ConversationTurn(
@@ -288,6 +281,7 @@ def settings(storage):
 # Item 1: Action-bound authorization grants & Normal-mode regression
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_action_bound_grant_authorizes_plan_execution(storage, tool_executor):
     engine, owners = storage
@@ -322,7 +316,7 @@ async def test_action_bound_grant_authorizes_plan_execution(storage, tool_execut
             response_id=uuid.uuid4(),
             scopes=frozenset({"tasks:write", "tasks:read"}),
             db=db,
-            clock=SystemClock(),
+            clock=FrozenClock(datetime(2026, 10, 6, 12, 0, tzinfo=UTC)),
             user_timezone="America/Los_Angeles",
             planning_grants=(grant,),
         )
@@ -448,7 +442,7 @@ async def test_normal_mode_confirmation_regression(storage, tool_executor):
             response_id=uuid.uuid4(),
             scopes=frozenset({"tasks:write", "tasks:read", "reminders:write", "plans:write"}),
             db=db,
-            clock=SystemClock(),
+            clock=FrozenClock(datetime(2026, 10, 6, 12, 0, tzinfo=UTC)),
             user_timezone="America/Los_Angeles",
             planning_grants=(),  # Normal mode
         )
@@ -463,12 +457,15 @@ async def test_normal_mode_confirmation_regression(storage, tool_executor):
             call = LLMToolCall(tool_call_id=f"call_{uuid.uuid4()}", name=tool_name, arguments=args)
             result = await executor.execute(call, context=normal_context)
             assert result.success is False
-            assert result.error_code == "llm_tool_confirmation_required", f"{tool_name} must require confirmation"
+            assert result.error_code == "llm_tool_confirmation_required", (
+                f"{tool_name} must require confirmation"
+            )
 
 
 # ---------------------------------------------------------------------------
 # Item 2: Bounded planner budget
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_normal_mode_turn_rate_limit_regression(storage, tool_executor):
@@ -480,8 +477,12 @@ async def test_normal_mode_turn_rate_limit_regression(storage, tool_executor):
         db = AsyncDB(sync_db)
         turn_id = await create_turn(db, principal, session_id)
 
-        call1 = LLMToolCall(tool_call_id="call_1", name="create_task", arguments={"title": "Task 1"})
-        call2 = LLMToolCall(tool_call_id="call_2", name="create_task", arguments={"title": "Task 2"})
+        call1 = LLMToolCall(
+            tool_call_id="call_1", name="create_task", arguments={"title": "Task 1"}
+        )
+        call2 = LLMToolCall(
+            tool_call_id="call_2", name="create_task", arguments={"title": "Task 2"}
+        )
 
         # Normal mode without planner_budget: create_task allows 1 call/turn
         normal_context = ToolExecutionContext(
@@ -540,7 +541,9 @@ async def test_planner_budget_allows_multiple_actions_per_turn(storage, tool_exe
                 planning_grants=(grant,),
                 planner_budget=budget,
             )
-            call = LLMToolCall(tool_call_id=f"plan_act_{action_id}", name="create_task", arguments=args)
+            call = LLMToolCall(
+                tool_call_id=f"plan_act_{action_id}", name="create_task", arguments=args
+            )
             res = await executor.execute(call, context=ctx)
             assert res.success is True, f"Action {i + 1} failed: {res.error_code}"
 
@@ -550,6 +553,7 @@ async def test_planner_budget_allows_multiple_actions_per_turn(storage, tool_exe
 # ---------------------------------------------------------------------------
 # Item 3: Route plan/task/reminder/context writes through validated handlers
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_plan_tools_ownership_and_validation(storage, tool_executor):
@@ -564,7 +568,11 @@ async def test_plan_tools_ownership_and_validation(storage, tool_executor):
 
         # 1. create_plan
         action_id = uuid.uuid4()
-        plan_args = {"name": "XYZ Project", "goal": "Build MVP", "deadline_at": "2026-10-09T23:59:00Z"}
+        plan_args = {
+            "name": "XYZ Project",
+            "goal": "Build MVP",
+            "deadline_at": "2026-10-09T23:59:00Z",
+        }
         grant = PlanningAuthorization(
             user_id=principal1.user_id,
             session_id=session_id1,
@@ -585,7 +593,9 @@ async def test_plan_tools_ownership_and_validation(storage, tool_executor):
             clock=SystemClock(),
             planning_grants=(grant,),
         )
-        call = LLMToolCall(tool_call_id=f"plan_act_{action_id}", name="create_plan", arguments=plan_args)
+        call = LLMToolCall(
+            tool_call_id=f"plan_act_{action_id}", name="create_plan", arguments=plan_args
+        )
         res = await executor.execute(call, context=ctx)
         assert res.success is True
         res_data = json.loads(res.content)
@@ -616,7 +626,9 @@ async def test_plan_tools_ownership_and_validation(storage, tool_executor):
             clock=SystemClock(),
             planning_grants=(grant2,),
         )
-        call2 = LLMToolCall(tool_call_id=f"plan_act_{act2}", name="add_plan_context", arguments=ctx_args)
+        call2 = LLMToolCall(
+            tool_call_id=f"plan_act_{act2}", name="add_plan_context", arguments=ctx_args
+        )
         res2 = await executor.execute(call2, context=ctx2)
         assert res2.success is True
         assert json.loads(res2.content)["result"]["status"] == "created"
@@ -645,7 +657,9 @@ async def test_plan_tools_ownership_and_validation(storage, tool_executor):
             clock=SystemClock(),
             planning_grants=(grant3,),
         )
-        call3 = LLMToolCall(tool_call_id=f"plan_act_{act3}", name="add_plan_context", arguments=ctx_args)
+        call3 = LLMToolCall(
+            tool_call_id=f"plan_act_{act3}", name="add_plan_context", arguments=ctx_args
+        )
         res2_dup = await executor.execute(call3, context=ctx3)
         assert res2_dup.success is True
         assert json.loads(res2_dup.content)["result"]["status"] == "duplicate"
@@ -674,6 +688,7 @@ async def test_plan_tools_ownership_and_validation(storage, tool_executor):
 # ---------------------------------------------------------------------------
 # Item 4: Stable replay identity, semantic duplicate resolution, revisions
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_stable_replay_identity_returns_cached_result(storage, tool_registry):
@@ -865,6 +880,7 @@ async def test_target_revision_protection(storage, tool_executor, settings):
 # Item 5: Transaction group commits & partial outcomes
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_coupled_transaction_group_atomic_rollback(storage, tool_executor, settings):
     engine, owners = storage
@@ -904,7 +920,9 @@ async def test_coupled_transaction_group_atomic_rollback(storage, tool_executor,
             scheduled_at=datetime(2026, 10, 9, 23, 59, tzinfo=UTC),
         )
         dec_reminder = make_decision(
-            proposal=make_proposal("CREATE_REMINDER", "Client presentation", classification="REMINDER"),
+            proposal=make_proposal(
+                "CREATE_REMINDER", "Client presentation", classification="REMINDER"
+            ),
             disposition="AUTO",
             reason="eligible",
             scheduled_at=datetime(2020, 1, 1, 12, 0, tzinfo=UTC),  # Past trigger -> error!
@@ -928,7 +946,9 @@ async def test_coupled_transaction_group_atomic_rollback(storage, tool_executor,
 
         # Neither task nor reminder was committed in DB
         tasks = (await db.scalars(select(Task).where(Task.user_id == principal.user_id))).all()
-        reminders = (await db.scalars(select(Reminder).where(Reminder.user_id == principal.user_id))).all()
+        reminders = (
+            await db.scalars(select(Reminder).where(Reminder.user_id == principal.user_id))
+        ).all()
         assert len(tasks) == 0
         assert len(reminders) == 0
 
@@ -972,7 +992,9 @@ async def test_independent_transaction_groups_partial_outcomes(storage, tool_exe
         )
         # Independent Action 2: Failing reminder (past date)
         dec2 = make_decision(
-            proposal=make_proposal("CREATE_REMINDER", "Unrelated reminder in past", classification="REMINDER"),
+            proposal=make_proposal(
+                "CREATE_REMINDER", "Unrelated reminder in past", classification="REMINDER"
+            ),
             disposition="AUTO",
             reason="eligible",
             scheduled_at=datetime(2020, 1, 1, 12, 0, tzinfo=UTC),
@@ -1006,13 +1028,18 @@ async def test_independent_transaction_groups_partial_outcomes(storage, tool_exe
 # Item 6: Consequential operations queued through confirmation machinery
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
-async def test_consequential_operations_never_execute_automatically(storage, tool_executor, settings):
+async def test_consequential_operations_never_execute_automatically(
+    storage, tool_executor, settings
+):
     engine, owners = storage
     principal, session_id = owners[0]
     executor = tool_executor
     confirmation_store = InMemoryVoiceConfirmationStore()
-    planning_executor = PlanningExecutor(settings, executor, confirmation_service=confirmation_store)
+    planning_executor = PlanningExecutor(
+        settings, executor, confirmation_service=confirmation_store
+    )
 
     with Session(engine, expire_on_commit=False) as sync_db:
         db = AsyncDB(sync_db)
@@ -1043,7 +1070,9 @@ async def test_consequential_operations_never_execute_automatically(storage, too
 
         # Consequential proposal: DELETE_TASK
         dec_del = make_decision(
-            proposal=make_proposal("DELETE_TASK", "Critical task to delete", classification="CORRECTION"),
+            proposal=make_proposal(
+                "DELETE_TASK", "Critical task to delete", classification="CORRECTION"
+            ),
             disposition="CONFIRM",
             reason="consequential",
             target_id=task.id,
@@ -1083,6 +1112,7 @@ async def test_consequential_operations_never_execute_automatically(storage, too
 # PM-3 Gate: Enabled conversational turn multi-record execution
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_pm3_gate_multi_record_conversational_turn(storage, tool_executor, settings):
     """GATE: An enabled conversational turn creates multiple intended records once,
@@ -1092,7 +1122,9 @@ async def test_pm3_gate_multi_record_conversational_turn(storage, tool_executor,
     principal, session_id = owners[0]
     executor = tool_executor
     confirmation_store = InMemoryVoiceConfirmationStore()
-    planning_executor = PlanningExecutor(settings, executor, confirmation_service=confirmation_store)
+    planning_executor = PlanningExecutor(
+        settings, executor, confirmation_service=confirmation_store
+    )
 
     with Session(engine, expire_on_commit=False) as sync_db:
         db = AsyncDB(sync_db)
@@ -1138,7 +1170,9 @@ async def test_pm3_gate_multi_record_conversational_turn(storage, tool_executor,
             scheduled_at=datetime(2026, 10, 7, 23, 59, tzinfo=UTC),
         )
         dec_task2 = make_decision(
-            proposal=make_proposal("CREATE_TASK", "Presentation and report", classification="DEADLINE"),
+            proposal=make_proposal(
+                "CREATE_TASK", "Presentation and report", classification="DEADLINE"
+            ),
             disposition="AUTO",
             reason="eligible",
             plan_ordinal=0,
@@ -1194,16 +1228,22 @@ async def test_pm3_gate_multi_record_conversational_turn(storage, tool_executor,
         ).all()
         assert len(tasks) == 2
         assert tasks[0].title == "Initial backend"
-        assert tasks[0].due_at.replace(tzinfo=UTC) == datetime(2026, 10, 7, 23, 59, tzinfo=UTC)  # Tomorrow
+        assert tasks[0].due_at.replace(tzinfo=UTC) == datetime(
+            2026, 10, 7, 23, 59, tzinfo=UTC
+        )  # Tomorrow
         assert tasks[1].title == "Presentation and report"
-        assert tasks[1].due_at.replace(tzinfo=UTC) == datetime(2026, 10, 9, 23, 59, tzinfo=UTC)  # Friday
+        assert tasks[1].due_at.replace(tzinfo=UTC) == datetime(
+            2026, 10, 9, 23, 59, tzinfo=UTC
+        )  # Friday
 
         reminders = (
             await db.scalars(select(Reminder).where(Reminder.plan_id == receipt.plan_id))
         ).all()
         assert len(reminders) == 1
         assert reminders[0].title == "Client meeting"
-        assert reminders[0].trigger_at.replace(tzinfo=UTC) == datetime(2026, 10, 9, 23, 0, tzinfo=UTC)  # Friday 4 PM
+        assert reminders[0].trigger_at.replace(tzinfo=UTC) == datetime(
+            2026, 10, 9, 23, 0, tzinfo=UTC
+        )  # Friday 4 PM
 
         # 4. Truthful grounded receipt text summary
         assert "Created the 'XYZ' plan" in receipt.text_summary

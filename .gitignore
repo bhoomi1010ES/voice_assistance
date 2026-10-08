@@ -184,3 +184,24 @@ docs/latency_runs/
 !/docs/20260916T134307Z_latency_instrumentation_fix.md
 # Keep the accepted local Phase 6A baseline artifact outside Git
 /scratch/phase6a_stage0_hybrid_baseline_20260915.json
+
+# Local QA audit additions and generated scratch data.
+# Existing tracked test suites remain versioned for CI and fresh clones.
+/backend/tests/audit_isolation.py
+/backend/tests/test_audit_*.py
+/frontend/__tests__/audit-*.test.ts
+/backend/scripts/run_qa_audit.py
+/docs/testing/
+/scratch/
+/backend/scratch/
+
+# Generated Gradle caches and Android build output.
+# Keep build.gradle, settings.gradle, gradle.properties and the wrapper tracked.
+**/.gradle*/
+**/.kotlin/
+**/build/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class

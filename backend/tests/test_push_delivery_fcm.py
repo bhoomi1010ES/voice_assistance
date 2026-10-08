@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
-import uuid
 from pathlib import Path
 
 import httpx
@@ -27,14 +25,9 @@ MOCK_PRIVATE_KEY = _RSA_KEY.private_bytes(
 
 
 @pytest.fixture
-def local_tmp_dir() -> Path:
-    scratch_dir = Path(__file__).resolve().parents[2] / "scratch" / "pytest_temp"
-    base = scratch_dir / f"fcm_test_{uuid.uuid4().hex}"
-    base.mkdir(parents=True, exist_ok=True)
-    try:
-        yield base
-    finally:
-        shutil.rmtree(base, ignore_errors=True)
+def local_tmp_dir(tmp_path: Path) -> Path:
+    # AUD-PUSH-01: honor pytest's isolated writable basetemp on Windows.
+    return tmp_path
 
 
 def _sample_service_account() -> dict[str, str]:
@@ -406,4 +399,3 @@ async def test_fcm_send_generic_4xx_maps_to_push_provider_error():
     assert result.retryable is False
     assert result.failure_code == "push_provider_error"
     assert "device-token-123" not in (result.failure_reason or "")
-

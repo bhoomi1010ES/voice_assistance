@@ -144,6 +144,15 @@ async function prepare(socket: VoiceSocket, adapter: TtsAdapter) {
     eventId: 'session-ready',
     timestampMs: 1,
   });
+  // AUD-TTS-01: session-ready requires a current server heartbeat before capture.
+  adapter.emit({
+    event: 'server.pong',
+    sessionId: SESSION_ID,
+    turnId: null,
+    responseId: null,
+    eventId: 'audit-initial-heartbeat',
+    timestampMs: 1,
+  });
   await socket.startTurn();
   adapter.emit({
     event: 'server.turn.ready',

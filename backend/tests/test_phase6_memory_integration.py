@@ -38,6 +38,20 @@ from tests.test_support import NoopSTTService
 pytestmark = pytest.mark.integration
 
 
+def _memory_settings(base: Settings | None = None) -> Settings:
+    """Explicit capability settings for direct DB tests; no provider is constructed."""
+    base = base or Settings()
+    return Settings(
+        database_url=base.database_url,
+        redis_url=base.redis_url,
+        stt_api_key="audit-synthetic-memory-key",
+        memory_write_enabled=True,
+        memory_retrieval_mode="inject",
+        embedding_api_url="https://memory.invalid/v1/embeddings",
+        rerank_api_url="https://memory.invalid/v1/rerank",
+    )
+
+
 @pytest.fixture
 def resource_client():
     if os.getenv("RUN_INTEGRATION_TESTS") != "1":
@@ -315,7 +329,7 @@ def test_explicit_extraction_job_is_idempotent_and_owner_scoped(resource_client)
     _client, settings, emails = resource_client
     email = _email("phase6-worker")
     emails.add(email)
-    asyncio.run(_run_extraction_job(settings, email))
+    asyncio.run(_run_extraction_job(_memory_settings(settings), email))
 
 
 def test_optional_retrieval_failure_leaves_database_session_usable(
@@ -335,7 +349,7 @@ def test_optional_retrieval_failure_leaves_database_session_usable(
         engine = create_async_engine(settings.database_dsn)
         factory = async_sessionmaker(engine, expire_on_commit=False)
         async with factory() as session:
-            result = await MemoryRetrievalService(settings).retrieve(
+            result = await MemoryRetrievalService(_memory_settings(settings)).retrieve(
                 session,
                 user_id=uuid.uuid4(),
                 query="where do I work?",
@@ -553,7 +567,7 @@ async def _run_extraction_job(settings: Settings, email: str) -> None:
 def test_excluded_session_source_is_filtered_from_rag() -> None:
     if os.getenv("RUN_INTEGRATION_TESTS") != "1":
         pytest.skip("Set RUN_INTEGRATION_TESTS=1 to run RAG lifecycle integration checks.")
-    settings = Settings(memory_retrieval_mode="inject")
+    settings = _memory_settings()
     if not settings.database_url:
         pytest.skip("Database is not configured.")
     email = _email("phase6-rag-excluded-source")
@@ -654,7 +668,7 @@ def test_excluded_session_source_is_filtered_from_rag() -> None:
 def test_rag_fts_matches_reordered_query_terms_without_matching_unrelated_project() -> None:
     if os.getenv("RUN_INTEGRATION_TESTS") != "1":
         pytest.skip("Set RUN_INTEGRATION_TESTS=1 to run RAG lexical integration checks.")
-    settings = Settings(memory_retrieval_mode="inject")
+    settings = _memory_settings()
     if not settings.database_url:
         pytest.skip("Database is not configured.")
     email = _email("phase6-rag-reordered-fts")
