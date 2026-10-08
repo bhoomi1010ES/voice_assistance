@@ -1,5 +1,6 @@
+import { AppIcon } from '../ui/AppIcon';
 import React, { useEffect, useRef } from 'react';
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Pressable, StyleSheet, View } from 'react-native';
 import { useAppTheme } from '../../design/ThemeProvider';
 import { radii, shadows, spacing } from '../../design/tokens';
 import {
@@ -146,7 +147,7 @@ export function VoiceOrbView({
         style={[
           styles.ambientRing,
           {
-            backgroundColor: 'rgba(235, 195, 245, 0.25)',
+            backgroundColor: colors.orbRipple,
             transform: [{ scale: pulseAnim }],
           },
         ]}
@@ -158,7 +159,7 @@ export function VoiceOrbView({
         style={[
           styles.middleHalo,
           {
-            backgroundColor: 'rgba(240, 185, 230, 0.35)',
+            backgroundColor: colors.orbGlow,
           },
         ]}
       />
@@ -180,13 +181,13 @@ export function VoiceOrbView({
         ]}
         testID={testID}
       >
-        {/* Layer 1: Base violet-magenta tone */}
+        {/* Layer 1: Deep teal base */}
         <View style={styles.sphereBase} />
 
-        {/* Layer 2: Coral / Peach warm bottom-right glow */}
+        {/* Layer 2: Cyan bottom-right glow */}
         <View style={styles.sphereCoralGlow} />
 
-        {/* Layer 3: Vibrant pink-magenta radial glow */}
+        {/* Layer 3: Teal ambient glow */}
         <View style={styles.sphereMagentaGlow} />
 
         {/* Layer 4: Specular gloss highlight crescent */}
@@ -194,14 +195,7 @@ export function VoiceOrbView({
 
         {/* Center white microphone icon */}
         <View style={styles.micContainer}>
-          {/* Microphone capsule */}
-          <View style={styles.micCapsule} />
-          {/* Microphone pickup cradle arc */}
-          <View style={styles.micCradle} />
-          {/* Vertical stem */}
-          <View style={styles.micStem} />
-          {/* Base plate */}
-          <View style={styles.micBase} />
+          <AppIcon name="Mic" size={62} color="#FFFFFF" strokeWidth={2.3} />
         </View>
       </Pressable>
     </View>
@@ -234,7 +228,7 @@ const styles = StyleSheet.create({
     width: 140,
   },
   waveformBar: {
-    backgroundColor: '#E5A5D8',
+    backgroundColor: '#35CED5',
     borderRadius: radii.full,
     width: 3.5,
   },
@@ -253,6 +247,8 @@ const styles = StyleSheet.create({
     zIndex: 3,
   },
   orbCore: {
+    borderWidth: 5,
+    borderColor: '#35DEE4',
     alignItems: 'center',
     borderRadius: 72,
     elevation: 12,
@@ -260,7 +256,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     overflow: 'hidden',
     position: 'relative',
-    shadowColor: '#E056FD',
+    shadowColor: '#09A8AD',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.38,
     shadowRadius: 22,
@@ -268,7 +264,7 @@ const styles = StyleSheet.create({
     zIndex: 4,
   },
   sphereBase: {
-    backgroundColor: '#7B61FF',
+    backgroundColor: '#007789',
     bottom: 0,
     left: 0,
     position: 'absolute',
@@ -276,7 +272,7 @@ const styles = StyleSheet.create({
     top: 0,
   },
   sphereMagentaGlow: {
-    backgroundColor: '#E056FD',
+    backgroundColor: '#007F97',
     borderRadius: 72,
     height: 144,
     left: 8,
@@ -286,7 +282,7 @@ const styles = StyleSheet.create({
     width: 144,
   },
   sphereCoralGlow: {
-    backgroundColor: '#FFA07A',
+    backgroundColor: '#27E0E5',
     borderRadius: 60,
     bottom: -15,
     height: 120,
@@ -296,7 +292,7 @@ const styles = StyleSheet.create({
     width: 120,
   },
   sphereSpecularHighlight: {
-    backgroundColor: 'rgba(255, 255, 255, 0.42)',
+    backgroundColor: 'rgba(184, 253, 255, 0.32)',
     borderRadius: radii.full,
     height: 52,
     left: 20,
@@ -310,34 +306,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 10,
-  },
-  micCapsule: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 11,
-    height: 34,
-    width: 22,
-    zIndex: 2,
-  },
-  micCradle: {
-    borderBottomLeftRadius: 18,
-    borderBottomRightRadius: 18,
-    borderColor: '#FFFFFF',
-    borderTopWidth: 0,
-    borderWidth: 3.5,
-    height: 24,
-    marginTop: -14,
-    width: 36,
-    zIndex: 1,
-  },
-  micStem: {
-    backgroundColor: '#FFFFFF',
-    height: 9,
-    width: 3.5,
-  },
-  micBase: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 2,
-    height: 3.5,
-    width: 18,
   },
 });

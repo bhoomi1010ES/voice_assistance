@@ -42,16 +42,9 @@ export function SettingsScreen({
         name={profile?.name || 'Voice Assistant User'}
         onPress={onOpenAccount}
         status={profile?.status}
+        testID="settings-account"
       />
       <SettingsSection title="Account & devices">
-        <SettingsRow
-          icon={<SettingsIcon kind="profile" />}
-          onPress={onOpenAccount}
-          showDivider
-          subtitle="Manage name and account details"
-          testID="settings-account"
-          title={strings.settings.account}
-        />
         <SettingsRow
           icon={<SettingsIcon kind="device" />}
           onPress={onOpenSessions}

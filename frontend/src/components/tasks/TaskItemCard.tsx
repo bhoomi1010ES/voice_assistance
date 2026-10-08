@@ -1,3 +1,4 @@
+import { AppIcon } from '../ui/AppIcon';
 import React from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { AppText, Card } from '../ui/Primitives';
@@ -57,7 +58,9 @@ export function TaskItemCard({
                 : null,
             ]}
           >
-            {isCompleted ? <AppText style={styles.checkmark}>✓</AppText> : null}
+            {isCompleted ? (
+              <AppIcon name="Check" size={18} color={'#FFFFFF'} />
+            ) : null}
           </View>
         </Pressable>
         <View style={styles.content}>
@@ -142,7 +145,7 @@ const styles = StyleSheet.create({
     paddingTop: 4,
   },
   checkbox: {
-    borderColor: '#DCC8C7',
+    borderColor: '#176BDD',
     width: 26,
     height: 26,
     borderRadius: 15,

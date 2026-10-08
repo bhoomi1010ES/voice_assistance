@@ -1,4 +1,5 @@
 import ReactTestRenderer, { act } from 'react-test-renderer';
+import { ScrollView } from 'react-native';
 import { AuthController } from '../src/auth/AuthController';
 import { AuthProvider } from '../src/auth/AuthProvider';
 import { AuthTokenStorage } from '../src/auth/secureStorage';
@@ -426,44 +427,65 @@ test('does not render a stop turn control', async () => {
   await act(async () => renderer!.unmount());
 });
 
-test('shows finish turn while recording and pressing it commits the turn', async () => {
-  const fetchImpl = jest.fn().mockResolvedValue(response(200, tokenResponse));
-  const controller = new AuthController({
-    fetchImpl,
-    storage: new EmptyTokenStorage(),
-  });
-  const socket = createVoiceSocket([], undefined, {
-    connection: 'connected',
-    session: 'ready',
-    turn: 'recording',
-    heartbeat: 'healthy',
-    sessionId: 'session-1',
-  });
-  let renderer: ReactTestRenderer.ReactTestRenderer;
+test.each(['normal', 'plan'])(
+  'keeps chat scrollable and finish turn outside scrolling content in %s mode',
+  async mode => {
+    const fetchImpl = jest
+      .fn()
+      .mockImplementation((url: string) =>
+        response(200, url.includes('/plans?') ? [] : tokenResponse),
+      );
+    const controller = new AuthController({
+      fetchImpl,
+      storage: new EmptyTokenStorage(),
+    });
+    const socket = createVoiceSocket([], undefined, {
+      connection: 'connected',
+      session: 'ready',
+      turn: 'recording',
+      heartbeat: 'healthy',
+      sessionId: 'session-1',
+      planning: {
+        available: true,
+        mode,
+        activePlanId: null,
+        activePlanName: null,
+      },
+    });
+    let renderer: ReactTestRenderer.ReactTestRenderer;
 
-  await act(async () => {
-    renderer = ReactTestRenderer.create(
-      <TestProviders>
-        <AuthProvider controller={controller}>
-          <VoiceSocketProvider socket={socket}>
-            <AssistantScreen />
-          </VoiceSocketProvider>
-        </AuthProvider>
-      </TestProviders>,
-    );
-    await controller.login('user@example.com', 'test-password');
-  });
+    await act(async () => {
+      renderer = ReactTestRenderer.create(
+        <TestProviders>
+          <AuthProvider controller={controller}>
+            <VoiceSocketProvider socket={socket}>
+              <AssistantScreen />
+            </VoiceSocketProvider>
+          </AuthProvider>
+        </TestProviders>,
+      );
+      await controller.login('user@example.com', 'test-password');
+    });
 
-  const finishButton = renderer!.root.findByProps({
-    testID: 'voice-finish-turn',
-  });
-  expect(finishButton).toBeTruthy();
-  await act(async () => {
-    finishButton.props.onPress();
-  });
-  expect(socket.commitTurn).toHaveBeenCalledWith({
-    suppressAutoListen: true,
-  });
-  expect(socket.stop).not.toHaveBeenCalledWith('user_stopped');
-  await act(async () => renderer!.unmount());
-});
+    const finishButton = renderer!.root.findByProps({
+      testID: 'voice-finish-turn',
+    });
+    expect(finishButton).toBeTruthy();
+    const scrollView = renderer!.root.findByType(ScrollView);
+    expect(scrollView.props.scrollEnabled).not.toBe(false);
+    expect(
+      scrollView.findAllByProps({ testID: 'voice-finish-turn' }),
+    ).toHaveLength(0);
+    expect(
+      scrollView.findAllByProps({ accessibilityLabel: 'Current chat' }).length,
+    ).toBeGreaterThan(0);
+    await act(async () => {
+      finishButton.props.onPress();
+    });
+    expect(socket.commitTurn).toHaveBeenCalledWith({
+      suppressAutoListen: true,
+    });
+    expect(socket.stop).not.toHaveBeenCalledWith('user_stopped');
+    await act(async () => renderer!.unmount());
+  },
+);

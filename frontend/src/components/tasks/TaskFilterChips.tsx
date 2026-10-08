@@ -4,7 +4,7 @@ import { AppText } from '../ui/Primitives';
 import { useAppTheme } from '../../design/ThemeProvider';
 import { radii, spacing, typography } from '../../theme';
 import { strings } from '../../i18n/strings';
-import { taskGradient } from './TaskPresentation';
+import { taskPrimaryStyle } from './TaskPresentation';
 
 export type Page = 'tasks' | 'reminders';
 export type TaskFilter = 'upcoming' | 'all' | 'completed';
@@ -58,7 +58,7 @@ export function TaskFilterChips({
           onPress={() => onPageChange('tasks')}
           style={[
             styles.segmentButton,
-            page === 'tasks' && [styles.segmentButtonActive, taskGradient],
+            page === 'tasks' && [styles.segmentButtonActive, taskPrimaryStyle],
           ]}
           testID="tasks-tab"
         >
@@ -81,7 +81,10 @@ export function TaskFilterChips({
           onPress={() => onPageChange('reminders')}
           style={[
             styles.segmentButton,
-            page === 'reminders' && [styles.segmentButtonActive, taskGradient],
+            page === 'reminders' && [
+              styles.segmentButtonActive,
+              taskPrimaryStyle,
+            ],
           ]}
           testID="reminders-tab"
         >

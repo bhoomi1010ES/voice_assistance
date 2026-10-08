@@ -1,4 +1,5 @@
 import React from 'react';
+import { GlyphIcon } from '../ui/AppIcon';
 import { StyleSheet, View } from 'react-native';
 import { AppText, Card } from '../ui/Primitives';
 import { useAppTheme } from '../../design/ThemeProvider';
@@ -41,7 +42,7 @@ export function TaskEmptyState({
           },
         ]}
       >
-        <AppText style={styles.icon}>{icon}</AppText>
+        <GlyphIcon glyph={icon} size={30} color={colors.primary} />
       </View>
 
       {title ? (

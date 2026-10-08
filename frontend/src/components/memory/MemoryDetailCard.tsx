@@ -1,3 +1,4 @@
+import { AppIcon, GlyphIcon } from '../ui/AppIcon';
 import React from 'react';
 import {
   Modal,
@@ -111,15 +112,13 @@ export function MemoryDetailCard({
             style={styles.closeButton}
             testID="memory-detail-close"
           >
-            <Text style={[styles.closeIcon, { color: colors.textMuted }]}>
-              ✕
-            </Text>
+            <AppIcon name="X" size={18} color={colors.textMuted} />
           </Pressable>
 
           {/* Header Row: Category Badge + Timestamp */}
           <View style={styles.headerRow}>
             <View style={[styles.iconCircle, { backgroundColor: meta.iconBg }]}>
-              <Text style={styles.icon}>{meta.icon}</Text>
+              <GlyphIcon glyph={meta.icon} size={22} color={meta.badgeColor} />
             </View>
 
             <View style={styles.headerMeta}>
@@ -215,7 +214,7 @@ export function MemoryDetailCard({
                   ]}
                   testID="memory-view-detail"
                 >
-                  <Text style={styles.viewPillIcon}>👁️</Text>
+                  <AppIcon name="Eye" size={18} />
                   <Text style={styles.viewPillText}>{strings.memory.view}</Text>
                 </Pressable>
 
@@ -231,7 +230,7 @@ export function MemoryDetailCard({
                   ]}
                   testID="memory-edit"
                 >
-                  <Text style={styles.editPillIcon}>✏️</Text>
+                  <AppIcon name="Pencil" size={18} />
                   <Text style={styles.editPillText}>{strings.memory.edit}</Text>
                 </Pressable>
 
@@ -248,7 +247,7 @@ export function MemoryDetailCard({
                   ]}
                   testID="memory-delete"
                 >
-                  <Text style={styles.deletePillIcon}>🗑️</Text>
+                  <AppIcon name="Trash2" size={18} color={colors.error} />
                   <Text style={styles.deletePillText}>
                     {strings.memory.delete}
                   </Text>
@@ -368,10 +367,10 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm + 2,
   },
   viewPill: {
-    backgroundColor: '#EDE9FE',
+    backgroundColor: '#E3EFFF',
   },
   viewPillText: {
-    color: '#6D28D9',
+    color: '#0753C7',
     fontSize: 14,
     fontWeight: '700',
   },
@@ -379,10 +378,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   editPill: {
-    backgroundColor: '#FCE7F3',
+    backgroundColor: '#E0F7F8',
   },
   editPillText: {
-    color: '#BE185D',
+    color: '#087780',
     fontSize: 14,
     fontWeight: '700',
   },
@@ -401,7 +400,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   savePill: {
-    backgroundColor: '#8B5CF6',
+    backgroundColor: '#0969F5',
   },
   savePillText: {
     color: '#FFFFFF',

@@ -1,3 +1,4 @@
+import { AppIcon } from '../ui/AppIcon';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAppTheme } from '../../design/ThemeProvider';
@@ -35,8 +36,13 @@ export function KnowledgeModeCard({
       testID="memory-knowledge-mode-card"
     >
       <View style={styles.contentRow}>
-        <View style={styles.iconCircle}>
-          <Text style={styles.icon}>🥞</Text>
+        <View
+          style={[
+            styles.iconCircle,
+            { backgroundColor: colors.secondaryContainer },
+          ]}
+        >
+          <AppIcon name="Database" size={25} color={colors.secondary} />
         </View>
 
         <View style={styles.textContainer}>
@@ -54,7 +60,7 @@ export function KnowledgeModeCard({
         </View>
 
         <View style={styles.chevronWrapper}>
-          <Text style={[styles.chevron, { color: colors.textMuted }]}>›</Text>
+          <AppIcon name="ChevronRight" size={18} color={colors.textMuted} />
         </View>
       </View>
     </Pressable>
@@ -74,7 +80,7 @@ const styles = StyleSheet.create({
   },
   iconCircle: {
     alignItems: 'center',
-    backgroundColor: '#EDE9FE',
+    backgroundColor: '#E3EFFF',
     borderRadius: 22,
     height: 44,
     justifyContent: 'center',

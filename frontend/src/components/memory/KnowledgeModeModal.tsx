@@ -1,3 +1,4 @@
+import { AppIcon } from '../ui/AppIcon';
 import React, { useState } from 'react';
 import {
   Modal,
@@ -32,7 +33,8 @@ export function KnowledgeModeModal({
 }: KnowledgeModeModalProps) {
   const { colors } = useAppTheme();
   const insets = useSafeAreaInsets();
-  const [selectedMode, setSelectedMode] = useState<KnowledgeMode>(knowledgeMode);
+  const [selectedMode, setSelectedMode] =
+    useState<KnowledgeMode>(knowledgeMode);
 
   // Sync initial mode
   React.useEffect(() => {
@@ -85,7 +87,7 @@ export function KnowledgeModeModal({
             ]}
             testID="knowledge-mode-back"
           >
-            <Text style={[styles.backArrow, { color: colors.text }]}>‹</Text>
+            <AppIcon name="ChevronLeft" size={22} color={colors.text} />
           </Pressable>
         </View>
 
@@ -96,7 +98,7 @@ export function KnowledgeModeModal({
           {/* Header with large icon badge */}
           <View style={styles.header}>
             <View style={styles.largeIconBadge}>
-              <Text style={styles.largeIcon}>🥞</Text>
+              <AppIcon name="Database" size={36} />
             </View>
             <Text style={[styles.title, { color: colors.text }]}>
               {strings.memory.knowledgeMode}
@@ -121,7 +123,7 @@ export function KnowledgeModeModal({
               {
                 backgroundColor: colors.surface,
                 borderColor:
-                  selectedMode === 'rag' ? '#8B5CF6' : colors.borderSubtle,
+                  selectedMode === 'rag' ? '#0969F5' : colors.borderSubtle,
                 opacity: pressed ? 0.85 : 1,
               },
               selectedMode === 'rag' ? styles.activeCardGlow : null,
@@ -135,7 +137,7 @@ export function KnowledgeModeModal({
                   styles.radio,
                   {
                     borderColor:
-                      selectedMode === 'rag' ? '#8B5CF6' : colors.border,
+                      selectedMode === 'rag' ? '#0969F5' : colors.border,
                   },
                 ]}
               >
@@ -159,7 +161,7 @@ export function KnowledgeModeModal({
               </View>
 
               <View style={styles.rightIconBadgeSearch}>
-                <Text style={styles.rightIconText}>🔍✨</Text>
+                <AppIcon name="Search" size={22} />
               </View>
             </View>
           </Pressable>
@@ -179,7 +181,7 @@ export function KnowledgeModeModal({
               {
                 backgroundColor: colors.surface,
                 borderColor:
-                  selectedMode === 'okf' ? '#8B5CF6' : colors.borderSubtle,
+                  selectedMode === 'okf' ? '#0969F5' : colors.borderSubtle,
                 opacity: !okfAvailable ? 0.5 : pressed ? 0.85 : 1,
               },
               selectedMode === 'okf' ? styles.activeCardGlow : null,
@@ -193,7 +195,7 @@ export function KnowledgeModeModal({
                   styles.radio,
                   {
                     borderColor:
-                      selectedMode === 'okf' ? '#8B5CF6' : colors.border,
+                      selectedMode === 'okf' ? '#0969F5' : colors.border,
                   },
                 ]}
               >
@@ -219,7 +221,7 @@ export function KnowledgeModeModal({
               </View>
 
               <View style={styles.rightIconBadgeGraph}>
-                <Text style={styles.rightIconText}>🕸️</Text>
+                <AppIcon name="Network" size={22} />
               </View>
             </View>
           </Pressable>
@@ -237,7 +239,7 @@ export function KnowledgeModeModal({
           >
             <View style={styles.infoTopRow}>
               <View style={styles.infoIconCircleBrain}>
-                <Text style={styles.infoIcon}>🧠</Text>
+                <AppIcon name="Brain" size={22} />
               </View>
               <Text style={[styles.infoTitle, { color: colors.text }]}>
                 {strings.memory.howOkfWorks}
@@ -261,7 +263,7 @@ export function KnowledgeModeModal({
           >
             <View style={styles.infoTopRow}>
               <View style={styles.infoIconCircleLightbulb}>
-                <Text style={styles.infoIcon}>💡</Text>
+                <AppIcon name="Lightbulb" size={22} />
               </View>
               <Text style={[styles.infoTitle, { color: colors.text }]}>
                 {strings.memory.whenToUseOkf}
@@ -330,7 +332,7 @@ const styles = StyleSheet.create({
   },
   largeIconBadge: {
     alignItems: 'center',
-    backgroundColor: '#EDE9FE',
+    backgroundColor: '#E3EFFF',
     borderRadius: 36,
     height: 72,
     justifyContent: 'center',
@@ -358,8 +360,8 @@ const styles = StyleSheet.create({
     padding: spacing.md,
   },
   activeCardGlow: {
-    backgroundColor: '#FAF5FF',
-    borderColor: '#8B5CF6',
+    backgroundColor: '#F2F8FE',
+    borderColor: '#0969F5',
   },
   optionRow: {
     alignItems: 'center',
@@ -375,7 +377,7 @@ const styles = StyleSheet.create({
     width: 22,
   },
   radioDot: {
-    backgroundColor: '#8B5CF6',
+    backgroundColor: '#0969F5',
     borderRadius: 6,
     height: 12,
     width: 12,
@@ -394,7 +396,7 @@ const styles = StyleSheet.create({
   },
   rightIconBadgeSearch: {
     alignItems: 'center',
-    backgroundColor: '#F3E8FF',
+    backgroundColor: '#E3EFFF',
     borderRadius: 20,
     height: 40,
     justifyContent: 'center',
@@ -402,7 +404,7 @@ const styles = StyleSheet.create({
   },
   rightIconBadgeGraph: {
     alignItems: 'center',
-    backgroundColor: '#FCE7F3',
+    backgroundColor: '#E0F7F8',
     borderRadius: 20,
     height: 40,
     justifyContent: 'center',
@@ -424,7 +426,7 @@ const styles = StyleSheet.create({
   },
   infoIconCircleBrain: {
     alignItems: 'center',
-    backgroundColor: '#FDE8E8',
+    backgroundColor: '#E3EFFF',
     borderRadius: 18,
     height: 36,
     justifyContent: 'center',
@@ -432,7 +434,7 @@ const styles = StyleSheet.create({
   },
   infoIconCircleLightbulb: {
     alignItems: 'center',
-    backgroundColor: '#EDE9FE',
+    backgroundColor: '#E3EFFF',
     borderRadius: 18,
     height: 36,
     justifyContent: 'center',
@@ -452,7 +454,7 @@ const styles = StyleSheet.create({
   },
   saveButton: {
     alignItems: 'center',
-    backgroundColor: '#8B5CF6',
+    backgroundColor: '#0969F5',
     borderRadius: 24,
     justifyContent: 'center',
     marginTop: spacing.sm,

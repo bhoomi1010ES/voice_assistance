@@ -2432,7 +2432,7 @@ export function DiagnosticScreen() {
             { color: colors.primary, textAlign: 'center', fontSize: 20 },
           ]}
         >
-          🎙️ Manual speech test
+          Manual speech test
         </Text>
         <Text
           style={[
@@ -2467,7 +2467,7 @@ export function DiagnosticScreen() {
                 textAlign: 'center',
               }}
             >
-              ⏹️ FINISH & COMMIT TURN {activeTurnNumber}
+              FINISH & COMMIT TURN {activeTurnNumber}
             </Text>
             <Text style={{ color: '#fecaca', fontSize: 13, marginTop: 4 }}>
               (Tap as soon as you finish speaking)
@@ -2498,8 +2498,8 @@ export function DiagnosticScreen() {
               }}
             >
               {turnStepState === 'STARTING'
-                ? '⏳ PREPARING AUDIO...'
-                : `🎙️ SPEAK TURN ${activeTurnNumber}`}
+                ? 'PREPARING AUDIO...'
+                : `SPEAK TURN ${activeTurnNumber}`}
             </Text>
             <Text style={{ color: '#a7f3d0', fontSize: 13, marginTop: 4 }}>
               (Tap and speak your sentence)
@@ -2594,8 +2594,6 @@ const diagnosticButtonStyles = StyleSheet.create({
     minHeight: 44,
     padding: 12,
     borderRadius: 16,
-    experimental_backgroundImage:
-      'linear-gradient(100deg, #7B61FF 0%, #D653EC 45%, #FF80AA 75%, #FFB276 100%)',
   },
   label: {
     color: '#FFFFFF',

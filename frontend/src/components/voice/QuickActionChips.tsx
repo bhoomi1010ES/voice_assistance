@@ -1,4 +1,5 @@
 import React from 'react';
+import { GlyphIcon } from '../ui/AppIcon';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useAppTheme } from '../../design/ThemeProvider';
 import { radii, shadows, spacing, typography } from '../../design/tokens';
@@ -54,9 +55,7 @@ export function QuickActionChips({
               shadows.sm,
             ]}
           >
-            <Text style={[styles.chipIcon, { color: colors.primary }]}>
-              {chip.icon}
-            </Text>
+            <GlyphIcon glyph={chip.icon} size={20} color={colors.primary} />
             <Text style={[styles.chipLabel, { color: colors.text }]}>
               {chip.label}
             </Text>

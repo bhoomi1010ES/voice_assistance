@@ -1,3 +1,4 @@
+import { AppIcon } from '../ui/AppIcon';
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import { ActionButton, AppText, Card } from '../ui/Primitives';
@@ -42,7 +43,7 @@ export function MemoryConfirmModal({
             { backgroundColor: colors.errorContainer },
           ]}
         >
-          <AppText style={styles.iconText}>⚠️</AppText>
+          <AppIcon name="TriangleAlert" size={22} color={colors.warning} />
         </View>
         <View style={styles.titleContainer}>
           <AppText style={[styles.title, { color: colors.error }]}>

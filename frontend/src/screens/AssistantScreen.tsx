@@ -1,3 +1,4 @@
+import { AppIcon, GlyphIcon } from '../components/ui/AppIcon';
 import React, {
   useCallback,
   useEffect,
@@ -307,7 +308,6 @@ export function AssistantScreen() {
         onScrollEndDrag={() => {
           userScrolling.current = false;
         }}
-        scrollEnabled={historyNoticeVisible}
         scrollEventThrottle={100}
         showsHorizontalScrollIndicator={false}
         showsVerticalScrollIndicator={false}
@@ -406,8 +406,8 @@ export function AssistantScreen() {
           }
           subStatus={
             socketState.turn === 'failed'
-              ? (socketState.transcriptError?.message ??
-                strings.assistant.turnFailed)
+              ? socketState.transcriptError?.message ??
+                strings.assistant.turnFailed
               : ['recording', 'speech_detected'].includes(socketState.turn)
               ? strings.assistant.recording
               : ['committing', 'waiting'].includes(socketState.turn)
@@ -442,7 +442,7 @@ export function AssistantScreen() {
           >
             <View style={styles.chatHeaderLeft}>
               <View style={styles.chatIconBadge}>
-                <Text style={styles.chatIcon}>💬</Text>
+                <AppIcon name="MessageCircle" size={22} />
               </View>
               <View style={styles.chatHeaderTitles}>
                 <Text style={[styles.chatTitle, { color: colors.text }]}>
@@ -457,9 +457,11 @@ export function AssistantScreen() {
               </View>
             </View>
             <View style={styles.chevronWrapper}>
-              <Text style={[styles.chevronIcon, { color: colors.textMuted }]}>
-                {historyNoticeVisible ? '⌃' : '⌵'}
-              </Text>
+              <GlyphIcon
+                glyph={historyNoticeVisible ? '⌃' : '⌵'}
+                size={18}
+                color={colors.textMuted}
+              />
             </View>
           </Pressable>
 
@@ -494,7 +496,7 @@ export function AssistantScreen() {
                   {/* Sample preview matching design mockup */}
                   <View style={styles.sampleAssistantRow}>
                     <View style={styles.sampleSparkleBadge}>
-                      <Text style={styles.sampleSparkleText}>✦</Text>
+                      <AppIcon name="Sparkles" size={16} />
                     </View>
                     <View style={styles.sampleAssistantCol}>
                       <Text style={styles.sampleMetaText}>
@@ -520,13 +522,13 @@ export function AssistantScreen() {
                       </View>
                     </View>
                     <View style={styles.sampleUserBadge}>
-                      <Text style={styles.sampleUserIcon}>👤</Text>
+                      <AppIcon name="User" size={16} color={'#FFFFFF'} />
                     </View>
                   </View>
 
                   <View style={styles.sampleAssistantRow}>
                     <View style={styles.sampleSparkleBadge}>
-                      <Text style={styles.sampleSparkleText}>✦</Text>
+                      <AppIcon name="Sparkles" size={16} />
                     </View>
                     <View style={styles.sampleAssistantCol}>
                       <Text style={styles.sampleMetaText}>
@@ -534,7 +536,8 @@ export function AssistantScreen() {
                       </Text>
                       <View style={styles.sampleAssistantBubble}>
                         <Text style={styles.sampleBubbleText}>
-                          Got it! I’ll remind you to send the deck at 8 PM today.
+                          Got it! I’ll remind you to send the deck at 8 PM
+                          today.
                         </Text>
                       </View>
                     </View>
@@ -552,7 +555,7 @@ export function AssistantScreen() {
                       </View>
                     </View>
                     <View style={styles.sampleUserBadge}>
-                      <Text style={styles.sampleUserIcon}>👤</Text>
+                      <AppIcon name="User" size={16} color={'#FFFFFF'} />
                     </View>
                   </View>
 
@@ -623,21 +626,6 @@ export function AssistantScreen() {
           />
         ) : null}
 
-        {['starting', 'recording', 'speech_detected'].includes(
-          socketState.turn,
-        ) ? (
-          <View style={styles.actionGroup}>
-            <ActionButton
-              disabled={busy}
-              label={strings.assistant.endTurn}
-              onPress={() =>
-                execute(() => socket.commitTurn({ suppressAutoListen: true }))
-              }
-              testID="voice-finish-turn"
-            />
-          </View>
-        ) : null}
-
         {socketState.turn === 'failed' ? (
           historyNoticeVisible ? (
             <View style={styles.actionGroup}>
@@ -671,8 +659,21 @@ export function AssistantScreen() {
             </View>
           )
         ) : null}
-
       </ScrollView>
+      {['starting', 'recording', 'speech_detected'].includes(
+        socketState.turn,
+      ) ? (
+        <View style={styles.turnControls} testID="voice-turn-controls">
+          <ActionButton
+            disabled={busy}
+            label={strings.assistant.endTurn}
+            onPress={() =>
+              execute(() => socket.commitTurn({ suppressAutoListen: true }))
+            }
+            testID="voice-finish-turn"
+          />
+        </View>
+      ) : null}
       <PlanDetailModal
         planId={selectedPlanId}
         visible={Boolean(selectedPlanId)}
@@ -772,7 +773,6 @@ function ttsPlaybackCopy(
   return strings.assistant.voiceOutput;
 }
 
-
 const styles = StyleSheet.create({
   content: {
     paddingBottom: spacing.xl,
@@ -828,6 +828,10 @@ const styles = StyleSheet.create({
   actionGroup: {
     gap: spacing.sm,
   },
+  turnControls: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
   turnStatus: {
     fontSize: typography.bodySm,
     marginBottom: 4,
@@ -869,7 +873,7 @@ const styles = StyleSheet.create({
   },
   currentChatCard: {
     backgroundColor: '#FFFFFF',
-    borderColor: '#EFEAF5',
+    borderColor: '#E5EBF3',
     borderRadius: radii.xl,
     borderWidth: 1,
     marginTop: spacing.md,
@@ -891,7 +895,7 @@ const styles = StyleSheet.create({
   },
   chatIconBadge: {
     alignItems: 'center',
-    backgroundColor: '#F3EEFF',
+    backgroundColor: '#E3EFFF',
     borderRadius: 20,
     height: 40,
     justifyContent: 'center',
@@ -932,7 +936,7 @@ const styles = StyleSheet.create({
   },
   sampleSparkleBadge: {
     alignItems: 'center',
-    backgroundColor: '#F3EEFF',
+    backgroundColor: '#E3EFFF',
     borderRadius: 12,
     height: 24,
     justifyContent: 'center',
@@ -940,7 +944,7 @@ const styles = StyleSheet.create({
     width: 24,
   },
   sampleSparkleText: {
-    color: '#7B61FF',
+    color: '#0969F5',
     fontSize: 14,
     fontWeight: '700',
   },
@@ -949,20 +953,20 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   sampleMetaText: {
-    color: '#958DA5',
+    color: '#748096',
     fontSize: 12,
     fontWeight: '500',
   },
   sampleAssistantBubble: {
     alignSelf: 'flex-start',
-    backgroundColor: '#F5F2F9',
+    backgroundColor: '#F2F6FB',
     borderRadius: 16,
     borderTopLeftRadius: 4,
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
   sampleBubbleText: {
-    color: '#181725',
+    color: '#10152E',
     fontSize: 14,
     lineHeight: 20,
   },
@@ -979,13 +983,13 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   sampleUserMetaText: {
-    color: '#958DA5',
+    color: '#748096',
     fontSize: 12,
     fontWeight: '500',
   },
   sampleUserBubble: {
     alignSelf: 'flex-end',
-    backgroundColor: '#EEE8FA',
+    backgroundColor: '#E3EFFF',
     borderRadius: 16,
     borderTopRightRadius: 4,
     paddingHorizontal: 14,
@@ -993,7 +997,7 @@ const styles = StyleSheet.create({
   },
   sampleUserBadge: {
     alignItems: 'center',
-    backgroundColor: '#7B61FF',
+    backgroundColor: '#0969F5',
     borderRadius: 14,
     height: 28,
     justifyContent: 'center',

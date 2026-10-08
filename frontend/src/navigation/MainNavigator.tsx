@@ -1,3 +1,4 @@
+import { AppIcon } from '../components/ui/AppIcon';
 import React, { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -15,7 +16,7 @@ import { TasksScreen } from '../screens/TasksScreen';
 import { useAuth } from '../auth/AuthProvider';
 import { useVoiceSocket } from '../voice/VoiceSocketProvider';
 import { useAppTheme } from '../design/ThemeProvider';
-import { radii, shadows, spacing, typography } from '../design/tokens';
+import { shadows, spacing, typography } from '../design/tokens';
 import { setupPushNotificationListeners } from '../notifications/PushNotificationService';
 
 export type MainRoute =
@@ -117,9 +118,7 @@ export function MainNavigator() {
             <>
               {route === 'settings' ? (
                 <View style={styles.brandIconContainer}>
-                  <Text style={[styles.sparkleIcon, { color: colors.primary }]}>
-                    {'\u2726'}
-                  </Text>
+                  <AppIcon name="Settings" size={28} color={colors.primary} />
                 </View>
               ) : (
                 <Pressable
@@ -130,18 +129,22 @@ export function MainNavigator() {
                   style={styles.backButton}
                   testID="nav-back-button"
                 >
-                  <Text style={[styles.backArrow, { color: colors.primary }]}>
-                    {'\u2039'}
-                  </Text>
+                  <AppIcon
+                    name="ChevronLeft"
+                    size={22}
+                    color={colors.primary}
+                  />
                 </Pressable>
               )}
             </>
           ) : route === 'memory' || route === 'tasks' ? (
             <>
               <View style={styles.brandIconContainer}>
-                <Text style={[styles.sparkleIcon, { color: '#EC4899' }]}>
-                  ✦
-                </Text>
+                <AppIcon
+                  name={route === 'tasks' ? 'CalendarCheck' : 'Brain'}
+                  size={30}
+                  color={route === 'memory' ? colors.secondary : colors.primary}
+                />
               </View>
 
               <View
@@ -165,9 +168,7 @@ export function MainNavigator() {
           ) : route === 'assistant' ? (
             <>
               <View style={styles.brandIconContainer}>
-                <Text style={[styles.sparkleIcon, { color: colors.primary }]}>
-                  ✦
-                </Text>
+                <AppIcon name="AudioLines" size={30} color={colors.primary} />
               </View>
 
               <View style={styles.titleColumn}>
@@ -179,26 +180,7 @@ export function MainNavigator() {
                 </Text>
               </View>
 
-              <Pressable
-                accessibilityLabel={strings.sessions.title}
-                accessibilityRole="button"
-                hitSlop={spacing.sm}
-                onPress={() => navigate('sessions')}
-                style={[
-                  styles.historyButton,
-                  {
-                    backgroundColor: colors.surfaceLow,
-                    borderColor: colors.borderSubtle,
-                  },
-                ]}
-                testID="header-sessions-button"
-              >
-                <Text
-                  style={[styles.historyButtonIcon, { color: colors.text }]}
-                >
-                  ↺
-                </Text>
-              </Pressable>
+              <View style={styles.headerRightSpacer} />
             </>
           ) : (
             <>
@@ -211,15 +193,15 @@ export function MainNavigator() {
                   style={styles.backButton}
                   testID="nav-back-button"
                 >
-                  <Text style={[styles.backArrow, { color: colors.primary }]}>
-                    ←
-                  </Text>
+                  <AppIcon
+                    name="ChevronLeft"
+                    size={22}
+                    color={colors.primary}
+                  />
                 </Pressable>
               ) : (
                 <View style={styles.brandIconContainer}>
-                  <Text style={[styles.brandIcon, { color: colors.primary }]}>
-                    ◉
-                  </Text>
+                  <AppIcon name="AudioLines" size={22} color={colors.primary} />
                 </View>
               )}
 
@@ -318,19 +300,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     letterSpacing: 0.2,
     marginTop: 1,
-  },
-  historyButton: {
-    alignItems: 'center',
-    borderRadius: radii.full,
-    borderWidth: 1,
-    height: 38,
-    justifyContent: 'center',
-    width: 38,
-  },
-  historyButtonIcon: {
-    fontSize: 18,
-    fontWeight: '700',
-    lineHeight: 22,
   },
   backButton: {
     alignItems: 'center',

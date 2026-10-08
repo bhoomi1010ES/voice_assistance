@@ -1,3 +1,4 @@
+import { GlyphIcon, AppIcon } from '../ui/AppIcon';
 import React from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { AppText } from '../ui/Primitives';
@@ -60,7 +61,7 @@ export function SettingsRow({
           ]}
         >
           {typeof icon === 'string' ? (
-            <AppText style={styles.icon}>{icon}</AppText>
+            <GlyphIcon glyph={icon} size={22} />
           ) : (
             icon
           )}
@@ -98,14 +99,11 @@ export function SettingsRow({
         ) : null}
 
         {onPress ? (
-          <AppText
-            style={[
-              styles.chevron,
-              { color: destructive ? colors.error : colors.textSubtle },
-            ]}
-          >
-            ›
-          </AppText>
+          <AppIcon
+            name="ChevronRight"
+            size={18}
+            color={destructive ? colors.error : colors.textSubtle}
+          />
         ) : null}
       </Pressable>
       {showDivider ? (

@@ -31,6 +31,8 @@ function resolveReactNativePrivateModule(moduleName) {
 const defaultConfig = getDefaultConfig(__dirname);
 const config = {
   resolver: {
+    // Lucide v1 publishes ES modules with .mjs extensions.
+    sourceExts: [...defaultConfig.resolver.sourceExts, 'mjs'],
     // Native build outputs and Gradle caches are not JavaScript inputs.
     // Crawling these large directories can stall Metro startup on Windows.
     blockList: [

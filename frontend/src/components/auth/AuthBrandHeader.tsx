@@ -1,5 +1,6 @@
+import { AppIcon } from '../ui/AppIcon';
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { useAppTheme } from '../../design/ThemeProvider';
 import { radii, spacing, typography } from '../../design/tokens';
 import { AppText, Heading } from '../ui/Primitives';
@@ -28,7 +29,7 @@ export function AuthBrandHeader({ title, subtitle }: AuthBrandHeaderProps) {
             },
           ]}
         >
-          <Text style={[styles.brandGlyph, { color: colors.primary }]}>◉</Text>
+          <AppIcon name="AudioLines" size={30} color={colors.primary} />
         </View>
       </View>
 

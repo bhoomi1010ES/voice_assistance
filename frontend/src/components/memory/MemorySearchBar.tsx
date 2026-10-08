@@ -1,3 +1,4 @@
+import { AppIcon } from '../ui/AppIcon';
 import React from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAppTheme } from '../../design/ThemeProvider';
@@ -34,7 +35,7 @@ export function MemorySearchBar({
       testID="memory-search-card"
     >
       <View style={styles.iconCircle}>
-        <Text style={styles.icon}>🔍</Text>
+        <AppIcon name="Search" size={22} />
       </View>
 
       <TextInput
@@ -87,7 +88,7 @@ const styles = StyleSheet.create({
   },
   iconCircle: {
     alignItems: 'center',
-    backgroundColor: '#F3E8FF',
+    backgroundColor: '#E3EFFF',
     borderRadius: 20,
     height: 40,
     justifyContent: 'center',
@@ -105,7 +106,7 @@ const styles = StyleSheet.create({
   },
   searchButton: {
     alignItems: 'center',
-    backgroundColor: '#8B5CF6',
+    backgroundColor: '#0969F5',
     borderRadius: 18,
     justifyContent: 'center',
     paddingHorizontal: 18,
@@ -117,4 +118,3 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
-

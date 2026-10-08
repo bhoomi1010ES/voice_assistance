@@ -1,113 +1,113 @@
 export const colors = {
   light: {
     // Canvas & Surfaces
-    background: '#FAF8FC',
+    background: '#F6F8FC',
     surface: '#FFFFFF',
-    surfaceMuted: '#F4EFF7',
-    surfaceLow: '#F7F3F9',
-    surfaceHigh: '#EFEAF5',
-    border: '#EFEAF5',
-    borderSubtle: '#F5F0FA',
+    surfaceMuted: '#EEF3F9',
+    surfaceLow: '#F2F6FB',
+    surfaceHigh: '#E7EDF5',
+    border: '#E5EBF3',
+    borderSubtle: '#EDF1F7',
 
-    // Primary Brand (Modern Violet / Purple)
-    primary: '#7B61FF',
-    primaryDark: '#5D45E0',
-    primaryContainer: '#EEE8FF',
+    // Primary Brand (Blue)
+    primary: '#0969F5',
+    primaryDark: '#0753C7',
+    primaryContainer: '#E3EFFF',
     onPrimary: '#FFFFFF',
-    onPrimaryContainer: '#2B1480',
+    onPrimaryContainer: '#124687',
 
-    // Secondary Accent (Coral / Pink)
-    secondary: '#FF6584',
-    secondaryLight: '#FF7D99',
-    secondaryContainer: '#FFEAEF',
+    // Secondary Accent (Cyan)
+    secondary: '#09A8AD',
+    secondaryLight: '#35CED5',
+    secondaryContainer: '#E0F7F8',
     onSecondary: '#FFFFFF',
-    onSecondaryContainer: '#80102B',
+    onSecondaryContainer: '#087780',
 
-    // Tertiary (Soft Lavender / Slate)
-    tertiary: '#6C6377',
-    tertiaryContainer: '#EAE5F2',
+    // Tertiary (Slate)
+    tertiary: '#697994',
+    tertiaryContainer: '#E8EEF6',
     onTertiary: '#FFFFFF',
 
     // Content / Text
-    text: '#181725',
-    textMuted: '#8E8B9E',
-    textSubtle: '#A6A2B5',
-    textInverse: '#FAF8FC',
+    text: '#10152E',
+    textMuted: '#748096',
+    textSubtle: '#8A96AA',
+    textInverse: '#F8FAFD',
 
     // Backward-compatible aliases for existing screens
-    accent: '#7B61FF',
+    accent: '#0969F5',
     accentText: '#FFFFFF',
 
     // Semantic States
-    success: '#176B45',
-    successContainer: '#D1F2DE',
-    warning: '#B45309',
-    warningContainer: '#FEF3C7',
-    error: '#BA1A1A',
-    errorContainer: '#FFDAD6',
-    disabled: '#C4BFCE',
+    success: '#177850',
+    successContainer: '#DDF5E9',
+    warning: '#A65608',
+    warningContainer: '#FFF1D5',
+    error: '#D92336',
+    errorContainer: '#FDE8EC',
+    disabled: '#BDCADC',
 
     // Voice Orb Identity
-    orbGradientStart: '#7B61FF',
-    orbGradientMiddle: '#E056FD',
-    orbGradientEnd: '#FFA07A',
-    orbGlow: 'rgba(123, 97, 255, 0.35)',
-    orbRipple: 'rgba(224, 86, 253, 0.15)',
+    orbGradientStart: '#0863BD',
+    orbGradientMiddle: '#008D9C',
+    orbGradientEnd: '#27E0E5',
+    orbGlow: 'rgba(9, 168, 173, 0.32)',
+    orbRipple: 'rgba(53, 206, 213, 0.16)',
   },
   dark: {
     // Canvas & Surfaces
-    background: '#161618',
-    surface: '#1E1E20',
-    surfaceMuted: '#27272A',
-    surfaceLow: '#202022',
-    surfaceHigh: '#323236',
-    border: '#3F3F46',
-    borderSubtle: '#27272A',
+    background: '#0B1220',
+    surface: '#142033',
+    surfaceMuted: '#1B2A40',
+    surfaceLow: '#17263A',
+    surfaceHigh: '#24364F',
+    border: '#2C405D',
+    borderSubtle: '#20324B',
 
-    // Primary Brand (Stitch Terracotta Warmth)
-    primary: '#FFB599',
-    primaryDark: '#D95C23',
-    primaryContainer: '#7F2B00',
-    onPrimary: '#370E00',
-    onPrimaryContainer: '#FFDBCE',
+    // Primary Brand (Blue)
+    primary: '#78ADFF',
+    primaryDark: '#A3C8FF',
+    primaryContainer: '#173D70',
+    onPrimary: '#07182F',
+    onPrimaryContainer: '#D6E7FF',
 
     // Secondary Accent
-    secondary: '#C6BFFF',
-    secondaryLight: '#6F61E4',
-    secondaryContainer: '#402DB4',
-    onSecondary: '#160066',
-    onSecondaryContainer: '#E4DFFF',
+    secondary: '#45D4DC',
+    secondaryLight: '#79E7EC',
+    secondaryContainer: '#0A3F49',
+    onSecondary: '#002E34',
+    onSecondaryContainer: '#B7F4F6',
 
     // Tertiary
-    tertiary: '#CBC6BB',
-    tertiaryContainer: '#49473E',
-    onTertiary: '#1D1C14',
+    tertiary: '#AFBED4',
+    tertiaryContainer: '#2C3D57',
+    onTertiary: '#102037',
 
     // Content / Text
-    text: '#F4F4F5',
-    textMuted: '#A1A1AA',
-    textSubtle: '#71717A',
-    textInverse: '#161618',
+    text: '#EFF5FF',
+    textMuted: '#AFBDD2',
+    textSubtle: '#8497B2',
+    textInverse: '#0B1220',
 
     // Backward-compatible aliases for existing screens
-    accent: '#FFB599',
-    accentText: '#370E00',
+    accent: '#78ADFF',
+    accentText: '#07182F',
 
     // Semantic States
-    success: '#7DDBAB',
-    successContainer: '#064E3B',
-    warning: '#F6C96B',
-    warningContainer: '#78350F',
-    error: '#FFB4AB',
-    errorContainer: '#7F1D1D',
-    disabled: '#52525B',
+    success: '#78D7AA',
+    successContainer: '#104C37',
+    warning: '#F5CB7B',
+    warningContainer: '#664310',
+    error: '#FF9CA8',
+    errorContainer: '#652535',
+    disabled: '#42546F',
 
     // Voice Orb Identity
-    orbGradientStart: '#FF9666',
-    orbGradientMiddle: '#E05B28',
-    orbGradientEnd: '#9C3A12',
-    orbGlow: 'rgba(255, 181, 153, 0.35)',
-    orbRipple: 'rgba(255, 181, 153, 0.15)',
+    orbGradientStart: '#0755A2',
+    orbGradientMiddle: '#008D9C',
+    orbGradientEnd: '#35DCE5',
+    orbGlow: 'rgba(53, 206, 213, 0.30)',
+    orbRipple: 'rgba(53, 206, 213, 0.16)',
   },
 } as const;
 

@@ -1,3 +1,4 @@
+import { AppIcon } from '../ui/AppIcon';
 import React from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { AppText } from '../ui/Primitives';
@@ -37,7 +38,7 @@ export function MemoryCreateCard({
     >
       <View style={styles.headerRow}>
         <View style={styles.iconCircle}>
-          <Text style={styles.icon}>✏️</Text>
+          <AppIcon name="Pencil" size={22} />
         </View>
         <AppText style={[styles.title, { color: colors.text }]}>
           {strings.memory.createTitle}
@@ -76,7 +77,7 @@ export function MemoryCreateCard({
         style={({ pressed }) => [
           styles.saveButton,
           {
-            backgroundColor: isSubmitDisabled ? colors.surfaceMuted : '#8B5CF6',
+            backgroundColor: isSubmitDisabled ? colors.surfaceMuted : '#0969F5',
             opacity: isSubmitDisabled ? 0.6 : pressed ? 0.85 : 1,
           },
           shadows.sm,
@@ -112,7 +113,7 @@ const styles = StyleSheet.create({
   },
   iconCircle: {
     alignItems: 'center',
-    backgroundColor: '#FFE4E6',
+    backgroundColor: '#E3EFFF',
     borderRadius: 18,
     height: 36,
     justifyContent: 'center',
@@ -149,4 +150,3 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
-

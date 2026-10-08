@@ -1,3 +1,4 @@
+import { AppIcon, AppIconName, GlyphIcon } from '../ui/AppIcon';
 import React from 'react';
 import {
   Pressable,
@@ -11,10 +12,8 @@ import { useAppTheme } from '../../design/ThemeProvider';
 import { formatScheduledTime } from '../../tasks/scheduling';
 import { radii, spacing } from '../../theme';
 
-export const taskGradient = {
-  backgroundColor: '#8B5CF6',
-  experimental_backgroundImage:
-    'linear-gradient(105deg, #7B61FF 0%, #CA48F1 46%, #FF7AAB 76%, #FFBA80 100%)',
+export const taskPrimaryStyle = {
+  backgroundColor: '#0969F5',
 };
 
 type BadgeTone =
@@ -42,7 +41,7 @@ export function TaskBadge({
   const { colors, mode } = useAppTheme();
   const palette: Record<BadgeTone, [string, string]> = {
     low: ['#EAF1FF', '#3479CC'],
-    normal: ['#F5F3F6', '#65616C'],
+    normal: ['#EEF2F7', '#5A6B85'],
     high: ['#FFEBF2', '#D72D68'],
     urgent: ['#FFE8E9', '#B92339'],
     pending: ['#FFF5E7', '#9C5B19'],
@@ -51,9 +50,27 @@ export function TaskBadge({
     sent: ['#E8F1FF', '#286BC8'],
     failed: ['#FFEBF2', '#C82555'],
     cancelled: ['#FFEBF2', '#C82555'],
-    voice: ['#F0E8FF', '#6C35D4'],
+    voice: ['#E5F5FF', '#0753C7'],
   };
   const [background, foreground] = palette[tone];
+  const icon =
+    tone === 'voice'
+      ? label.includes('Push')
+        ? 'Bell'
+        : 'Mic'
+      : tone === 'scheduled'
+      ? 'Clock'
+      : tone === 'sent'
+      ? 'Send'
+      : tone === 'completed'
+      ? 'CircleCheck'
+      : tone === 'failed' || tone === 'cancelled'
+      ? 'CircleX'
+      : null;
+  const text = label.replace(
+    /^[\u25F7\u2713\u2297\u{1F399}\u{1F514}\uFE0F]+\s*/u,
+    '',
+  );
   return (
     <View
       style={[
@@ -62,13 +79,20 @@ export function TaskBadge({
       ]}
       testID={testID}
     >
+      {icon ? (
+        <AppIcon
+          name={icon}
+          size={14}
+          color={mode === 'dark' ? colors.text : foreground}
+        />
+      ) : null}
       <AppText
         style={[
           presentationStyles.badgeText,
           { color: mode === 'dark' ? colors.text : foreground },
         ]}
       >
-        {label}
+        {text}
       </AppText>
     </View>
   );
@@ -78,9 +102,10 @@ export function TaskButton({
   label,
   variant = 'primary',
   destructive = false,
+  icon,
   style,
   ...props
-}: ActionButtonProps & { destructive?: boolean }) {
+}: ActionButtonProps & { destructive?: boolean; icon?: AppIconName }) {
   const { colors } = useAppTheme();
   return (
     <Pressable
@@ -89,7 +114,7 @@ export function TaskButton({
       style={({ pressed }) => [
         presentationStyles.button,
         variant === 'primary'
-          ? taskGradient
+          ? taskPrimaryStyle
           : {
               backgroundColor:
                 variant === 'quiet' ? 'transparent' : colors.surfaceMuted,
@@ -98,6 +123,13 @@ export function TaskButton({
         style,
       ]}
     >
+      {icon ? (
+        <AppIcon
+          name={icon}
+          size={18}
+          color={variant === 'primary' ? '#FFFFFF' : colors.primary}
+        />
+      ) : null}
       <AppText
         style={[
           presentationStyles.buttonText,
@@ -126,16 +158,22 @@ export function ScheduleLine({
   const { colors } = useAppTheme();
   return (
     <View style={presentationStyles.schedule}>
-      <AppText
-        style={[presentationStyles.scheduleText, { color: colors.textMuted }]}
-      >
-        ◷ {formatScheduledTime(at, timezone)}
-      </AppText>
-      <AppText
-        style={[presentationStyles.scheduleText, { color: colors.textMuted }]}
-      >
-        ⌾ {timezone}
-      </AppText>
+      <View style={presentationStyles.schedulePart}>
+        <AppIcon name="Clock" size={14} color={colors.textMuted} />
+        <AppText
+          style={[presentationStyles.scheduleText, { color: colors.textMuted }]}
+        >
+          {formatScheduledTime(at, timezone)}
+        </AppText>
+      </View>
+      <View style={presentationStyles.schedulePart}>
+        <AppIcon name="MapPin" size={14} color={colors.textMuted} />
+        <AppText
+          style={[presentationStyles.scheduleText, { color: colors.textMuted }]}
+        >
+          {timezone}
+        </AppText>
+      </View>
     </View>
   );
 }
@@ -158,11 +196,7 @@ export function EditorHeader({
         onPress={onClose}
         style={[presentationStyles.back, { backgroundColor: colors.surface }]}
       >
-        <AppText
-          style={[presentationStyles.backIcon, { color: colors.primary }]}
-        >
-          ‹
-        </AppText>
+        <AppIcon name="ChevronLeft" size={22} color={colors.primary} />
       </Pressable>
       <View style={presentationStyles.grow}>
         <AppText style={presentationStyles.editorTitle}>{title}</AppText>
@@ -197,14 +231,11 @@ export function EditorSummary({
           { backgroundColor: colors.primaryContainer },
         ]}
       >
-        <AppText
-          style={[
-            presentationStyles.summaryIconText,
-            { color: colors.primary },
-          ]}
-        >
-          {reminder ? '🔔' : '○'}
-        </AppText>
+        <GlyphIcon
+          glyph={reminder ? '🔔' : '○'}
+          size={22}
+          color={colors.primary}
+        />
       </View>
       <View style={presentationStyles.summaryContent}>
         <AppText style={presentationStyles.summaryTitle}>{title}</AppText>
@@ -248,6 +279,9 @@ export const presentationStyles = StyleSheet.create({
   backIcon: { fontSize: 30 },
   summaryIconText: { fontSize: 24 },
   badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     borderRadius: radii.pill,
     paddingHorizontal: 10,
     paddingVertical: 5,
@@ -260,6 +294,8 @@ export const presentationStyles = StyleSheet.create({
     textTransform: 'capitalize',
   },
   button: {
+    flexDirection: 'row',
+    gap: 7,
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 44,
@@ -281,6 +317,12 @@ export const presentationStyles = StyleSheet.create({
     rowGap: 2,
   },
   scheduleText: { fontSize: 12, lineHeight: 18, flexShrink: 1 },
+  schedulePart: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    flexShrink: 1,
+  },
   editorHeader: {
     flexDirection: 'row',
     alignItems: 'center',

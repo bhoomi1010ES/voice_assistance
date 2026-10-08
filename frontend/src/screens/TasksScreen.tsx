@@ -616,12 +616,14 @@ export function TasksScreen({ initialPage = 'tasks' }: TasksScreenProps = {}) {
           <View style={styles.headerActionArea}>
             {page === 'tasks' ? (
               <TaskButton
+                icon="Plus"
                 label={strings.tasks.createTask}
                 onPress={openCreateTask}
                 testID="todo-create"
               />
             ) : (
               <TaskButton
+                icon="Plus"
                 label={strings.tasks.createReminder}
                 onPress={openCreateReminder}
                 testID="reminder-create"

@@ -1,4 +1,5 @@
 import React from 'react';
+import { GlyphIcon } from './AppIcon';
 import {
   Pressable,
   PressableProps,
@@ -101,6 +102,7 @@ export function ActionButton({
   const { colors } = useAppTheme();
   const isPrimary = variant === 'primary';
   const isQuiet = variant === 'quiet';
+  const isIconOnly = ['\u2713', '\u{1F5D1}', '\u2715'].includes(label);
 
   return (
     <Pressable
@@ -122,20 +124,28 @@ export function ActionButton({
         style,
       ]}
     >
-      <Text
-        style={{
-          color: isPrimary
-            ? colors.accentText
-            : isQuiet
-            ? colors.accent
-            : colors.text,
-          fontSize: typography.body,
-          fontWeight: '600',
-          letterSpacing: 0.2,
-        }}
-      >
-        {label}
-      </Text>
+      {isIconOnly ? (
+        <GlyphIcon
+          glyph={label}
+          size={20}
+          color={isPrimary ? colors.accentText : colors.accent}
+        />
+      ) : (
+        <Text
+          style={{
+            color: isPrimary
+              ? colors.accentText
+              : isQuiet
+              ? colors.accent
+              : colors.text,
+            fontSize: typography.body,
+            fontWeight: '600',
+            letterSpacing: 0.2,
+          }}
+        >
+          {label}
+        </Text>
+      )}
     </Pressable>
   );
 }

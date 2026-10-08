@@ -1,4 +1,5 @@
 import React from 'react';
+import { GlyphIcon } from '../ui/AppIcon';
 import { StyleSheet, View } from 'react-native';
 import { ActionButton, AppText, Card } from '../ui/Primitives';
 import { useAppTheme } from '../../design/ThemeProvider';
@@ -86,7 +87,7 @@ export function PushPermissionCard({
             { backgroundColor: colors.primaryContainer },
           ]}
         >
-          <AppText style={styles.icon}>{icon}</AppText>
+          <GlyphIcon glyph={icon} size={26} color={colors.primary} />
         </View>
         <View style={styles.content}>
           <AppText style={[styles.title, { color: colors.text }]}>

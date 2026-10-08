@@ -1,3 +1,4 @@
+import { GlyphIcon } from '../ui/AppIcon';
 import React, { useState } from 'react';
 import {
   StyleProp,
@@ -52,9 +53,7 @@ export function AuthField({
       >
         {icon ? (
           <View style={styles.iconContainer}>
-            <Text style={[styles.iconText, { color: colors.textSubtle }]}>
-              {icon}
-            </Text>
+            <GlyphIcon glyph={icon} size={22} color={colors.textSubtle} />
           </View>
         ) : null}
 

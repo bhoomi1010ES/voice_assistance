@@ -1,3 +1,4 @@
+import { GlyphIcon } from '../ui/AppIcon';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { AppText } from '../ui/Primitives';
@@ -32,7 +33,7 @@ export function SessionMemoryCard({
     >
       <View style={styles.contentRow}>
         <View style={styles.iconCircle}>
-          <Text style={styles.icon}>{sessionExcluded ? '🔒' : '👁️‍🗨️'}</Text>
+          <GlyphIcon glyph={sessionExcluded ? '🔒' : '👁️‍🗨️'} size={22} />
         </View>
 
         <View style={styles.textContainer}>
@@ -98,7 +99,7 @@ const styles = StyleSheet.create({
   },
   iconCircle: {
     alignItems: 'center',
-    backgroundColor: '#EDE9FE',
+    backgroundColor: '#E3EFFF',
     borderRadius: 20,
     height: 40,
     justifyContent: 'center',
@@ -132,4 +133,3 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
-

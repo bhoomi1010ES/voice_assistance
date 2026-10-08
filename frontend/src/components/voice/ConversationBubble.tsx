@@ -1,3 +1,4 @@
+import { AppIcon } from '../ui/AppIcon';
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { useAppTheme } from '../../design/ThemeProvider';
@@ -83,8 +84,8 @@ function UserBubble({ message }: { message: ConversationUserMessage }) {
           style={[
             styles.userBubble,
             {
-              backgroundColor: '#EEE8FA',
-              borderColor: '#E5DEF5',
+              backgroundColor: '#E3EFFF',
+              borderColor: '#D9E7F7',
             },
             shadows.sm,
           ]}
@@ -111,7 +112,7 @@ function UserBubble({ message }: { message: ConversationUserMessage }) {
             <AppText
               accessibilityLabel={`You said: ${message.text}`}
               accessibilityLiveRegion="none"
-              style={[styles.userText, { color: '#181725' }]}
+              style={[styles.userText, { color: '#10152E' }]}
               testID={
                 message.final
                   ? 'voice-transcript-final'
@@ -123,7 +124,7 @@ function UserBubble({ message }: { message: ConversationUserMessage }) {
           )}
         </View>
         <View style={styles.userAvatarBadge}>
-          <Text style={styles.userAvatarText}>👤</Text>
+          <AppIcon name="User" size={16} color={'#FFFFFF'} />
         </View>
       </View>
     </View>
@@ -155,7 +156,7 @@ function AssistantBubble({
       {/* Header with avatar & name */}
       <View style={styles.assistantHeader}>
         <View style={styles.avatarBadge}>
-          <Text style={styles.avatarText}>✦</Text>
+          <AppIcon name="Sparkles" size={16} />
         </View>
         <Text style={[styles.assistantName, { color: colors.textMuted }]}>
           {`Assistant • ${timeStr}`}
@@ -179,8 +180,8 @@ function AssistantBubble({
         style={[
           styles.assistantCard,
           {
-            backgroundColor: '#F5F2F9',
-            borderColor: '#EBE5F3',
+            backgroundColor: '#F2F6FB',
+            borderColor: '#E5EBF3',
           },
           shadows.sm,
         ]}
@@ -197,7 +198,7 @@ function AssistantBubble({
         {message.status === 'streaming' || message.status === 'completed' ? (
           <AppText
             accessibilityLiveRegion="none"
-            style={[styles.assistantText, { color: '#181725' }]}
+            style={[styles.assistantText, { color: '#10152E' }]}
           >
             {message.text || strings.assistant.responding}
           </AppText>
@@ -278,7 +279,7 @@ function ToolBubble({ message }: { message: ConversationToolMessage }) {
       testID="tool-status-message"
     >
       <View style={styles.toolHeader}>
-        <Text style={[styles.toolIcon, { color: colors.primary }]}>⚙</Text>
+        <AppIcon name="Settings" size={22} color={colors.primary} />
         <AppText style={[styles.toolRole, { color: colors.textMuted }]}>
           Assistant action
         </AppText>
@@ -426,7 +427,7 @@ const styles = StyleSheet.create({
   },
   userAvatarBadge: {
     alignItems: 'center',
-    backgroundColor: '#7B61FF',
+    backgroundColor: '#0969F5',
     borderRadius: radii.full,
     height: 32,
     justifyContent: 'center',
@@ -474,7 +475,7 @@ const styles = StyleSheet.create({
     width: 26,
   },
   avatarText: {
-    color: '#7B61FF',
+    color: '#0969F5',
     fontSize: 14,
     fontWeight: '700',
   },

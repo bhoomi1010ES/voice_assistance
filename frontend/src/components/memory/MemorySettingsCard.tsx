@@ -1,3 +1,4 @@
+import { AppIcon } from '../ui/AppIcon';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { AppText } from '../ui/Primitives';
@@ -34,7 +35,7 @@ export function MemorySettingsCard({
     >
       <View style={styles.topRow}>
         <View style={styles.iconCircle}>
-          <Text style={styles.icon}>🧠</Text>
+          <AppIcon name="Settings" size={24} />
         </View>
 
         <View style={styles.textContainer}>
@@ -46,7 +47,9 @@ export function MemorySettingsCard({
               style={[
                 styles.badge,
                 {
-                  backgroundColor: enabled ? '#DCFCE7' : '#F3F4F6',
+                  backgroundColor: enabled
+                    ? colors.successContainer
+                    : colors.warningContainer,
                 },
               ]}
             >
@@ -54,7 +57,7 @@ export function MemorySettingsCard({
                 style={[
                   styles.badgeText,
                   {
-                    color: enabled ? '#15803D' : '#6B7280',
+                    color: enabled ? colors.success : colors.warning,
                   },
                 ]}
               >
@@ -84,14 +87,14 @@ export function MemorySettingsCard({
         style={({ pressed }) => [
           styles.toggleButton,
           {
-            backgroundColor: colors.surfaceLow,
+            backgroundColor: colors.primary,
             borderColor: colors.borderSubtle,
             opacity: loading || saving ? 0.6 : pressed ? 0.8 : 1,
           },
         ]}
         testID="memory-toggle"
       >
-        <Text style={[styles.toggleButtonText, { color: colors.text }]}>
+        <Text style={[styles.toggleButtonText, { color: colors.onPrimary }]}>
           {enabled ? strings.memory.turnOff : strings.memory.turnOn}
         </Text>
       </Pressable>
@@ -113,7 +116,7 @@ const styles = StyleSheet.create({
   },
   iconCircle: {
     alignItems: 'center',
-    backgroundColor: '#FDE8E8',
+    backgroundColor: '#E3EFFF',
     borderRadius: 22,
     height: 44,
     justifyContent: 'center',

@@ -1,3 +1,4 @@
+import { GlyphIcon } from '../ui/AppIcon';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -94,16 +95,11 @@ export function BottomTabBar({ activeRoute, onNavigate }: BottomTabBarProps) {
               testID={tab.testID}
             >
               <View style={styles.iconContainer}>
-                <Text
-                  style={[
-                    styles.tabIcon,
-                    {
-                      color: isSelected ? colors.primary : colors.textMuted,
-                    },
-                  ]}
-                >
-                  {tab.icon}
-                </Text>
+                <GlyphIcon
+                  glyph={tab.icon}
+                  size={24}
+                  color={isSelected ? colors.primary : colors.textMuted}
+                />
               </View>
               <Text
                 numberOfLines={1}
@@ -186,7 +182,5 @@ const styles = StyleSheet.create({
   },
   settingsIndicator: {
     width: 40,
-    experimental_backgroundImage:
-      'linear-gradient(90deg, #7B61FF 0%, #EC63C4 50%, #FFAD75 100%)',
   },
 });

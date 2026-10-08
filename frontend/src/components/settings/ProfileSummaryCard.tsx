@@ -1,3 +1,4 @@
+import { AppIcon } from '../ui/AppIcon';
 import React from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { AppText, Card } from '../ui/Primitives';
@@ -87,9 +88,7 @@ export function ProfileSummaryCard({
         </View>
 
         {onPress ? (
-          <AppText style={[styles.chevron, { color: colors.textSubtle }]}>
-            ›
-          </AppText>
+          <AppIcon name="ChevronRight" size={18} color={colors.textSubtle} />
         ) : null}
       </Pressable>
     </Card>
@@ -116,7 +115,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderRadius: radii.full,
     experimental_backgroundImage:
-      'linear-gradient(135deg, #FFBD88 0%, #FF8BAE 60%, #FF8390 100%)',
+      'linear-gradient(135deg, #35CED5 0%, #09A8AD 60%, #0969F5 100%)',
     borderWidth: 4,
     height: 60,
     justifyContent: 'center',

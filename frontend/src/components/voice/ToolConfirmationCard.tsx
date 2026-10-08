@@ -1,4 +1,5 @@
 import React from 'react';
+import { AppIcon } from '../ui/AppIcon';
 import { StyleSheet, Text, View } from 'react-native';
 import { useAppTheme } from '../../design/ThemeProvider';
 import { radii, shadows, spacing, typography } from '../../design/tokens';
@@ -39,7 +40,7 @@ export function ToolConfirmationCard({
             { backgroundColor: colors.warningContainer },
           ]}
         >
-          <Text style={[styles.iconText, { color: colors.warning }]}>⚡</Text>
+          <AppIcon name="Zap" size={22} color={colors.warning} />
         </View>
         <View style={styles.headerTextCol}>
           <Text style={[styles.badgeLabel, { color: colors.warning }]}>

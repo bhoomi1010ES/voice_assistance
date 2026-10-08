@@ -1,3 +1,4 @@
+import { GlyphIcon, AppIcon } from '../ui/AppIcon';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAppTheme } from '../../design/ThemeProvider';
@@ -19,9 +20,9 @@ export function getCategoryMeta(type: string, content: string = '') {
     return {
       icon: '❤️',
       label: 'Preference',
-      iconBg: '#FFE4E6',
-      badgeBg: '#FCE7F3',
-      badgeColor: '#BE185D',
+      iconBg: '#E3EFFF',
+      badgeBg: '#E0F7F8',
+      badgeColor: '#087780',
     };
   }
   if (
@@ -33,9 +34,9 @@ export function getCategoryMeta(type: string, content: string = '') {
     return {
       icon: '🖥️',
       label: 'Work',
-      iconBg: '#EDE9FE',
-      badgeBg: '#EDE9FE',
-      badgeColor: '#6D28D9',
+      iconBg: '#E3EFFF',
+      badgeBg: '#E3EFFF',
+      badgeColor: '#0753C7',
     };
   }
   if (
@@ -85,7 +86,7 @@ export function getCategoryMeta(type: string, content: string = '') {
   return {
     icon: '✦',
     label: type ? type.charAt(0).toUpperCase() + type.slice(1) : 'Fact',
-    iconBg: '#EDE9FE',
+    iconBg: '#E3EFFF',
     badgeBg: '#F1F5F9',
     badgeColor: '#64748B',
   };
@@ -115,7 +116,7 @@ export function MemoryCard({
       testID="memory-view"
     >
       <View style={[styles.iconCircle, { backgroundColor: meta.iconBg }]}>
-        <Text style={styles.icon}>{meta.icon}</Text>
+        <GlyphIcon glyph={meta.icon} size={22} color={meta.badgeColor} />
       </View>
 
       <View style={[styles.badge, { backgroundColor: meta.badgeBg }]}>
@@ -133,7 +134,7 @@ export function MemoryCard({
         {memory.content}
       </Text>
 
-      <Text style={[styles.chevron, { color: colors.textMuted }]}>›</Text>
+      <AppIcon name="ChevronRight" size={18} color={colors.textMuted} />
     </Pressable>
   );
 }

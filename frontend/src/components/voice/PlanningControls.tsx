@@ -1,3 +1,4 @@
+import { AppIcon } from '../ui/AppIcon';
 import React, { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { useAuth } from '../../auth/AuthProvider';
@@ -83,19 +84,13 @@ export function PlanningControls({ onOpenPlanDetail }: PlanningControlsProps) {
           accessibilityRole="button"
           disabled={disabled}
           onPress={() => handleSelectMode('normal')}
-          style={[
-            styles.segmentButton,
-            !isPlanMode && styles.activeSegmentGradient,
-          ]}
+          style={[styles.segmentButton, !isPlanMode && styles.activeSegment]}
         >
-          <Text
-            style={[
-              styles.segmentIcon,
-              { color: !isPlanMode ? '#FFFFFF' : colors.textMuted },
-            ]}
-          >
-            ııllıl
-          </Text>
+          <AppIcon
+            name="AudioLines"
+            size={22}
+            color={!isPlanMode ? '#FFFFFF' : colors.textMuted}
+          />
           <Text
             style={[
               styles.segmentText,
@@ -115,19 +110,13 @@ export function PlanningControls({ onOpenPlanDetail }: PlanningControlsProps) {
           accessibilityRole="button"
           disabled={disabled}
           onPress={() => handleSelectMode('plan')}
-          style={[
-            styles.segmentButton,
-            isPlanMode && styles.activeSegmentGradient,
-          ]}
+          style={[styles.segmentButton, isPlanMode && styles.activeSegment]}
         >
-          <Text
-            style={[
-              styles.segmentIcon,
-              { color: isPlanMode ? '#FFFFFF' : colors.textMuted },
-            ]}
-          >
-            ✦
-          </Text>
+          <AppIcon
+            name="Sparkles"
+            size={22}
+            color={isPlanMode ? '#FFFFFF' : colors.textMuted}
+          />
           <Text
             style={[
               styles.segmentText,
@@ -180,22 +169,6 @@ export function PlanningControls({ onOpenPlanDetail }: PlanningControlsProps) {
         >
           {planningError}
         </AppText>
-      ) : null}
-
-      {/* Explanation of automatic tasks & reminders */}
-      {planning?.mode === 'plan' ? (
-        <View
-          style={[
-            styles.explanationBox,
-            { backgroundColor: colors.surfaceMuted },
-          ]}
-        >
-          <AppText
-            style={[styles.explanationText, { color: colors.textSubtle }]}
-          >
-            {strings.planning.planModeExplanation}
-          </AppText>
-        </View>
       ) : null}
 
       {/* Active Plan Detail & Plan Switcher */}
@@ -308,7 +281,7 @@ const styles = StyleSheet.create({
   },
   pillContainer: {
     alignItems: 'center',
-    borderColor: '#EFEAF5',
+    borderColor: '#E5EBF3',
     borderRadius: radii.full,
     borderWidth: 1,
     elevation: 2,
@@ -332,10 +305,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: spacing.sm,
   },
-  activeSegmentGradient: {
-    backgroundColor: '#7B61FF',
+  activeSegment: {
+    backgroundColor: '#0969F5',
     elevation: 3,
-    shadowColor: '#7B61FF',
+    shadowColor: '#0969F5',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.28,
     shadowRadius: 6,
@@ -390,14 +363,6 @@ const styles = StyleSheet.create({
   },
   feedbackText: {
     fontSize: typography.caption,
-  },
-  explanationBox: {
-    borderRadius: radii.md,
-    padding: spacing.sm,
-  },
-  explanationText: {
-    fontSize: typography.caption,
-    lineHeight: 18,
   },
   planSection: {
     gap: spacing.sm,

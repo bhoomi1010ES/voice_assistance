@@ -1,3 +1,4 @@
+import { GlyphIcon } from '../ui/AppIcon';
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import { ActionButton, AppText, Card } from '../ui/Primitives';
@@ -47,7 +48,7 @@ export function SessionDeviceCard({
           ]}
         >
           {typeof icon === 'string' ? (
-            <AppText style={styles.icon}>{icon}</AppText>
+            <GlyphIcon glyph={icon} size={22} />
           ) : (
             icon
           )}

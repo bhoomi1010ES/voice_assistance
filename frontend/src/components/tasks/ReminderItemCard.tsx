@@ -1,4 +1,5 @@
 import React from 'react';
+import { AppIcon } from '../ui/AppIcon';
 import { StyleSheet, View } from 'react-native';
 import { AppText, Card, StatusBanner } from '../ui/Primitives';
 import { useAppTheme } from '../../design/ThemeProvider';
@@ -53,9 +54,12 @@ export function ReminderItemCard({
           ) : null}
           <ScheduleLine at={reminder.trigger_at} timezone={reminder.timezone} />
           {reminder.recurrence_rule ? (
-            <AppText style={[styles.recurrence, { color: colors.textMuted }]}>
-              ↻ {reminder.recurrence_rule}
-            </AppText>
+            <View style={styles.recurrenceRow}>
+              <AppIcon name="RotateCcw" size={14} color={colors.textMuted} />
+              <AppText style={[styles.recurrence, { color: colors.textMuted }]}>
+                {reminder.recurrence_rule}
+              </AppText>
+            </View>
           ) : null}
         </View>
       </View>
@@ -94,7 +98,7 @@ const styles = StyleSheet.create({
     height: 26,
     borderRadius: 15,
     borderWidth: 2,
-    borderColor: '#DCC8C7',
+    borderColor: '#176BDD',
     marginTop: 4,
   },
   content: { flex: 1, gap: 6 },
@@ -114,6 +118,7 @@ const styles = StyleSheet.create({
   },
   body: { fontSize: 13, lineHeight: 20 },
   recurrence: { fontSize: 12, lineHeight: 18 },
+  recurrenceRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   actions: {
     flexDirection: 'row',
     flexWrap: 'wrap',

@@ -1,3 +1,4 @@
+import { AppIcon } from '../ui/AppIcon';
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import { AppText, Card } from '../ui/Primitives';
@@ -32,7 +33,7 @@ export function MemoryEmptyState({ text, testID }: MemoryEmptyStateProps) {
           },
         ]}
       >
-        <AppText style={styles.icon}>✨</AppText>
+        <AppIcon name="Sparkles" size={22} />
       </View>
       <AppText style={[styles.title, { color: colors.text }]}>
         No Memories Stored
