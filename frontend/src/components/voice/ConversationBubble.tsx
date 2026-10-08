@@ -52,9 +52,21 @@ export function ConversationBubble({
   return <SystemBubble message={message} />;
 }
 
+function formatMessageTime(ms?: number): string {
+  if (!ms) return '9:40 AM';
+  const d = new Date(ms);
+  const hours = d.getHours();
+  const minutes = d.getMinutes();
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  const formattedHours = hours % 12 || 12;
+  const formattedMinutes = minutes < 10 ? `0${minutes}` : minutes;
+  return `${formattedHours}:${formattedMinutes} ${ampm}`;
+}
+
 function UserBubble({ message }: { message: ConversationUserMessage }) {
   const { colors } = useAppTheme();
   const placeholder = !message.text.trim();
+  const timeStr = formatMessageTime(message.startedAtMs);
 
   return (
     <View
@@ -62,52 +74,57 @@ function UserBubble({ message }: { message: ConversationUserMessage }) {
       testID="voice-transcript-message"
     >
       <View style={styles.userLabelRow}>
-        <Text style={[styles.roleLabel, { color: colors.textSubtle }]}>
-          You
+        <Text style={[styles.roleLabel, { color: colors.textMuted }]}>
+          {`You • ${timeStr}`}
         </Text>
       </View>
-      <View
-        style={[
-          styles.userBubble,
-          {
-            backgroundColor: colors.surfaceHigh,
-            borderColor: colors.borderSubtle,
-          },
-          shadows.sm,
-        ]}
-      >
-        {placeholder ? (
-          <AppText
-            accessibilityLiveRegion="none"
-            style={[styles.placeholderText, { color: colors.textMuted }]}
-            testID={
-              message.status === 'transcribing'
-                ? 'voice-transcript-transcribing'
+      <View style={styles.userBubbleAndAvatarRow}>
+        <View
+          style={[
+            styles.userBubble,
+            {
+              backgroundColor: '#EEE8FA',
+              borderColor: '#E5DEF5',
+            },
+            shadows.sm,
+          ]}
+        >
+          {placeholder ? (
+            <AppText
+              accessibilityLiveRegion="none"
+              style={[styles.placeholderText, { color: colors.textMuted }]}
+              testID={
+                message.status === 'transcribing'
+                  ? 'voice-transcript-transcribing'
+                  : message.status === 'speech_detected'
+                  ? 'voice-transcript-speech-detected'
+                  : 'voice-transcript-listening'
+              }
+            >
+              {message.status === 'transcribing'
+                ? strings.assistant.transcribing
                 : message.status === 'speech_detected'
-                ? 'voice-transcript-speech-detected'
-                : 'voice-transcript-listening'
-            }
-          >
-            {message.status === 'transcribing'
-              ? strings.assistant.transcribing
-              : message.status === 'speech_detected'
-              ? strings.assistant.speechDetected
-              : strings.assistant.listening}
-          </AppText>
-        ) : (
-          <AppText
-            accessibilityLabel={`You said: ${message.text}`}
-            accessibilityLiveRegion="none"
-            style={[styles.userText, { color: colors.text }]}
-            testID={
-              message.final
-                ? 'voice-transcript-final'
-                : 'voice-transcript-partial'
-            }
-          >
-            {message.text}
-          </AppText>
-        )}
+                ? strings.assistant.speechDetected
+                : strings.assistant.listening}
+            </AppText>
+          ) : (
+            <AppText
+              accessibilityLabel={`You said: ${message.text}`}
+              accessibilityLiveRegion="none"
+              style={[styles.userText, { color: '#181725' }]}
+              testID={
+                message.final
+                  ? 'voice-transcript-final'
+                  : 'voice-transcript-partial'
+              }
+            >
+              {message.text}
+            </AppText>
+          )}
+        </View>
+        <View style={styles.userAvatarBadge}>
+          <Text style={styles.userAvatarText}>👤</Text>
+        </View>
       </View>
     </View>
   );
@@ -128,6 +145,7 @@ function AssistantBubble({
 }) {
   const { colors } = useAppTheme();
   const mapped = mapConversationError(message.errorCode);
+  const timeStr = formatMessageTime(message.startedAtMs);
 
   return (
     <View
@@ -136,18 +154,11 @@ function AssistantBubble({
     >
       {/* Header with avatar & name */}
       <View style={styles.assistantHeader}>
-        <View
-          style={[
-            styles.avatarBadge,
-            { backgroundColor: colors.primaryContainer },
-          ]}
-        >
-          <Text style={[styles.avatarText, { color: colors.primaryDark }]}>
-            ✦
-          </Text>
+        <View style={styles.avatarBadge}>
+          <Text style={styles.avatarText}>✦</Text>
         </View>
-        <Text style={[styles.assistantName, { color: colors.text }]}>
-          Assistant
+        <Text style={[styles.assistantName, { color: colors.textMuted }]}>
+          {`Assistant • ${timeStr}`}
         </Text>
         {message.status === 'streaming' ? (
           <View
@@ -168,8 +179,8 @@ function AssistantBubble({
         style={[
           styles.assistantCard,
           {
-            backgroundColor: colors.surface,
-            borderColor: colors.borderSubtle,
+            backgroundColor: '#F5F2F9',
+            borderColor: '#EBE5F3',
           },
           shadows.sm,
         ]}
@@ -186,7 +197,7 @@ function AssistantBubble({
         {message.status === 'streaming' || message.status === 'completed' ? (
           <AppText
             accessibilityLiveRegion="none"
-            style={[styles.assistantText, { color: colors.text }]}
+            style={[styles.assistantText, { color: '#181725' }]}
           >
             {message.text || strings.assistant.responding}
           </AppText>
@@ -399,55 +410,77 @@ export function TranscriptBubble({
 
 const styles = StyleSheet.create({
   userRow: {
+    alignSelf: 'flex-end',
     marginBottom: spacing.sm,
-    maxWidth: '85%',
+    maxWidth: '88%',
   },
   userLabelRow: {
     alignItems: 'flex-end',
-    marginBottom: spacing.xxs,
+    marginBottom: 4,
+    paddingRight: 40,
+  },
+  userBubbleAndAvatarRow: {
+    alignItems: 'flex-end',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  userAvatarBadge: {
+    alignItems: 'center',
+    backgroundColor: '#7B61FF',
+    borderRadius: radii.full,
+    height: 32,
+    justifyContent: 'center',
+    width: 32,
+  },
+  userAvatarText: {
+    fontSize: 16,
+    lineHeight: 20,
   },
   roleLabel: {
     fontSize: typography.caption,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   userBubble: {
-    borderRadius: radii.lg,
+    borderRadius: 18,
     borderWidth: 1,
+    flexShrink: 1,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
   userText: {
     fontSize: typography.body,
-    lineHeight: 24,
+    lineHeight: 22,
   },
   placeholderText: {
     fontStyle: 'italic',
   },
   assistantRow: {
     marginBottom: spacing.md,
-    maxWidth: '92%',
+    maxWidth: '88%',
     width: '100%',
   },
   assistantHeader: {
     alignItems: 'center',
     flexDirection: 'row',
     gap: spacing.xs,
-    marginBottom: spacing.xs,
+    marginBottom: 4,
   },
   avatarBadge: {
     alignItems: 'center',
+    backgroundColor: '#EDE5FF',
     borderRadius: radii.full,
-    height: 24,
+    height: 26,
     justifyContent: 'center',
-    width: 24,
+    width: 26,
   },
   avatarText: {
-    fontSize: 12,
+    color: '#7B61FF',
+    fontSize: 14,
     fontWeight: '700',
   },
   assistantName: {
-    fontSize: typography.bodySm,
-    fontWeight: '600',
+    fontSize: typography.caption,
+    fontWeight: '500',
   },
   liveBadge: {
     borderRadius: radii.full,

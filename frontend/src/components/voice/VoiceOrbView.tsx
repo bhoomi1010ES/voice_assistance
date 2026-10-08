@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAppTheme } from '../../design/ThemeProvider';
-import { radii, shadows, spacing, typography } from '../../design/tokens';
+import { radii, shadows, spacing } from '../../design/tokens';
 import {
   VoiceConnectionState,
   VoiceSocketSnapshot,
@@ -20,6 +20,10 @@ export type VoiceOrbViewProps = {
   testID?: string;
 };
 
+// Symmetrical height profiles for left and right audio waveforms
+const LEFT_BAR_HEIGHTS = [12, 18, 15, 24, 38, 54, 42, 60, 48, 30, 20, 12];
+const RIGHT_BAR_HEIGHTS = [12, 20, 30, 48, 60, 42, 54, 38, 24, 15, 18, 12];
+
 export function VoiceOrbView({
   busy,
   label,
@@ -34,6 +38,7 @@ export function VoiceOrbView({
 }: VoiceOrbViewProps) {
   const { colors } = useAppTheme();
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const waveAnim = useRef(new Animated.Value(1)).current;
 
   const isListening =
     turnState === 'recording' || turnState === 'speech_detected';
@@ -46,77 +51,122 @@ export function VoiceOrbView({
       const pulseLoop = Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, {
-            toValue: 1.08,
-            duration: isListening ? 800 : 1200,
+            toValue: 1.06,
+            duration: isListening ? 700 : 1100,
             useNativeDriver: true,
           }),
           Animated.timing(pulseAnim, {
             toValue: 1,
-            duration: isListening ? 800 : 1200,
+            duration: isListening ? 700 : 1100,
+            useNativeDriver: true,
+          }),
+        ]),
+      );
+      const waveLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(waveAnim, {
+            toValue: 1.25,
+            duration: 600,
+            useNativeDriver: true,
+          }),
+          Animated.timing(waveAnim, {
+            toValue: 0.85,
+            duration: 600,
             useNativeDriver: true,
           }),
         ]),
       );
       pulseLoop.start();
+      waveLoop.start();
       return () => {
         pulseLoop.stop();
+        waveLoop.stop();
         pulseAnim.setValue(1);
+        waveAnim.setValue(1);
       };
     } else {
       pulseAnim.setValue(1);
+      waveAnim.setValue(1);
     }
-  }, [isActive, isListening, pulseAnim]);
-
-  // Derive orb background and glow colors based on runtime state
-  const getOrbColor = () => {
-    if (connectionState === 'failed' || turnState === 'failed') {
-      return colors.error;
-    }
-    if (isSpeaking) {
-      return colors.secondary;
-    }
-    if (isListening) {
-      return colors.primary;
-    }
-    if (isThinking) {
-      return colors.primaryDark;
-    }
-    return colors.primary;
-  };
-
-  const orbColor = getOrbColor();
+  }, [isActive, isListening, pulseAnim, waveAnim]);
 
   return (
     <View style={styles.container}>
-      {/* Outer ambient glow ring */}
+      {/* Horizontal audio waveforms in the background */}
+      <View pointerEvents="none" style={styles.waveformContainer}>
+        {/* Left waveform bars */}
+        <View style={styles.waveformRow}>
+          {LEFT_BAR_HEIGHTS.map((height, idx) => (
+            <Animated.View
+              key={`left-bar-${idx}`}
+              style={[
+                styles.waveformBar,
+                {
+                  height,
+                  opacity: isActive ? 0.75 : 0.45,
+                  transform: [
+                    {
+                      scaleY: isActive ? waveAnim : 1,
+                    },
+                  ],
+                },
+              ]}
+            />
+          ))}
+        </View>
+
+        {/* Center spacer matching the orb diameter */}
+        <View style={styles.waveformSpacer} />
+
+        {/* Right waveform bars */}
+        <View style={styles.waveformRow}>
+          {RIGHT_BAR_HEIGHTS.map((height, idx) => (
+            <Animated.View
+              key={`right-bar-${idx}`}
+              style={[
+                styles.waveformBar,
+                {
+                  height,
+                  opacity: isActive ? 0.75 : 0.45,
+                  transform: [
+                    {
+                      scaleY: isActive ? waveAnim : 1,
+                    },
+                  ],
+                },
+              ]}
+            />
+          ))}
+        </View>
+      </View>
+
+      {/* Outer soft ambient glow ring */}
       <Animated.View
         pointerEvents="none"
         style={[
           styles.ambientRing,
           {
-            backgroundColor: colors.primaryContainer,
-            opacity: isActive ? 0.45 : 0.2,
+            backgroundColor: 'rgba(235, 195, 245, 0.25)',
             transform: [{ scale: pulseAnim }],
           },
         ]}
       />
 
-      {/* Middle halo ring */}
+      {/* Middle soft halo ring */}
       <View
         pointerEvents="none"
         style={[
           styles.middleHalo,
           {
-            borderColor: colors.borderSubtle,
-            backgroundColor: colors.surfaceLow,
+            backgroundColor: 'rgba(240, 185, 230, 0.35)',
           },
         ]}
       />
 
-      {/* Main interactive tactile orb button */}
+      {/* Main interactive 3D glowing tactile orb button */}
       <Pressable
         accessibilityHint={accessibilityHint}
-        accessibilityLabel={accessibilityLabel}
+        accessibilityLabel={accessibilityLabel || label}
         accessibilityRole="button"
         disabled={disabled || busy}
         hitSlop={spacing.xs}
@@ -124,17 +174,35 @@ export function VoiceOrbView({
         style={({ pressed }) => [
           styles.orbCore,
           {
-            backgroundColor: orbColor,
-            opacity: pressed || busy ? 0.8 : 1,
+            opacity: pressed || busy ? 0.88 : 1,
           },
           shadows.lg,
         ]}
         testID={testID}
       >
-        <Text style={styles.orbIcon}>◉</Text>
-        <Text numberOfLines={2} style={styles.orbLabel}>
-          {label}
-        </Text>
+        {/* Layer 1: Base violet-magenta tone */}
+        <View style={styles.sphereBase} />
+
+        {/* Layer 2: Coral / Peach warm bottom-right glow */}
+        <View style={styles.sphereCoralGlow} />
+
+        {/* Layer 3: Vibrant pink-magenta radial glow */}
+        <View style={styles.sphereMagentaGlow} />
+
+        {/* Layer 4: Specular gloss highlight crescent */}
+        <View style={styles.sphereSpecularHighlight} />
+
+        {/* Center white microphone icon */}
+        <View style={styles.micContainer}>
+          {/* Microphone capsule */}
+          <View style={styles.micCapsule} />
+          {/* Microphone pickup cradle arc */}
+          <View style={styles.micCradle} />
+          {/* Vertical stem */}
+          <View style={styles.micStem} />
+          {/* Base plate */}
+          <View style={styles.micBase} />
+        </View>
       </Pressable>
     </View>
   );
@@ -143,44 +211,133 @@ export function VoiceOrbView({
 const styles = StyleSheet.create({
   container: {
     alignItems: 'center',
-    height: 180,
+    height: 220,
     justifyContent: 'center',
-    marginVertical: spacing.sm,
+    marginVertical: spacing.xs,
     position: 'relative',
     width: '100%',
   },
+  waveformContainer: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    position: 'absolute',
+    width: '100%',
+    zIndex: 1,
+  },
+  waveformRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 3,
+  },
+  waveformSpacer: {
+    width: 140,
+  },
+  waveformBar: {
+    backgroundColor: '#E5A5D8',
+    borderRadius: radii.full,
+    width: 3.5,
+  },
   ambientRing: {
+    borderRadius: radii.full,
+    height: 200,
+    position: 'absolute',
+    width: 200,
+    zIndex: 2,
+  },
+  middleHalo: {
     borderRadius: radii.full,
     height: 172,
     position: 'absolute',
     width: 172,
-  },
-  middleHalo: {
-    borderRadius: radii.full,
-    borderWidth: 1,
-    height: 148,
-    position: 'absolute',
-    width: 148,
+    zIndex: 3,
   },
   orbCore: {
     alignItems: 'center',
-    borderRadius: radii.full,
-    elevation: 8,
-    height: 124,
+    borderRadius: 72,
+    elevation: 12,
+    height: 144,
     justifyContent: 'center',
-    padding: spacing.md,
-    width: 124,
+    overflow: 'hidden',
+    position: 'relative',
+    shadowColor: '#E056FD',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.38,
+    shadowRadius: 22,
+    width: 144,
+    zIndex: 4,
   },
-  orbIcon: {
-    color: '#FFFFFF',
-    fontSize: 34,
-    lineHeight: 38,
+  sphereBase: {
+    backgroundColor: '#7B61FF',
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
   },
-  orbLabel: {
-    color: '#FFFFFF',
-    fontSize: typography.caption,
-    fontWeight: '700',
-    marginTop: 2,
-    textAlign: 'center',
+  sphereMagentaGlow: {
+    backgroundColor: '#E056FD',
+    borderRadius: 72,
+    height: 144,
+    left: 8,
+    opacity: 0.85,
+    position: 'absolute',
+    top: -6,
+    width: 144,
+  },
+  sphereCoralGlow: {
+    backgroundColor: '#FFA07A',
+    borderRadius: 60,
+    bottom: -15,
+    height: 120,
+    opacity: 0.9,
+    position: 'absolute',
+    right: -15,
+    width: 120,
+  },
+  sphereSpecularHighlight: {
+    backgroundColor: 'rgba(255, 255, 255, 0.42)',
+    borderRadius: radii.full,
+    height: 52,
+    left: 20,
+    opacity: 0.85,
+    position: 'absolute',
+    top: 10,
+    transform: [{ rotate: '-35deg' }],
+    width: 90,
+  },
+  micContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+  },
+  micCapsule: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 11,
+    height: 34,
+    width: 22,
+    zIndex: 2,
+  },
+  micCradle: {
+    borderBottomLeftRadius: 18,
+    borderBottomRightRadius: 18,
+    borderColor: '#FFFFFF',
+    borderTopWidth: 0,
+    borderWidth: 3.5,
+    height: 24,
+    marginTop: -14,
+    width: 36,
+    zIndex: 1,
+  },
+  micStem: {
+    backgroundColor: '#FFFFFF',
+    height: 9,
+    width: 3.5,
+  },
+  micBase: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 2,
+    height: 3.5,
+    width: 18,
   },
 });

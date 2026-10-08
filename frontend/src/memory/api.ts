@@ -8,10 +8,20 @@ import {
   VoiceSession,
 } from './types';
 
-export function listMemories(
+export async function listMemories(
   controller: AuthController,
 ): Promise<MemoryItem[]> {
-  return controller.request<MemoryItem[]>('/memories?limit=100');
+  const memories: MemoryItem[] = [];
+  const pageSize = 100;
+  let page: MemoryItem[];
+  do {
+    const offset = memories.length ? `&offset=${memories.length}` : '';
+    page = await controller.request<MemoryItem[]>(
+      `/memories?limit=${pageSize}${offset}`,
+    );
+    memories.push(...page);
+  } while (page.length === pageSize);
+  return memories;
 }
 
 export function searchMemories(

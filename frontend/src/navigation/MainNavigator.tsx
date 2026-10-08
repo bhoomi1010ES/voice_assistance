@@ -7,6 +7,7 @@ import { BottomTabBar } from '../components/navigation/BottomTabBar';
 import { AssistantScreen } from '../screens/AssistantScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
 import { DiagnosticScreen } from '../screens/DiagnosticScreen';
+import { ConnectionDiagnosticsScreen } from '../screens/ConnectionDiagnosticsScreen';
 import { AccountScreen } from '../screens/AccountScreen';
 import { SessionsScreen } from '../screens/SessionsScreen';
 import { MemoryScreen } from '../screens/MemoryScreen';
@@ -14,13 +15,14 @@ import { TasksScreen } from '../screens/TasksScreen';
 import { useAuth } from '../auth/AuthProvider';
 import { useVoiceSocket } from '../voice/VoiceSocketProvider';
 import { useAppTheme } from '../design/ThemeProvider';
-import { shadows, spacing, typography } from '../design/tokens';
+import { radii, shadows, spacing, typography } from '../design/tokens';
 import { setupPushNotificationListeners } from '../notifications/PushNotificationService';
 
 export type MainRoute =
   | 'assistant'
   | 'settings'
   | 'diagnostics'
+  | 'connection-diagnostics'
   | 'account'
   | 'sessions'
   | 'memory'
@@ -60,7 +62,15 @@ export function MainNavigator() {
   };
 
   const isSecondaryRoute =
-    route === 'account' || route === 'sessions' || route === 'diagnostics';
+    route === 'account' ||
+    route === 'sessions' ||
+    route === 'diagnostics' ||
+    route === 'connection-diagnostics';
+  const isSettingsPresentationRoute =
+    route === 'settings' ||
+    route === 'sessions' ||
+    route === 'diagnostics' ||
+    route === 'connection-diagnostics';
 
   const getHeaderTitle = () => {
     switch (route) {
@@ -78,6 +88,8 @@ export function MainNavigator() {
         return strings.sessions.title;
       case 'diagnostics':
         return strings.settings.diagnostics;
+      case 'connection-diagnostics':
+        return 'Connection diagnostics';
       default:
         return strings.appName;
     }
@@ -94,49 +106,127 @@ export function MainNavigator() {
             paddingTop: insets.top,
           },
           shadows.sm,
+          isSettingsPresentationRoute
+            ? [styles.settingsAppBar, { backgroundColor: colors.background }]
+            : null,
         ]}
         testID="main-header"
       >
         <View style={styles.appBarContent}>
-          {isSecondaryRoute ? (
-            <Pressable
-              accessibilityLabel={strings.assistant.cancel || 'Back'}
-              accessibilityRole="button"
-              hitSlop={spacing.sm}
-              onPress={() => navigate('settings')}
-              style={styles.backButton}
-              testID="nav-back-button"
-            >
-              <Text style={[styles.backArrow, { color: colors.primary }]}>
-                ←
-              </Text>
-            </Pressable>
-          ) : (
-            <View style={styles.brandIconContainer}>
-              <Text style={[styles.brandIcon, { color: colors.primary }]}>
-                ◉
-              </Text>
-            </View>
-          )}
+          {isSettingsPresentationRoute ? (
+            <>
+              {route === 'settings' ? (
+                <View style={styles.brandIconContainer}>
+                  <Text style={[styles.sparkleIcon, { color: colors.primary }]}>
+                    {'\u2726'}
+                  </Text>
+                </View>
+              ) : (
+                <Pressable
+                  accessibilityLabel="Back to Settings"
+                  accessibilityRole="button"
+                  hitSlop={spacing.sm}
+                  onPress={() => navigate('settings')}
+                  style={styles.backButton}
+                  testID="nav-back-button"
+                >
+                  <Text style={[styles.backArrow, { color: colors.primary }]}>
+                    {'\u2039'}
+                  </Text>
+                </Pressable>
+              )}
+            </>
+          ) : route === 'memory' || route === 'tasks' ? (
+            <>
+              <View style={styles.brandIconContainer}>
+                <Text style={[styles.sparkleIcon, { color: '#EC4899' }]}>
+                  ✦
+                </Text>
+              </View>
 
-          <AppText style={styles.appBarTitle}>{getHeaderTitle()}</AppText>
+              <View
+                style={[
+                  styles.titleColumn,
+                  route === 'tasks' ? styles.taskTitleColumn : null,
+                ]}
+              >
+                <AppText style={styles.appBarTitle}>
+                  {route === 'tasks'
+                    ? strings.tasks.title
+                    : strings.memory.title}
+                </AppText>
+                <Text
+                  style={[styles.appBarSubtitle, { color: colors.textMuted }]}
+                >
+                  {route === 'tasks' ? strings.tasks.body : strings.memory.body}
+                </Text>
+              </View>
+            </>
+          ) : route === 'assistant' ? (
+            <>
+              <View style={styles.brandIconContainer}>
+                <Text style={[styles.sparkleIcon, { color: colors.primary }]}>
+                  ✦
+                </Text>
+              </View>
 
-          {/* Balance spacer or profile shortcut */}
-          {route === 'settings' ? (
-            <Pressable
-              accessibilityLabel={strings.main.signOut}
-              accessibilityRole="button"
-              hitSlop={spacing.sm}
-              onPress={signOut}
-              style={styles.headerActionButton}
-              testID="header-sign-out"
-            >
-              <Text style={[styles.headerActionText, { color: colors.error }]}>
-                {strings.main.signOut}
-              </Text>
-            </Pressable>
+              <View style={styles.titleColumn}>
+                <AppText style={styles.appBarTitle}>{strings.appName}</AppText>
+                <Text
+                  style={[styles.appBarSubtitle, { color: colors.textMuted }]}
+                >
+                  {strings.assistant.tagline}
+                </Text>
+              </View>
+
+              <Pressable
+                accessibilityLabel={strings.sessions.title}
+                accessibilityRole="button"
+                hitSlop={spacing.sm}
+                onPress={() => navigate('sessions')}
+                style={[
+                  styles.historyButton,
+                  {
+                    backgroundColor: colors.surfaceLow,
+                    borderColor: colors.borderSubtle,
+                  },
+                ]}
+                testID="header-sessions-button"
+              >
+                <Text
+                  style={[styles.historyButtonIcon, { color: colors.text }]}
+                >
+                  ↺
+                </Text>
+              </Pressable>
+            </>
           ) : (
-            <View style={styles.headerRightSpacer} />
+            <>
+              {isSecondaryRoute ? (
+                <Pressable
+                  accessibilityLabel={strings.assistant.cancel || 'Back'}
+                  accessibilityRole="button"
+                  hitSlop={spacing.sm}
+                  onPress={() => navigate('settings')}
+                  style={styles.backButton}
+                  testID="nav-back-button"
+                >
+                  <Text style={[styles.backArrow, { color: colors.primary }]}>
+                    ←
+                  </Text>
+                </Pressable>
+              ) : (
+                <View style={styles.brandIconContainer}>
+                  <Text style={[styles.brandIcon, { color: colors.primary }]}>
+                    ◉
+                  </Text>
+                </View>
+              )}
+
+              <AppText style={styles.appBarTitle}>{getHeaderTitle()}</AppText>
+
+              <View style={styles.headerRightSpacer} />
+            </>
           )}
         </View>
       </View>
@@ -147,12 +237,17 @@ export function MainNavigator() {
           <SettingsScreen
             onOpenAccount={() => navigate('account')}
             onOpenDiagnostics={() => navigate('diagnostics')}
+            onOpenConnectionDiagnostics={() =>
+              navigate('connection-diagnostics')
+            }
             onOpenSessions={() => navigate('sessions')}
-            onOpenMemory={() => navigate('memory')}
             onSignOut={signOut}
           />
         ) : null}
         {route === 'diagnostics' ? <DiagnosticScreen /> : null}
+        {route === 'connection-diagnostics' ? (
+          <ConnectionDiagnosticsScreen />
+        ) : null}
         {route === 'account' ? <AccountScreen /> : null}
         {route === 'sessions' ? <SessionsScreen /> : null}
         {route === 'memory' ? <MemoryScreen /> : null}
@@ -182,6 +277,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     zIndex: 10,
   },
+  settingsAppBar: {
+    borderBottomWidth: 0,
+    elevation: 0,
+    shadowOpacity: 0,
+  },
   appBarContent: {
     alignItems: 'center',
     flexDirection: 'row',
@@ -199,6 +299,39 @@ const styles = StyleSheet.create({
     fontSize: 20,
     lineHeight: 24,
   },
+  sparkleIcon: {
+    fontSize: 28,
+    lineHeight: 32,
+  },
+  titleColumn: {
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'center',
+  },
+  taskTitleColumn: {
+    alignItems: 'flex-start',
+    paddingLeft: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  appBarSubtitle: {
+    fontSize: 12,
+    fontWeight: '500',
+    letterSpacing: 0.2,
+    marginTop: 1,
+  },
+  historyButton: {
+    alignItems: 'center',
+    borderRadius: radii.full,
+    borderWidth: 1,
+    height: 38,
+    justifyContent: 'center',
+    width: 38,
+  },
+  historyButtonIcon: {
+    fontSize: 18,
+    fontWeight: '700',
+    lineHeight: 22,
+  },
   backButton: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -215,19 +348,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: -0.2,
   },
-  headerActionButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 44,
-    paddingHorizontal: spacing.sm,
-  },
-  headerActionText: {
-    fontSize: typography.label,
-    fontWeight: '600',
-  },
   headerRightSpacer: {
-    minHeight: 36,
-    minWidth: 36,
+    minHeight: 38,
+    minWidth: 38,
   },
   content: {
     flex: 1,

@@ -1,41 +1,41 @@
 export const colors = {
   light: {
     // Canvas & Surfaces
-    background: '#FCF8FB',
+    background: '#FAF8FC',
     surface: '#FFFFFF',
-    surfaceMuted: '#F0EDEF',
-    surfaceLow: '#F6F3F5',
-    surfaceHigh: '#EAE7EA',
-    border: '#E0C0B4',
-    borderSubtle: '#F0EDEF',
+    surfaceMuted: '#F4EFF7',
+    surfaceLow: '#F7F3F9',
+    surfaceHigh: '#EFEAF5',
+    border: '#EFEAF5',
+    borderSubtle: '#F5F0FA',
 
-    // Primary Brand (Stitch Terracotta / Amber)
-    primary: '#D95C23',
-    primaryDark: '#A23900',
-    primaryContainer: '#FFDBCE',
+    // Primary Brand (Modern Violet / Purple)
+    primary: '#7B61FF',
+    primaryDark: '#5D45E0',
+    primaryContainer: '#EEE8FF',
     onPrimary: '#FFFFFF',
-    onPrimaryContainer: '#7F2B00',
+    onPrimaryContainer: '#2B1480',
 
-    // Secondary Accent (Stitch Deep Indigo / Violet)
-    secondary: '#5647CA',
-    secondaryLight: '#6355D8',
-    secondaryContainer: '#E4DFFF',
+    // Secondary Accent (Coral / Pink)
+    secondary: '#FF6584',
+    secondaryLight: '#FF7D99',
+    secondaryContainer: '#FFEAEF',
     onSecondary: '#FFFFFF',
-    onSecondaryContainer: '#160066',
+    onSecondaryContainer: '#80102B',
 
-    // Tertiary (Warm Sand / Neutral Bronze)
-    tertiary: '#5E5C53',
-    tertiaryContainer: '#E7E2D6',
+    // Tertiary (Soft Lavender / Slate)
+    tertiary: '#6C6377',
+    tertiaryContainer: '#EAE5F2',
     onTertiary: '#FFFFFF',
 
     // Content / Text
-    text: '#1B1B1D',
-    textMuted: '#584239',
-    textSubtle: '#8C7168',
-    textInverse: '#FCF8FB',
+    text: '#181725',
+    textMuted: '#8E8B9E',
+    textSubtle: '#A6A2B5',
+    textInverse: '#FAF8FC',
 
     // Backward-compatible aliases for existing screens
-    accent: '#D95C23',
+    accent: '#7B61FF',
     accentText: '#FFFFFF',
 
     // Semantic States
@@ -45,14 +45,14 @@ export const colors = {
     warningContainer: '#FEF3C7',
     error: '#BA1A1A',
     errorContainer: '#FFDAD6',
-    disabled: '#A8B0BA',
+    disabled: '#C4BFCE',
 
     // Voice Orb Identity
-    orbGradientStart: '#FF9666',
-    orbGradientMiddle: '#E05B28',
-    orbGradientEnd: '#9C3A12',
-    orbGlow: 'rgba(217, 92, 35, 0.35)',
-    orbRipple: 'rgba(217, 92, 35, 0.12)',
+    orbGradientStart: '#7B61FF',
+    orbGradientMiddle: '#E056FD',
+    orbGradientEnd: '#FFA07A',
+    orbGlow: 'rgba(123, 97, 255, 0.35)',
+    orbRipple: 'rgba(224, 86, 253, 0.15)',
   },
   dark: {
     // Canvas & Surfaces

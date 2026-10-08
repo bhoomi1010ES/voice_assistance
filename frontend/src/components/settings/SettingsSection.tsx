@@ -15,7 +15,7 @@ export function SettingsSection({ title, children }: SettingsSectionProps) {
   return (
     <View style={styles.container}>
       {title ? (
-        <AppText style={[styles.title, { color: colors.primary }]}>
+        <AppText style={[styles.title, { color: colors.textMuted }]}>
           {title}
         </AppText>
       ) : null}
@@ -36,18 +36,18 @@ export function SettingsSection({ title, children }: SettingsSectionProps) {
 
 const styles = StyleSheet.create({
   container: {
-    gap: spacing.xs,
+    gap: 10,
     marginTop: spacing.sm,
   },
   title: {
     fontSize: typography.caption,
     fontWeight: '700',
-    letterSpacing: 0.8,
+    letterSpacing: 1.6,
     paddingHorizontal: spacing.xs,
     textTransform: 'uppercase',
   },
   card: {
-    borderRadius: radii.md,
+    borderRadius: radii.lg + 6,
     borderWidth: 1,
     overflow: 'hidden',
     padding: 0,

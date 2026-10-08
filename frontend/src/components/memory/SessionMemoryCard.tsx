@@ -1,6 +1,6 @@
 import React from 'react';
-import { StyleSheet, View } from 'react-native';
-import { ActionButton, AppText, Card } from '../ui/Primitives';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppText } from '../ui/Primitives';
 import { useAppTheme } from '../../design/ThemeProvider';
 import { radii, shadows, spacing, typography } from '../../theme';
 import { strings } from '../../i18n/strings';
@@ -19,131 +19,117 @@ export function SessionMemoryCard({
   const { colors } = useAppTheme();
 
   return (
-    <Card
+    <View
       style={[
         styles.card,
         {
-          backgroundColor: sessionExcluded ? colors.surfaceLow : colors.surface,
-          borderColor: sessionExcluded ? colors.warning : colors.border,
+          backgroundColor: colors.surface,
+          borderColor: sessionExcluded ? colors.warning : colors.borderSubtle,
         },
+        shadows.sm,
       ]}
       testID="memory-session-card"
     >
-      <View style={styles.headerRow}>
-        <View
-          style={[
-            styles.iconContainer,
+      <View style={styles.contentRow}>
+        <View style={styles.iconCircle}>
+          <Text style={styles.icon}>{sessionExcluded ? '🔒' : '👁️‍🗨️'}</Text>
+        </View>
+
+        <View style={styles.textContainer}>
+          <AppText style={[styles.title, { color: colors.text }]}>
+            {strings.memory.sessionTitle}
+          </AppText>
+          <Text style={[styles.description, { color: colors.textMuted }]}>
+            {strings.memory.sessionBody}
+          </Text>
+        </View>
+
+        <Pressable
+          accessibilityLabel={
+            sessionExcluded
+              ? strings.memory.includeSession
+              : strings.memory.excludeSession
+          }
+          accessibilityRole="button"
+          disabled={excluding}
+          onPress={onToggle}
+          style={({ pressed }) => [
+            styles.actionButton,
             {
               backgroundColor: sessionExcluded
                 ? colors.warningContainer
-                : colors.secondaryContainer,
+                : colors.surfaceLow,
+              borderColor: sessionExcluded
+                ? colors.warning
+                : colors.borderSubtle,
+              opacity: excluding ? 0.6 : pressed ? 0.8 : 1,
             },
           ]}
+          testID="memory-session-exclusion"
         >
-          <AppText style={styles.icon}>{sessionExcluded ? '🔒' : '🎙'}</AppText>
-        </View>
-
-        <View style={styles.titleContainer}>
-          <View style={styles.titleRow}>
-            <AppText style={[styles.title, { color: colors.text }]}>
-              {strings.memory.sessionTitle}
-            </AppText>
-            <View
-              style={[
-                styles.badge,
-                {
-                  backgroundColor: sessionExcluded
-                    ? colors.warningContainer
-                    : colors.surfaceMuted,
-                },
-              ]}
-            >
-              <AppText
-                style={[
-                  styles.badgeText,
-                  {
-                    color: sessionExcluded ? colors.warning : colors.textMuted,
-                  },
-                ]}
-              >
-                {sessionExcluded ? 'Incognito' : 'Active Session'}
-              </AppText>
-            </View>
-          </View>
-          <AppText style={[styles.description, { color: colors.textMuted }]}>
-            {strings.memory.sessionBody}
-          </AppText>
-        </View>
+          <Text
+            style={[
+              styles.actionButtonText,
+              {
+                color: sessionExcluded ? colors.warning : colors.text,
+              },
+            ]}
+          >
+            {sessionExcluded
+              ? strings.memory.includeSession
+              : strings.memory.excludeSession}
+          </Text>
+        </Pressable>
       </View>
-
-      <ActionButton
-        disabled={excluding}
-        label={
-          sessionExcluded
-            ? strings.memory.includeSession
-            : strings.memory.excludeSession
-        }
-        onPress={onToggle}
-        style={styles.actionButton}
-        testID="memory-session-exclusion"
-        variant="secondary"
-      />
-    </Card>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: radii.md,
+    borderRadius: radii.xl,
     borderWidth: 1,
-    gap: spacing.md,
     padding: spacing.md,
-    ...shadows.sm,
   },
-  headerRow: {
-    alignItems: 'flex-start',
+  contentRow: {
+    alignItems: 'center',
     flexDirection: 'row',
     gap: spacing.sm,
   },
-  iconContainer: {
+  iconCircle: {
     alignItems: 'center',
-    borderRadius: radii.full,
+    backgroundColor: '#EDE9FE',
+    borderRadius: 20,
     height: 40,
     justifyContent: 'center',
-    marginTop: 2,
     width: 40,
   },
   icon: {
     fontSize: 18,
   },
-  titleContainer: {
+  textContainer: {
     flex: 1,
-    gap: spacing.xs,
-  },
-  titleRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: spacing.xs,
+    gap: 2,
   },
   title: {
-    fontSize: typography.subheading,
-    fontWeight: '700',
-    letterSpacing: -0.2,
-  },
-  badge: {
-    borderRadius: radii.pill,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 2,
-  },
-  badgeText: {
-    fontSize: typography.caption,
+    fontSize: typography.body,
     fontWeight: '700',
   },
   description: {
     fontSize: typography.caption,
-    lineHeight: 18,
+    lineHeight: 16,
   },
   actionButton: {
-    marginTop: spacing.xs,
+    alignItems: 'center',
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.sm + 2,
+    paddingVertical: spacing.xs + 2,
+  },
+  actionButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
 });
+

@@ -149,6 +149,29 @@ test('bottom navigation opens settings and profile actions', async () => {
   });
   expect(renderer.root.findByProps({ testID: 'settings-screen' })).toBeTruthy();
 
+  expect(
+    renderer.root.findAllByProps({ testID: 'voice-diagnostics' }),
+  ).toHaveLength(0);
+  await act(async () => {
+    renderer.root
+      .findByProps({ testID: 'settings-connection-diagnostics' })
+      .props.onPress();
+  });
+  expect(
+    renderer.root.findByProps({ testID: 'connection-diagnostics-screen' }),
+  ).toBeTruthy();
+  expect(
+    renderer.root.findByProps({ testID: 'voice-diagnostics' }),
+  ).toBeTruthy();
+  expect(
+    renderer.root.findByProps({ testID: 'tab-settings' }).props
+      .accessibilityState.selected,
+  ).toBe(true);
+  await act(async () => {
+    renderer.root.findByProps({ testID: 'nav-back-button' }).props.onPress();
+  });
+  expect(renderer.root.findByProps({ testID: 'settings-screen' })).toBeTruthy();
+
   await act(async () => {
     renderer.root.findByProps({ testID: 'settings-account' }).props.onPress();
   });

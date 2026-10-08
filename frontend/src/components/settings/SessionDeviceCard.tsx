@@ -11,7 +11,7 @@ interface SessionDeviceCardProps {
   isRevoked: boolean;
   revoking: boolean;
   onRevoke: () => void;
-  icon?: string;
+  icon?: React.ReactNode;
   testID?: string;
 }
 
@@ -31,9 +31,8 @@ export function SessionDeviceCard({
       style={[
         styles.card,
         {
-          backgroundColor: isRevoked ? colors.surfaceLow : colors.surface,
-          borderColor: isRevoked ? colors.borderSubtle : colors.border,
-          opacity: isRevoked ? 0.7 : 1,
+          backgroundColor: colors.surface,
+          borderColor: colors.borderSubtle,
         },
       ]}
       testID={testID}
@@ -43,13 +42,15 @@ export function SessionDeviceCard({
           style={[
             styles.iconContainer,
             {
-              backgroundColor: isRevoked
-                ? colors.surfaceMuted
-                : colors.surfaceLow,
+              backgroundColor: colors.primaryContainer,
             },
           ]}
         >
-          <AppText style={styles.icon}>{icon}</AppText>
+          {typeof icon === 'string' ? (
+            <AppText style={styles.icon}>{icon}</AppText>
+          ) : (
+            icon
+          )}
         </View>
 
         <View style={styles.info}>
@@ -65,10 +66,15 @@ export function SessionDeviceCard({
           <View
             style={[
               styles.revokedBadge,
-              { backgroundColor: colors.surfaceMuted },
+              { backgroundColor: colors.secondaryContainer },
             ]}
           >
-            <AppText style={[styles.revokedText, { color: colors.textSubtle }]}>
+            <AppText
+              style={[
+                styles.revokedText,
+                { color: colors.onSecondaryContainer },
+              ]}
+            >
               {strings.sessions.revoked}
             </AppText>
           </View>
@@ -94,7 +100,7 @@ export function SessionDeviceCard({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: radii.md,
+    borderRadius: radii.lg + 6,
     borderWidth: 1,
     gap: spacing.sm,
     marginTop: spacing.sm,
@@ -108,10 +114,10 @@ const styles = StyleSheet.create({
   },
   iconContainer: {
     alignItems: 'center',
-    borderRadius: radii.sm,
-    height: 40,
+    borderRadius: radii.full,
+    height: 46,
     justifyContent: 'center',
-    width: 40,
+    width: 46,
   },
   icon: {
     fontSize: 20,
@@ -122,11 +128,11 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: typography.body,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   subtitle: {
-    fontSize: typography.caption,
-    lineHeight: 16,
+    fontSize: 13,
+    lineHeight: 20,
   },
   revokedBadge: {
     borderRadius: radii.pill,

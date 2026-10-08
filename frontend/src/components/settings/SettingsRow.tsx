@@ -5,7 +5,7 @@ import { useAppTheme } from '../../design/ThemeProvider';
 import { radii, spacing, typography } from '../../theme';
 
 interface SettingsRowProps {
-  icon: string;
+  icon: React.ReactNode;
   title: string;
   subtitle?: string;
   badge?: string;
@@ -14,6 +14,7 @@ interface SettingsRowProps {
   destructive?: boolean;
   disabled?: boolean;
   showDivider?: boolean;
+  iconTone?: 'primary' | 'blue';
 }
 
 export function SettingsRow({
@@ -26,8 +27,9 @@ export function SettingsRow({
   destructive = false,
   disabled = false,
   showDivider = false,
+  iconTone = 'primary',
 }: SettingsRowProps) {
-  const { colors } = useAppTheme();
+  const { colors, mode } = useAppTheme();
 
   return (
     <>
@@ -51,11 +53,17 @@ export function SettingsRow({
             {
               backgroundColor: destructive
                 ? colors.errorContainer
-                : colors.surfaceMuted,
+                : iconTone === 'blue' && mode === 'light'
+                ? '#E8F2FF'
+                : colors.primaryContainer,
             },
           ]}
         >
-          <AppText style={styles.icon}>{icon}</AppText>
+          {typeof icon === 'string' ? (
+            <AppText style={styles.icon}>{icon}</AppText>
+          ) : (
+            icon
+          )}
         </View>
 
         <View style={styles.textContainer}>
@@ -116,14 +124,14 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     minHeight: 56,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm + 2,
+    paddingVertical: 16,
   },
   iconContainer: {
     alignItems: 'center',
-    borderRadius: radii.sm,
-    height: 38,
+    borderRadius: radii.full,
+    height: 46,
     justifyContent: 'center',
-    width: 38,
+    width: 46,
   },
   icon: {
     fontSize: 18,
@@ -134,11 +142,11 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: typography.body,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   subtitle: {
-    fontSize: typography.caption,
-    lineHeight: 16,
+    fontSize: 13,
+    lineHeight: 20,
   },
   badge: {
     borderRadius: radii.pill,
@@ -156,6 +164,7 @@ const styles = StyleSheet.create({
   },
   divider: {
     height: 1,
-    marginLeft: spacing.md + 38 + spacing.md,
+    marginLeft: spacing.md,
+    marginRight: spacing.md,
   },
 });

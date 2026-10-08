@@ -43,7 +43,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
     justifyContent: 'center',
-    marginVertical: spacing.xs,
+    marginBottom: spacing.md,
+    marginTop: spacing.xs,
     paddingHorizontal: spacing.md,
   },
   primaryRow: {
@@ -56,14 +57,16 @@ const styles = StyleSheet.create({
     lineHeight: 14,
   },
   primaryText: {
-    fontSize: typography.heading,
-    fontWeight: '700',
-    letterSpacing: -0.2,
+    fontSize: 26,
+    fontWeight: '800',
+    letterSpacing: -0.3,
     textAlign: 'center',
   },
   subText: {
-    fontSize: typography.bodySm,
+    fontSize: 15,
+    fontWeight: '500',
     lineHeight: 20,
+    marginTop: 2,
     textAlign: 'center',
   },
 });

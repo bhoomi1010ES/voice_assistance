@@ -5,12 +5,11 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { ScrollView, StyleSheet, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { safeUserMessage, toClientError } from '../api/errors';
 import {
   ActionButton,
   AppText,
-  Heading,
   Screen,
   StatusBanner,
 } from '../components/ui/Primitives';
@@ -36,6 +35,8 @@ import { MemoryItem, MemorySettings } from '../memory/types';
 import { MemoryCard } from '../components/memory/MemoryCard';
 import { MemoryDetailCard } from '../components/memory/MemoryDetailCard';
 import { MemorySettingsCard } from '../components/memory/MemorySettingsCard';
+import { KnowledgeModeCard } from '../components/memory/KnowledgeModeCard';
+import { KnowledgeModeModal } from '../components/memory/KnowledgeModeModal';
 import { MemorySearchBar } from '../components/memory/MemorySearchBar';
 import { MemoryCreateCard } from '../components/memory/MemoryCreateCard';
 import { SessionMemoryCard } from '../components/memory/SessionMemoryCard';
@@ -43,6 +44,7 @@ import { MemoryConfirmModal } from '../components/memory/MemoryConfirmModal';
 import { MemoryEmptyState } from '../components/memory/MemoryEmptyState';
 
 type Confirmation = 'delete' | 'delete-all' | null;
+const LATEST_MEMORY_LIMIT = 5;
 
 export function MemoryScreen() {
   const { controller, status } = useAuth();
@@ -50,6 +52,7 @@ export function MemoryScreen() {
   const { sessionId } = useVoiceSocket();
   const [settings, setSettings] = useState<MemorySettings | null>(null);
   const [memories, setMemories] = useState<MemoryItem[]>([]);
+  const [showAllMemories, setShowAllMemories] = useState(false);
   const [selected, setSelected] = useState<MemoryItem | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -60,6 +63,7 @@ export function MemoryScreen() {
   const [saving, setSaving] = useState(false);
   const [excluding, setExcluding] = useState(false);
   const [sessionExcluded, setSessionExcluded] = useState(false);
+  const [showKnowledgeMode, setShowKnowledgeMode] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -323,35 +327,24 @@ export function MemoryScreen() {
     return 'success';
   }, [loading, memories.length]);
 
+  const isSearch = query.trim().length > 0;
+  const displayedMemories = useMemo(() => {
+    if (isSearch) return memories;
+    const latest = [...memories].sort(
+      (a, b) =>
+        Date.parse(b.created_at) - Date.parse(a.created_at) ||
+        b.id.localeCompare(a.id),
+    );
+    return showAllMemories ? latest : latest.slice(0, LATEST_MEMORY_LIMIT);
+  }, [isSearch, memories, showAllMemories]);
+
   return (
     <Screen testID="memory-screen">
       <ScrollView contentContainerStyle={styles.content}>
-        {/* Stitch-inspired Hero Header */}
-        <View style={styles.header}>
-          <AppText style={[styles.overline, { color: colors.primary }]}>
-            KNOWLEDGE & CONTEXT
-          </AppText>
-          <Heading>{strings.memory.title}</Heading>
-          <AppText style={[styles.body, { color: colors.textMuted }]}>
-            {strings.memory.body}
-          </AppText>
-        </View>
-
         {error ? <StatusBanner tone="error">{error}</StatusBanner> : null}
         {message ? <StatusBanner>{message}</StatusBanner> : null}
 
-        {/* Master Memory Settings Card */}
-        <MemorySettingsCard
-          enabled={Boolean(settings?.enabled)}
-          knowledgeMode={settings?.knowledge_mode ?? 'rag'}
-          okfAvailable={Boolean(settings?.okf_available)}
-          loading={!settings}
-          onKnowledgeModeChange={changeKnowledgeMode}
-          onToggle={toggleMemory}
-          saving={saving}
-        />
-
-        {/* Debounced Search Bar */}
+        {/* 1. Search Bar */}
         <MemorySearchBar
           enabled={Boolean(settings?.enabled)}
           onQueryChange={setQuery}
@@ -360,7 +353,21 @@ export function MemoryScreen() {
           searching={searching}
         />
 
-        {/* Add Memory Card */}
+        {/* 2. Memory Settings Card */}
+        <MemorySettingsCard
+          enabled={Boolean(settings?.enabled)}
+          loading={!settings}
+          onToggle={toggleMemory}
+          saving={saving}
+        />
+
+        {/* 3. Knowledge Mode Card */}
+        <KnowledgeModeCard
+          knowledgeMode={settings?.knowledge_mode ?? 'rag'}
+          onPress={() => setShowKnowledgeMode(true)}
+        />
+
+        {/* 4. Save a Memory Card */}
         <MemoryCreateCard
           enabled={Boolean(settings?.enabled)}
           newContent={newContent}
@@ -369,7 +376,7 @@ export function MemoryScreen() {
           saving={saving}
         />
 
-        {/* Active Session Exclusion Card (Conditional on active session) */}
+        {/* 5. Exclude current chat Card */}
         {sessionId ? (
           <SessionMemoryCard
             excluding={excluding}
@@ -378,31 +385,52 @@ export function MemoryScreen() {
           />
         ) : null}
 
-        {/* Memory List Header */}
+        {/* 6. Latest Memories Section */}
         <View style={styles.listHeader}>
           <View style={styles.listTitleContainer}>
-            <AppText style={[styles.sectionTitle, { color: colors.text }]}>
-              {strings.memory.listTitle}
-            </AppText>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>
+              {isSearch
+                ? strings.memory.searchResults
+                : showAllMemories
+                ? strings.memory.allMemories
+                : strings.memory.latestMemories}
+            </Text>
             <View
               style={[
                 styles.countBadge,
                 { backgroundColor: colors.surfaceMuted },
               ]}
             >
-              <AppText style={[styles.countText, { color: colors.textMuted }]}>
+              <Text style={[styles.countText, { color: colors.textMuted }]}>
                 {memories.length}
-              </AppText>
+              </Text>
             </View>
           </View>
 
-          <ActionButton
-            disabled={saving || memories.length === 0}
-            label={strings.memory.deleteAll}
-            onPress={() => setConfirmation('delete-all')}
-            testID="memory-delete-all"
-            variant="quiet"
-          />
+          <View style={styles.listActions}>
+            <ActionButton
+              disabled={saving || memories.length === 0}
+              label={strings.memory.deleteAll}
+              onPress={() => setConfirmation('delete-all')}
+              style={styles.listAction}
+              testID="memory-delete-all"
+              variant="quiet"
+            />
+            {!isSearch && memories.length > LATEST_MEMORY_LIMIT ? (
+              <ActionButton
+                accessibilityState={{ expanded: showAllMemories }}
+                label={
+                  showAllMemories
+                    ? strings.memory.showLatest
+                    : strings.memory.viewAll
+                }
+                onPress={() => setShowAllMemories(value => !value)}
+                style={styles.listAction}
+                testID="memory-view-all"
+                variant="quiet"
+              />
+            ) : null}
+          </View>
         </View>
 
         {visibleState === 'loading' ? (
@@ -414,22 +442,38 @@ export function MemoryScreen() {
         ) : null}
 
         {/* Memory Items Stack */}
-        {memories.map(memory => (
-          <MemoryCard
-            key={memory.id}
-            memory={memory}
-            onView={selectMemory}
-            selected={selected?.id === memory.id}
-          />
-        ))}
+        {memories.length > 0 ? (
+          <View
+            style={[
+              styles.memoriesContainer,
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.borderSubtle,
+              },
+            ]}
+          >
+            {displayedMemories.map(memory => (
+              <MemoryCard
+                key={memory.id}
+                memory={memory}
+                onView={selectMemory}
+                selected={selected?.id === memory.id}
+              />
+            ))}
+          </View>
+        ) : null}
 
-        {/* Selected Memory Detail & Editor */}
+        {/* Selected Memory Detail & Editor Sheet */}
         {selected ? (
           <MemoryDetailCard
             draft={draft}
             editing={editing}
             onCancel={() => {
               setDraft(selected.content);
+              setEditing(false);
+            }}
+            onClose={() => {
+              setSelected(null);
               setEditing(false);
             }}
             onDelete={() => setConfirmation('delete')}
@@ -450,6 +494,16 @@ export function MemoryScreen() {
             saving={saving}
           />
         ) : null}
+
+        {/* Knowledge Mode Modal */}
+        <KnowledgeModeModal
+          knowledgeMode={settings?.knowledge_mode ?? 'rag'}
+          okfAvailable={Boolean(settings?.okf_available)}
+          onClose={() => setShowKnowledgeMode(false)}
+          onKnowledgeModeChange={changeKnowledgeMode}
+          saving={saving}
+          visible={showKnowledgeMode}
+        />
       </ScrollView>
     </Screen>
   );
@@ -460,33 +514,18 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     paddingBottom: spacing.xxl,
   },
-  header: {
-    gap: 2,
-    marginBottom: spacing.xs,
-  },
-  overline: {
-    fontSize: typography.caption,
-    fontWeight: '700',
-    letterSpacing: 1,
-  },
-  body: {
-    fontSize: typography.caption,
-    lineHeight: 18,
-    marginTop: 2,
-  },
   listHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: spacing.md,
+    gap: spacing.xs,
+    marginTop: spacing.xs,
   },
   listTitleContainer: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: spacing.xs,
+    gap: spacing.xs + 2,
   },
   sectionTitle: {
-    fontSize: typography.subheading,
+    flexShrink: 1,
+    fontSize: 16,
     fontWeight: '700',
   },
   countBadge: {
@@ -497,6 +536,23 @@ const styles = StyleSheet.create({
   countText: {
     fontSize: typography.caption,
     fontWeight: '700',
+  },
+  listActions: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+    justifyContent: 'space-between',
+  },
+  listAction: {
+    maxWidth: '100%',
+    paddingHorizontal: spacing.sm,
+  },
+  memoriesContainer: {
+    borderRadius: radii.xl,
+    borderWidth: 1,
+    overflow: 'hidden',
+    padding: spacing.xs,
   },
   loadingText: {
     fontSize: typography.body,

@@ -28,7 +28,8 @@ export function BottomTabBar({ activeRoute, onNavigate }: BottomTabBarProps) {
     activeRoute === 'settings' ||
     activeRoute === 'account' ||
     activeRoute === 'sessions' ||
-    activeRoute === 'diagnostics';
+    activeRoute === 'diagnostics' ||
+    activeRoute === 'connection-diagnostics';
 
   const tabs: TabConfig[] = [
     {
@@ -40,13 +41,13 @@ export function BottomTabBar({ activeRoute, onNavigate }: BottomTabBarProps) {
     {
       route: 'memory',
       label: strings.main.memory,
-      icon: '✦',
+      icon: '🧠',
       testID: 'tab-memory',
     },
     {
       route: 'tasks',
       label: strings.main.tasks,
-      icon: '✓',
+      icon: '☑',
       testID: 'tab-tasks',
     },
     {
@@ -67,7 +68,7 @@ export function BottomTabBar({ activeRoute, onNavigate }: BottomTabBarProps) {
           borderTopColor: colors.borderSubtle,
           paddingBottom: Math.max(insets.bottom, spacing.xs),
         },
-        shadows.md,
+        shadows.sm,
       ]}
       testID="bottom-tab-bar"
     >
@@ -92,19 +93,12 @@ export function BottomTabBar({ activeRoute, onNavigate }: BottomTabBarProps) {
               ]}
               testID={tab.testID}
             >
-              <View
-                style={[
-                  styles.iconBadge,
-                  isSelected && {
-                    backgroundColor: colors.primaryContainer,
-                  },
-                ]}
-              >
+              <View style={styles.iconContainer}>
                 <Text
                   style={[
                     styles.tabIcon,
                     {
-                      color: isSelected ? colors.primaryDark : colors.textMuted,
+                      color: isSelected ? colors.primary : colors.textMuted,
                     },
                   ]}
                 >
@@ -116,7 +110,7 @@ export function BottomTabBar({ activeRoute, onNavigate }: BottomTabBarProps) {
                 style={[
                   styles.tabLabel,
                   {
-                    color: isSelected ? colors.primaryDark : colors.textMuted,
+                    color: isSelected ? colors.primary : colors.textMuted,
                     fontWeight: isSelected ? '700' : '500',
                   },
                 ]}
@@ -128,6 +122,7 @@ export function BottomTabBar({ activeRoute, onNavigate }: BottomTabBarProps) {
                   style={[
                     styles.activeIndicator,
                     { backgroundColor: colors.primary },
+                    tab.route === 'settings' ? styles.settingsIndicator : null,
                   ]}
                 />
               ) : (
@@ -144,13 +139,13 @@ export function BottomTabBar({ activeRoute, onNavigate }: BottomTabBarProps) {
 const styles = StyleSheet.create({
   container: {
     borderTopWidth: 1,
-    elevation: 8,
+    elevation: 4,
   },
   tabBarInner: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-around',
-    minHeight: 56,
+    minHeight: 58,
     paddingHorizontal: spacing.sm,
     paddingTop: spacing.xs,
   },
@@ -162,16 +157,15 @@ const styles = StyleSheet.create({
     minWidth: 48,
     paddingVertical: spacing.xxs,
   },
-  iconBadge: {
+  iconContainer: {
     alignItems: 'center',
-    borderRadius: radii.full,
-    height: 32,
+    height: 28,
     justifyContent: 'center',
-    width: 48,
+    width: 32,
   },
   tabIcon: {
-    fontSize: 18,
-    lineHeight: 22,
+    fontSize: 20,
+    lineHeight: 24,
   },
   tabLabel: {
     fontSize: typography.caption,
@@ -181,13 +175,18 @@ const styles = StyleSheet.create({
   },
   activeIndicator: {
     borderRadius: radii.full,
-    height: 3,
-    marginTop: 2,
-    width: 16,
+    height: 3.5,
+    marginTop: 4,
+    width: 24,
   },
   inactiveSpacer: {
-    height: 3,
-    marginTop: 2,
-    width: 16,
+    height: 3.5,
+    marginTop: 4,
+    width: 24,
+  },
+  settingsIndicator: {
+    width: 40,
+    experimental_backgroundImage:
+      'linear-gradient(90deg, #7B61FF 0%, #EC63C4 50%, #FFAD75 100%)',
   },
 });

@@ -4,6 +4,7 @@ import { AppText } from '../ui/Primitives';
 import { useAppTheme } from '../../design/ThemeProvider';
 import { radii, spacing, typography } from '../../theme';
 import { strings } from '../../i18n/strings';
+import { taskGradient } from './TaskPresentation';
 
 export type Page = 'tasks' | 'reminders';
 export type TaskFilter = 'upcoming' | 'all' | 'completed';
@@ -57,26 +58,18 @@ export function TaskFilterChips({
           onPress={() => onPageChange('tasks')}
           style={[
             styles.segmentButton,
-            page === 'tasks' && [
-              styles.segmentButtonActive,
-              {
-                backgroundColor: colors.surface,
-                borderColor: colors.border,
-              },
-            ],
+            page === 'tasks' && [styles.segmentButtonActive, taskGradient],
           ]}
           testID="tasks-tab"
         >
           <AppText
             style={[
               styles.segmentText,
-              {
-                color: page === 'tasks' ? colors.primary : colors.textMuted,
-                fontWeight: page === 'tasks' ? '700' : '500',
-              },
+              { color: colors.text },
+              page === 'tasks' ? styles.activeSegmentText : null,
             ]}
           >
-            📋 {strings.tasks.tasksTab}
+            {strings.tasks.tasksTab}
             {taskCounts ? ` (${taskCounts.all})` : ''}
           </AppText>
         </Pressable>
@@ -88,26 +81,18 @@ export function TaskFilterChips({
           onPress={() => onPageChange('reminders')}
           style={[
             styles.segmentButton,
-            page === 'reminders' && [
-              styles.segmentButtonActive,
-              {
-                backgroundColor: colors.surface,
-                borderColor: colors.border,
-              },
-            ],
+            page === 'reminders' && [styles.segmentButtonActive, taskGradient],
           ]}
           testID="reminders-tab"
         >
           <AppText
             style={[
               styles.segmentText,
-              {
-                color: page === 'reminders' ? colors.primary : colors.textMuted,
-                fontWeight: page === 'reminders' ? '700' : '500',
-              },
+              { color: colors.text },
+              page === 'reminders' ? styles.activeSegmentText : null,
             ]}
           >
-            🔔 {strings.tasks.remindersTab}
+            {strings.tasks.remindersTab}
             {reminderCounts ? ` (${reminderCounts.all})` : ''}
           </AppText>
         </Pressable>
@@ -213,10 +198,11 @@ function FilterChip({
           styles.chipText,
           {
             color: selected ? colors.onPrimaryContainer : colors.textMuted,
-            fontWeight: selected ? '700' : '500',
           },
+          selected ? styles.selectedChipText : null,
         ]}
       >
+        {selected ? '●  ' : ''}
         {label}
         {count !== undefined ? ` (${count})` : ''}
       </AppText>
@@ -226,33 +212,41 @@ function FilterChip({
 
 const styles = StyleSheet.create({
   container: {
-    gap: spacing.sm,
+    gap: spacing.md,
   },
   segmentedControl: {
-    borderRadius: radii.full,
+    borderRadius: 20,
     borderWidth: 1,
     flexDirection: 'row',
-    padding: 3,
+    padding: 5,
   },
   segmentButton: {
     alignItems: 'center',
-    borderRadius: radii.full,
+    borderRadius: 16,
     flex: 1,
     justifyContent: 'center',
     minHeight: 44,
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
   },
   segmentButtonActive: {
-    borderWidth: 1,
+    overflow: 'hidden',
   },
   segmentText: {
-    fontSize: typography.body,
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  activeSegmentText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  selectedChipText: {
+    fontWeight: '700',
   },
   filterRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: spacing.xs,
+    gap: spacing.sm,
   },
   chip: {
     alignItems: 'center',
@@ -260,10 +254,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     justifyContent: 'center',
     minHeight: 40,
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: 12,
     paddingVertical: 6,
   },
   chipText: {
     fontSize: typography.caption,
+    fontWeight: '500',
   },
 });

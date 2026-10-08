@@ -12,6 +12,7 @@ import {
   ScrollView,
   ScrollViewInstance,
   StyleSheet,
+  Text,
   View,
 } from 'react-native';
 import { strings } from '../i18n/strings';
@@ -68,7 +69,7 @@ export function AssistantScreen() {
   const announcedFinalIds = useRef(new Set<string>());
   const scrollViewRef = useRef<ScrollViewInstance | null>(null);
   const userScrolling = useRef(false);
-  const atBottom = useRef(true);
+  const atBottom = useRef(false);
   const transcriptMessages = useMemo(
     () => socketState.transcriptMessages ?? EMPTY_TRANSCRIPT_MESSAGES,
     [socketState.transcriptMessages],
@@ -149,8 +150,7 @@ export function AssistantScreen() {
 
   const isConnectionError =
     socketState.connection === 'failed' ||
-    socketState.connection === 'degraded' ||
-    Boolean(socketState.transcriptError);
+    socketState.connection === 'degraded';
 
   useEffect(() => {
     [
@@ -292,7 +292,11 @@ export function AssistantScreen() {
         ref={scrollViewRef}
         contentContainerStyle={styles.content}
         onContentSizeChange={() => {
-          if (atBottom.current && !userScrolling.current) {
+          if (
+            conversationMessages.length > 0 &&
+            atBottom.current &&
+            !userScrolling.current
+          ) {
             scrollViewRef.current?.scrollToEnd({ animated: false });
           }
         }}
@@ -303,50 +307,61 @@ export function AssistantScreen() {
         onScrollEndDrag={() => {
           userScrolling.current = false;
         }}
+        scrollEnabled={historyNoticeVisible}
         scrollEventThrottle={100}
+        showsHorizontalScrollIndicator={false}
         showsVerticalScrollIndicator={false}
       >
-        {/* Top bar with screen title & history toggle */}
-        <View style={styles.topBar}>
-          <Heading>{strings.assistant.title}</Heading>
-          <Pressable
-            accessibilityLabel={strings.assistant.conversationHistory}
-            accessibilityRole="button"
-            hitSlop={spacing.xs}
-            onPress={() => setHistoryNoticeVisible(value => !value)}
-            testID="conversation-history"
+        {/* Logged in user greeting at top of home screen */}
+        <View style={styles.greetingContainer}>
+          <AppText
+            accessibilityLabel={`${strings.assistant.greeting}, ${greetingName}`}
+            style={[styles.greeting, { color: colors.text }]}
+            testID="assistant-greeting"
           >
-            <AppText style={[styles.historyButton, { color: colors.primary }]}>
-              •••
-            </AppText>
-          </Pressable>
+            {strings.assistant.greeting}, {greetingName} 👋
+          </AppText>
         </View>
 
-        {/* Personalized greeting & dynamic subtitle */}
-        <AppText
-          accessibilityLabel={`${strings.assistant.greeting}, ${greetingName}`}
-          style={styles.greeting}
-          testID="assistant-greeting"
-        >
-          {strings.assistant.greeting}, {greetingName}
-        </AppText>
-        <AppText style={[styles.subtitle, { color: colors.textMuted }]}>
-          {connectionCopy(socketState.connection, socketState.session)}
-        </AppText>
+        {/* Real-time Connection Status Badge (visible when error or not connected) */}
+        {isConnectionError || socketState.connection !== 'connected' ? (
+          <ConnectionStatusBadge
+            connection={socketState.connection}
+            isError={isConnectionError}
+            session={socketState.session}
+            statusText={statusCopy(socketState)}
+            testID="voice-connection-status"
+          />
+        ) : (
+          <View style={styles.hiddenAccessible}>
+            <ConnectionStatusBadge
+              connection={socketState.connection}
+              isError={isConnectionError}
+              session={socketState.session}
+              statusText={statusCopy(socketState)}
+              testID="voice-connection-status"
+            />
+          </View>
+        )}
 
-        {/* Real-time Connection Status Badge */}
-        <ConnectionStatusBadge
-          connection={socketState.connection}
-          isError={isConnectionError}
-          session={socketState.session}
-          statusText={statusCopy(socketState)}
-          testID="voice-connection-status"
-        />
+        {/* Tool Confirmation Banner when voice action is pending */}
+        {voiceConfirmationPending ? (
+          <ToolConfirmationCard
+            pendingConfirmation={pendingConfirmation}
+            onStartListening={() =>
+              execute(() => socket.startTurn({ autoCommitOnSpeechEnd: true }))
+            }
+            startListeningDisabled={
+              socketState.connection !== 'connected' ||
+              socketState.session !== 'ready' ||
+              socketState.turn !== 'idle' ||
+              socketState.ttsPlaybackState === 'speaking'
+            }
+            testID="voice-confirmation-status"
+          />
+        ) : null}
 
-        <PlanningControls
-          onOpenPlanDetail={planId => setSelectedPlanId(planId)}
-        />
-
+        {/* Planning Receipts */}
         <PlanningReceiptCard
           receipt={
             dismissedReceipt ? null : socketState.recentPlanningReceipt ?? null
@@ -355,115 +370,276 @@ export function AssistantScreen() {
           onUndoAction={handleUndoAction}
         />
 
-        {/* Local conversation history notice */}
-        {historyNoticeVisible ? (
-          <Card style={styles.historyNotice}>
-            <AppText style={styles.diagnosticsTitle}>
-              {strings.assistant.conversationHistory}
-            </AppText>
-            <AppText style={{ color: colors.textMuted }}>
-              {strings.assistant.localHistoryNotice}
-            </AppText>
-          </Card>
+        {/* Hero Interactive Voice Orb with Waveform Bars */}
+        <VoiceOrbView
+          accessibilityHint="Activates the next voice session action"
+          accessibilityLabel={voiceControlLabel(
+            socketState,
+            conversationMessages,
+          )}
+          busy={busy}
+          connectionState={socketState.connection}
+          label={voiceControlLabel(socketState, conversationMessages)}
+          onPress={() => execute(voiceControlAction)}
+          playbackState={socketState.ttsPlaybackState}
+          testID="voice-control"
+          turnState={socketState.turn}
+        />
+
+        {/* Tap to speak / Status text below Orb */}
+        <VoiceStatusView
+          isActive={
+            ['recording', 'speech_detected', 'committing', 'waiting'].includes(
+              socketState.turn,
+            ) || socketState.ttsPlaybackState === 'speaking'
+          }
+          primaryStatus={
+            socketState.turn === 'failed'
+              ? strings.assistant.tryAgain
+              : ['recording', 'speech_detected'].includes(socketState.turn)
+              ? strings.assistant.listening
+              : ['committing', 'waiting'].includes(socketState.turn)
+              ? socketState.ttsPlaybackState === 'speaking'
+                ? strings.assistant.speakingStatus
+                : strings.assistant.transcribing
+              : strings.assistant.tapToSpeak
+          }
+          subStatus={
+            socketState.turn === 'failed'
+              ? (socketState.transcriptError?.message ??
+                strings.assistant.turnFailed)
+              : ['recording', 'speech_detected'].includes(socketState.turn)
+              ? strings.assistant.recording
+              : ['committing', 'waiting'].includes(socketState.turn)
+              ? socketState.ttsPlaybackState === 'speaking'
+                ? strings.assistant.interrupt
+                : strings.assistant.waiting
+              : strings.assistant.readyWhenYouAre
+          }
+        />
+
+        {/* Normal mode / Plan mode Segmented Pill Switch */}
+        <PlanningControls
+          onOpenPlanDetail={planId => setSelectedPlanId(planId)}
+        />
+
+        {/* Current Chat Card: Collapsible & Expandable */}
+        <View style={styles.currentChatCard}>
+          {/* Header row to toggle expansion */}
+          <Pressable
+            accessibilityLabel={strings.assistant.currentChat}
+            accessibilityRole="button"
+            onPress={() => {
+              setHistoryNoticeVisible(prev => {
+                const next = !prev;
+                if (!next) {
+                  scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+                }
+                return next;
+              });
+            }}
+            style={styles.chatCardHeader}
+          >
+            <View style={styles.chatHeaderLeft}>
+              <View style={styles.chatIconBadge}>
+                <Text style={styles.chatIcon}>💬</Text>
+              </View>
+              <View style={styles.chatHeaderTitles}>
+                <Text style={[styles.chatTitle, { color: colors.text }]}>
+                  {strings.assistant.currentChat}
+                </Text>
+                <Text
+                  numberOfLines={1}
+                  style={[styles.chatSubtitle, { color: colors.textMuted }]}
+                >
+                  {strings.assistant.currentChatSubtitle}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.chevronWrapper}>
+              <Text style={[styles.chevronIcon, { color: colors.textMuted }]}>
+                {historyNoticeVisible ? '⌃' : '⌵'}
+              </Text>
+            </View>
+          </Pressable>
+
+          {/* Expanded Chat Messages Body */}
+          {historyNoticeVisible ? (
+            <View style={styles.chatBody}>
+              {conversationMessages.length ? (
+                <View testID="voice-transcript">
+                  <View testID="voice-conversation">
+                    {conversationMessages.map(message => (
+                      <ConversationBubble
+                        key={message.id}
+                        copied={copiedMessageId === message.id}
+                        message={message}
+                        onCopy={copyMessage}
+                        onRetry={turnId =>
+                          execute(() => socket.retryResponse(turnId))
+                        }
+                        waitPhrase={socketState.waitPhrase}
+                      />
+                    ))}
+                  </View>
+                </View>
+              ) : transcriptMessages.length ? (
+                <View testID="voice-transcript">
+                  {transcriptMessages.map(message => (
+                    <TranscriptBubble key={message.id} message={message} />
+                  ))}
+                </View>
+              ) : (
+                <View>
+                  {/* Sample preview matching design mockup */}
+                  <View style={styles.sampleAssistantRow}>
+                    <View style={styles.sampleSparkleBadge}>
+                      <Text style={styles.sampleSparkleText}>✦</Text>
+                    </View>
+                    <View style={styles.sampleAssistantCol}>
+                      <Text style={styles.sampleMetaText}>
+                        Assistant • 9:40 AM
+                      </Text>
+                      <View style={styles.sampleAssistantBubble}>
+                        <Text style={styles.sampleBubbleText}>
+                          Hi! How can I help you today?
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  <View style={styles.sampleUserRow}>
+                    <View style={styles.sampleUserCol}>
+                      <Text style={styles.sampleUserMetaText}>
+                        You • 9:40 AM
+                      </Text>
+                      <View style={styles.sampleUserBubble}>
+                        <Text style={styles.sampleBubbleText}>
+                          Can you remind me to send the deck at 8 PM?
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.sampleUserBadge}>
+                      <Text style={styles.sampleUserIcon}>👤</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.sampleAssistantRow}>
+                    <View style={styles.sampleSparkleBadge}>
+                      <Text style={styles.sampleSparkleText}>✦</Text>
+                    </View>
+                    <View style={styles.sampleAssistantCol}>
+                      <Text style={styles.sampleMetaText}>
+                        Assistant • 9:40 AM
+                      </Text>
+                      <View style={styles.sampleAssistantBubble}>
+                        <Text style={styles.sampleBubbleText}>
+                          Got it! I’ll remind you to send the deck at 8 PM today.
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  <View style={styles.sampleUserRow}>
+                    <View style={styles.sampleUserCol}>
+                      <Text style={styles.sampleUserMetaText}>
+                        You • 9:41 AM
+                      </Text>
+                      <View style={styles.sampleUserBubble}>
+                        <Text style={styles.sampleBubbleText}>
+                          Great, thanks!
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.sampleUserBadge}>
+                      <Text style={styles.sampleUserIcon}>👤</Text>
+                    </View>
+                  </View>
+
+                  <View
+                    testID="conversation-empty"
+                    style={styles.hiddenAccessible}
+                  />
+                </View>
+              )}
+
+              {/* Reset conversation button */}
+              {conversationMessages.length ? (
+                <ActionButton
+                  disabled={busy}
+                  label={strings.assistant.startNewConversation}
+                  onPress={startNewConversation}
+                  style={styles.resetButton}
+                  testID="conversation-reset"
+                  variant="quiet"
+                />
+              ) : null}
+            </View>
+          ) : (
+            /* Preserved hidden accessible transcript nodes when collapsed */
+            <View style={styles.hiddenAccessible}>
+              {conversationMessages.length ? (
+                <View testID="voice-transcript">
+                  <View testID="voice-conversation">
+                    {conversationMessages.map(message => (
+                      <ConversationBubble
+                        key={message.id}
+                        copied={copiedMessageId === message.id}
+                        message={message}
+                        onCopy={copyMessage}
+                        onRetry={turnId =>
+                          execute(() => socket.retryResponse(turnId))
+                        }
+                        waitPhrase={socketState.waitPhrase}
+                      />
+                    ))}
+                  </View>
+                </View>
+              ) : (
+                <View testID="conversation-empty" />
+              )}
+            </View>
+          )}
+        </View>
+
+        {/* Fallback secondary control buttons with preserved testIDs */}
+        {socketState.connection === 'disconnected' ? (
+          <ActionButton
+            disabled={busy}
+            label={strings.assistant.connect}
+            onPress={() => execute(() => socket.connect())}
+            testID="voice-connect"
+          />
         ) : null}
 
-        {/* Primary Interactive Voice Orb Card */}
-        <Card
-          style={[
-            styles.card,
-            {
-              backgroundColor: colors.surface,
-              borderColor: colors.borderSubtle,
-            },
-            shadows.sm,
-          ]}
-        >
-          {voiceConfirmationPending ? (
-            <ToolConfirmationCard
-              pendingConfirmation={pendingConfirmation}
-              onStartListening={() =>
-                execute(() => socket.startTurn({ autoCommitOnSpeechEnd: true }))
-              }
-              startListeningDisabled={
-                socketState.connection !== 'connected' ||
-                socketState.session !== 'ready' ||
-                socketState.turn !== 'idle' ||
-                socketState.ttsPlaybackState === 'speaking'
-              }
-              testID="voice-confirmation-status"
-            />
-          ) : (
-            <>
-              <VoiceOrbView
-                accessibilityHint="Activates the next voice session action"
-                accessibilityLabel={voiceControlLabel(
-                  socketState,
-                  conversationMessages,
-                )}
-                busy={busy}
-                connectionState={socketState.connection}
-                label={voiceControlLabel(socketState, conversationMessages)}
-                onPress={() => execute(voiceControlAction)}
-                playbackState={socketState.ttsPlaybackState}
-                testID="voice-control"
-                turnState={socketState.turn}
-              />
-              <VoiceStatusView
-                isActive={
-                  [
-                    'recording',
-                    'speech_detected',
-                    'committing',
-                    'waiting',
-                  ].includes(socketState.turn) ||
-                  socketState.ttsPlaybackState === 'speaking'
-                }
-                primaryStatus={voiceControlLabel(
-                  socketState,
-                  conversationMessages,
-                )}
-                subStatus={turnCopy(socketState.turn)}
-              />
-            </>
-          )}
+        {['failed', 'degraded', 'reconnecting'].includes(
+          socketState.connection,
+        ) ? (
+          <ActionButton
+            disabled={busy}
+            label={strings.assistant.retry}
+            onPress={() => execute(() => socket.retry())}
+            testID="voice-retry"
+          />
+        ) : null}
 
-          {/* Fallback secondary control buttons with preserved testIDs */}
-          {socketState.connection === 'disconnected' ? (
+        {['starting', 'recording', 'speech_detected'].includes(
+          socketState.turn,
+        ) ? (
+          <View style={styles.actionGroup}>
             <ActionButton
               disabled={busy}
-              label={strings.assistant.connect}
-              onPress={() => execute(() => socket.connect())}
-              testID="voice-connect"
+              label={strings.assistant.endTurn}
+              onPress={() =>
+                execute(() => socket.commitTurn({ suppressAutoListen: true }))
+              }
+              testID="voice-finish-turn"
             />
-          ) : null}
+          </View>
+        ) : null}
 
-          {['failed', 'degraded', 'reconnecting'].includes(
-            socketState.connection,
-          ) ? (
-            <ActionButton
-              disabled={busy}
-              label={strings.assistant.retry}
-              onPress={() => execute(() => socket.retry())}
-              testID="voice-retry"
-            />
-          ) : null}
-
-          {['starting', 'recording', 'speech_detected'].includes(
-            socketState.turn,
-          ) ? (
-            <View style={styles.actionGroup}>
-              <ActionButton
-                disabled={busy}
-                label={strings.assistant.endTurn}
-                onPress={() =>
-                  execute(() => socket.commitTurn({ suppressAutoListen: true }))
-                }
-                testID="voice-finish-turn"
-              />
-            </View>
-          ) : null}
-
-          {socketState.turn === 'failed' ? (
+        {socketState.turn === 'failed' ? (
+          historyNoticeVisible ? (
             <View style={styles.actionGroup}>
               <AppText style={[styles.turnStatus, { color: colors.error }]}>
                 {socketState.transcriptError?.message ??
@@ -478,176 +654,24 @@ export function AssistantScreen() {
                 />
               ) : null}
             </View>
-          ) : null}
-        </Card>
-
-        {/* Quick example prompt suggestion chips (triggers existing voice flow, no typed prompts) */}
-        {!conversationMessages.length &&
-        !voiceConfirmationPending &&
-        socketState.turn === 'idle' ? (
-          <QuickActionChips onChipPress={() => execute(voiceControlAction)} />
-        ) : null}
-
-        {/* Voice output preferences card */}
-        <Card style={styles.voiceOutputCard} testID="voice-output-settings">
-          <AppText style={styles.diagnosticsTitle}>
-            {strings.assistant.voiceOutput}
-          </AppText>
-          <AppText>
-            {voiceOutputEnabled
-              ? strings.assistant.voiceOutputEnabled
-              : strings.assistant.voiceOutputMuted}
-          </AppText>
-          <AppText style={[styles.messageMuted, { color: colors.textSubtle }]}>
-            {strings.assistant.serverSelectedVoice}
-          </AppText>
-          <ActionButton
-            disabled={busy}
-            label={
-              voiceOutputEnabled
-                ? strings.assistant.muteVoiceOutput
-                : strings.assistant.enableVoiceOutput
-            }
-            onPress={toggleVoiceOutput}
-            testID="voice-output-toggle"
-            variant="secondary"
-          />
-        </Card>
-
-        {/* TTS playback status banner/card */}
-        {socketState.ttsPlaybackState !== 'idle' &&
-        socketState.ttsPlaybackState !== 'completed' ? (
-          socketState.ttsPlaybackState !== 'buffering' || showTtsBuffering ? (
-            <Card style={styles.voiceOutputCard} testID="tts-playback-status">
-              <AppText accessibilityLiveRegion="polite">
-                {ttsPlaybackCopy(socketState.ttsPlaybackState)}
+          ) : (
+            <View style={styles.hiddenAccessible}>
+              <AppText style={[styles.turnStatus, { color: colors.error }]}>
+                {socketState.transcriptError?.message ??
+                  strings.assistant.turnFailed}
               </AppText>
-              {socketState.ttsPlaybackState === 'speaking' ||
-              socketState.ttsPlaybackState === 'buffering' ? (
+              {socketState.transcriptError?.retryable !== false ? (
                 <ActionButton
-                  disabled={busy}
-                  label={strings.assistant.stopPlayback}
-                  onPress={() => execute(() => socket.stopPlayback())}
-                  testID="voice-stop-playback"
-                  variant="secondary"
+                  disabled={busy || socketState.session !== 'ready'}
+                  label={strings.assistant.tryAgain}
+                  onPress={() => execute(voiceControlAction)}
+                  testID="voice-retry-turn"
                 />
               ) : null}
-              {socketState.ttsPlaybackState === 'failed' ? (
-                <AppText
-                  style={[styles.transcriptError, { color: colors.error }]}
-                >
-                  {socketState.ttsError ?? strings.assistant.voiceOutputFailed}
-                </AppText>
-              ) : null}
-            </Card>
-          ) : null
-        ) : null}
-
-        {/* Conversation transcript card & bubbles */}
-        {conversationMessages.length ? (
-          <Card style={styles.conversationCard} testID="voice-transcript">
-            <AppText style={styles.diagnosticsTitle}>
-              {strings.assistant.messages}
-            </AppText>
-            <View testID="voice-conversation">
-              {conversationMessages.map(message => (
-                <ConversationBubble
-                  key={message.id}
-                  copied={copiedMessageId === message.id}
-                  message={message}
-                  onCopy={copyMessage}
-                  onRetry={turnId =>
-                    execute(() => socket.retryResponse(turnId))
-                  }
-                  waitPhrase={socketState.waitPhrase}
-                />
-              ))}
             </View>
-          </Card>
-        ) : transcriptMessages.length ? (
-          <Card style={styles.conversationCard} testID="voice-transcript">
-            <AppText style={styles.diagnosticsTitle}>
-              {strings.assistant.transcript}
-            </AppText>
-            {transcriptMessages.map(message => (
-              <TranscriptBubble key={message.id} message={message} />
-            ))}
-          </Card>
-        ) : (
-          <Card style={styles.emptyConversation} testID="conversation-empty">
-            <AppText style={styles.emptyTitle}>
-              {strings.assistant.emptyConversationTitle}
-            </AppText>
-            <AppText style={{ color: colors.textMuted }}>
-              {strings.assistant.emptyConversationBody}
-            </AppText>
-          </Card>
-        )}
-
-        {/* Reset conversation button */}
-        {conversationMessages.length ? (
-          <ActionButton
-            disabled={busy}
-            label={strings.assistant.startNewConversation}
-            onPress={startNewConversation}
-            style={styles.resetButton}
-            testID="conversation-reset"
-            variant="quiet"
-          />
+          )
         ) : null}
 
-        {/* Developer Diagnostics (Development mode only) */}
-        {typeof __DEV__ !== 'undefined' && __DEV__ ? (
-          <Card style={styles.diagnostics} testID="voice-diagnostics">
-            <AppText style={styles.diagnosticsTitle}>
-              {strings.assistant.diagnostics}
-            </AppText>
-            <DiagnosticRow
-              label={strings.assistant.event}
-              value={socketState.lastEvent ?? 'NONE'}
-            />
-            <DiagnosticRow
-              label={strings.assistant.sequence}
-              value={String(socketState.eventSequence)}
-            />
-            <DiagnosticRow
-              label={strings.assistant.heartbeat}
-              value={socketState.heartbeat}
-            />
-            <DiagnosticRow
-              label={strings.assistant.reconnectAttempt}
-              value={String(socketState.reconnectAttempt)}
-            />
-            <DiagnosticRow
-              label={strings.assistant.sessionId}
-              value={shortId(socketState.sessionId)}
-            />
-            <DiagnosticRow
-              label={strings.assistant.turnId}
-              value={shortId(socketState.turnId)}
-            />
-            <DiagnosticRow
-              label={strings.assistant.responseId}
-              value={shortId(socketState.responseId)}
-            />
-            <DiagnosticRow
-              label={strings.assistant.droppedEvents}
-              value={String(socketState.droppedEventCount)}
-            />
-            <DiagnosticRow
-              label={strings.assistant.speechToFinal}
-              value={formatTranscriptTiming(transcriptMessages)}
-            />
-            <DiagnosticRow
-              label={strings.assistant.performanceFirstText}
-              value={formatMs(socketState.firstTextAtMs)}
-            />
-            <DiagnosticRow
-              label={strings.assistant.performanceRender}
-              value={formatMs(socketState.conversationRenderCompletedAtMs)}
-            />
-          </Card>
-        ) : null}
       </ScrollView>
       <PlanDetailModal
         planId={selectedPlanId}
@@ -748,23 +772,6 @@ function ttsPlaybackCopy(
   return strings.assistant.voiceOutput;
 }
 
-function shortId(value: string | null): string {
-  if (!value) return 'NONE';
-  if (value.length <= 10) return value;
-  return `${value.slice(0, 6)}…${value.slice(-4)}`;
-}
-
-function DiagnosticRow({ label, value }: { label: string; value: string }) {
-  const { colors } = useAppTheme();
-  return (
-    <View style={styles.diagnosticRow}>
-      <AppText style={[styles.diagnosticLabel, { color: colors.textMuted }]}>
-        {label}
-      </AppText>
-      <AppText>{value}</AppText>
-    </View>
-  );
-}
 
 const styles = StyleSheet.create({
   content: {
@@ -787,10 +794,17 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     marginTop: spacing.sm,
   },
+  greetingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: spacing.xs,
+    marginBottom: spacing.xs,
+  },
   greeting: {
     fontSize: typography.heading,
     fontWeight: '700',
-    marginTop: spacing.xs,
+    letterSpacing: -0.3,
+    textAlign: 'center',
   },
   subtitle: {
     fontSize: typography.bodySm,
@@ -846,27 +860,149 @@ const styles = StyleSheet.create({
     fontSize: typography.bodySm,
     fontWeight: '600',
   },
-  diagnostics: {
-    borderRadius: radii.lg,
+
+  hiddenAccessible: {
+    height: 0,
+    opacity: 0,
+    overflow: 'hidden',
+    width: 0,
+  },
+  currentChatCard: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#EFEAF5',
+    borderRadius: radii.xl,
     borderWidth: 1,
-    gap: spacing.xs,
     marginTop: spacing.md,
     padding: spacing.md,
+    ...shadows.sm,
   },
-  diagnosticsTitle: {
-    fontSize: typography.body,
-    fontWeight: '700',
-    marginBottom: spacing.xxs,
-  },
-  diagnosticRow: {
+  chatCardHeader: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: spacing.md,
     justifyContent: 'space-between',
     paddingVertical: 2,
   },
-  diagnosticLabel: {
-    fontSize: typography.caption,
+  chatHeaderLeft: {
+    alignItems: 'center',
+    flex: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginRight: spacing.sm,
+  },
+  chatIconBadge: {
+    alignItems: 'center',
+    backgroundColor: '#F3EEFF',
+    borderRadius: 20,
+    height: 40,
+    justifyContent: 'center',
+    width: 40,
+  },
+  chatIcon: {
+    fontSize: 18,
+  },
+  chatHeaderTitles: {
+    flex: 1,
+    gap: 2,
+  },
+  chatTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  chatSubtitle: {
+    fontSize: 13,
+  },
+  chevronWrapper: {
+    alignItems: 'center',
+    height: 32,
+    justifyContent: 'center',
+    width: 32,
+  },
+  chevronIcon: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  chatBody: {
+    marginTop: spacing.md,
+  },
+  sampleAssistantRow: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: spacing.md,
+  },
+  sampleSparkleBadge: {
+    alignItems: 'center',
+    backgroundColor: '#F3EEFF',
+    borderRadius: 12,
+    height: 24,
+    justifyContent: 'center',
+    marginTop: 4,
+    width: 24,
+  },
+  sampleSparkleText: {
+    color: '#7B61FF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  sampleAssistantCol: {
+    flex: 1,
+    gap: 4,
+  },
+  sampleMetaText: {
+    color: '#958DA5',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  sampleAssistantBubble: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#F5F2F9',
+    borderRadius: 16,
+    borderTopLeftRadius: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  sampleBubbleText: {
+    color: '#181725',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  sampleUserRow: {
+    alignItems: 'flex-end',
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'flex-end',
+    marginBottom: spacing.md,
+  },
+  sampleUserCol: {
+    alignItems: 'flex-end',
+    flex: 1,
+    gap: 4,
+  },
+  sampleUserMetaText: {
+    color: '#958DA5',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  sampleUserBubble: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#EEE8FA',
+    borderRadius: 16,
+    borderTopRightRadius: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  sampleUserBadge: {
+    alignItems: 'center',
+    backgroundColor: '#7B61FF',
+    borderRadius: 14,
+    height: 28,
+    justifyContent: 'center',
+    marginTop: 4,
+    width: 28,
+  },
+  sampleUserIcon: {
+    color: '#FFFFFF',
+    fontSize: 14,
   },
 });
 

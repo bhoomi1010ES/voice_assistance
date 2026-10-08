@@ -1,142 +1,106 @@
 import React from 'react';
-import { ScrollView, StyleSheet, View } from 'react-native';
 import { strings } from '../i18n/strings';
-import { AppText, Heading, Screen } from '../components/ui/Primitives';
 import { useAppTheme } from '../design/ThemeProvider';
-import { spacing, typography } from '../theme';
 import { useAuth } from '../auth/AuthProvider';
-
+import { useOptionalVoiceSocket } from '../voice/VoiceSocketProvider';
 import { SettingsSection } from '../components/settings/SettingsSection';
 import { SettingsRow } from '../components/settings/SettingsRow';
 import { ProfileSummaryCard } from '../components/settings/ProfileSummaryCard';
+import {
+  SettingsCanvas,
+  SettingsHero,
+  SettingsIcon,
+} from '../components/settings/SettingsPresentation';
 
 interface SettingsScreenProps {
   onOpenDiagnostics: () => void;
+  onOpenConnectionDiagnostics: () => void;
   onOpenAccount: () => void;
   onOpenSessions: () => void;
-  onOpenMemory: () => void;
   onSignOut?: () => void;
 }
 
 export function SettingsScreen({
   onOpenDiagnostics,
+  onOpenConnectionDiagnostics,
   onOpenAccount,
   onOpenSessions,
-  onOpenMemory,
   onSignOut,
 }: SettingsScreenProps) {
-  const { colors } = useAppTheme();
+  const { colors, mode } = useAppTheme();
   const { profile } = useAuth();
+  const voiceSocket = useOptionalVoiceSocket();
 
   return (
-    <Screen testID="settings-screen">
-      <ScrollView contentContainerStyle={styles.content}>
-        {/* Stitch-inspired Hero Header */}
-        <View style={styles.header}>
-          <AppText style={[styles.overline, { color: colors.primary }]}>
-            PREFERENCES & ENGINE
-          </AppText>
-          <Heading>{strings.settings.title}</Heading>
-          <AppText style={[styles.subtitle, { color: colors.textMuted }]}>
-            Configure account, active sessions, and personal memory context.
-          </AppText>
-        </View>
-
-        {/* Profile Card */}
-        <ProfileSummaryCard
-          email={profile?.email}
-          name={profile?.name || 'Voice Assistant User'}
+    <SettingsCanvas testID="settings-screen">
+      <SettingsHero
+        title={strings.settings.title}
+        subtitle="Manage account, devices, and diagnostics."
+      />
+      <ProfileSummaryCard
+        email={profile?.email}
+        name={profile?.name || 'Voice Assistant User'}
+        onPress={onOpenAccount}
+        status={profile?.status}
+      />
+      <SettingsSection title="Account & devices">
+        <SettingsRow
+          icon={<SettingsIcon kind="profile" />}
           onPress={onOpenAccount}
-          status={profile?.status}
+          showDivider
+          subtitle="Manage name and account details"
+          testID="settings-account"
+          title={strings.settings.account}
         />
-
-        {/* Account & Devices Section */}
-        <SettingsSection title="Account & Devices">
-          <SettingsRow
-            icon="👤"
-            onPress={onOpenAccount}
-            showDivider
-            subtitle="Manage name and account details"
-            testID="settings-account"
-            title={strings.settings.account}
-          />
-          <SettingsRow
-            icon="📱"
-            onPress={onOpenSessions}
-            subtitle="Active logins and registered devices"
-            testID="settings-sessions"
-            title={strings.settings.sessions}
-          />
-        </SettingsSection>
-
-        {/* Knowledge & Memory Section */}
-        <SettingsSection title="Knowledge & Intelligence">
-          <SettingsRow
-            icon="🧠"
-            onPress={onOpenMemory}
-            subtitle="Personal context learned from conversations"
-            testID="settings-memory"
-            title={strings.main.memory}
-          />
-        </SettingsSection>
-
-        {/* Preferences Section */}
-        <SettingsSection title="Preferences">
-          <SettingsRow
-            icon="🎨"
-            subtitle={strings.settings.theme}
-            title="Appearance"
-          />
-        </SettingsSection>
-
-        {/* Developer Section (__DEV__ only) */}
-        {__DEV__ ? (
-          <SettingsSection title="Developer Diagnostics">
+        <SettingsRow
+          icon={<SettingsIcon kind="device" />}
+          onPress={onOpenSessions}
+          subtitle="Active logins and registered devices"
+          testID="settings-sessions"
+          title={strings.settings.sessions}
+        />
+      </SettingsSection>
+      {__DEV__ || voiceSocket ? (
+        <SettingsSection title="Developer diagnostics">
+          {__DEV__ ? (
             <SettingsRow
-              icon="🛠"
+              icon={
+                <SettingsIcon
+                  kind="diagnostics"
+                  color={mode === 'light' ? '#0A84FF' : colors.primary}
+                />
+              }
+              iconTone="blue"
               onPress={onOpenDiagnostics}
+              showDivider={Boolean(voiceSocket)}
               subtitle="Audio engine, VAD, and latency tracing"
               testID="settings-diagnostics"
               title={strings.settings.diagnostics}
             />
-          </SettingsSection>
-        ) : null}
-
-        {/* Session Sign Out */}
-        {onSignOut ? (
-          <SettingsSection title="Session">
+          ) : null}
+          {voiceSocket ? (
             <SettingsRow
-              destructive
-              icon="🚪"
-              onPress={onSignOut}
-              subtitle="Safely disconnect this device from your account"
-              testID="settings-sign-out"
-              title={strings.main.signOut}
+              icon={<SettingsIcon kind="connection" />}
+              onPress={onOpenConnectionDiagnostics}
+              subtitle="Connection, session events, and message timing"
+              testID="settings-connection-diagnostics"
+              title="Connection diagnostics"
             />
-          </SettingsSection>
-        ) : null}
-      </ScrollView>
-    </Screen>
+          ) : null}
+        </SettingsSection>
+      ) : null}
+      {onSignOut ? (
+        <SettingsSection title="Session">
+          <SettingsRow
+            destructive
+            icon={<SettingsIcon kind="sign-out" color={colors.error} />}
+            onPress={onSignOut}
+            subtitle="Safely disconnect this device from your account"
+            testID="settings-sign-out"
+            title={strings.main.signOut}
+          />
+        </SettingsSection>
+      ) : null}
+    </SettingsCanvas>
   );
 }
-
-const styles = StyleSheet.create({
-  content: {
-    gap: spacing.md,
-    paddingBottom: spacing.xxl,
-  },
-  header: {
-    gap: 2,
-    marginBottom: spacing.xs,
-  },
-  overline: {
-    fontSize: typography.caption,
-    fontWeight: '700',
-    letterSpacing: 1,
-  },
-  subtitle: {
-    fontSize: typography.caption,
-    lineHeight: 18,
-    marginTop: 2,
-  },
-});

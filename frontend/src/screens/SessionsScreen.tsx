@@ -1,18 +1,18 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { toClientError, safeUserMessage } from '../api/errors';
-import {
-  AppText,
-  Heading,
-  Screen,
-  StatusBanner,
-} from '../components/ui/Primitives';
+import { AppText, StatusBanner } from '../components/ui/Primitives';
 import { useAppTheme } from '../design/ThemeProvider';
 import { spacing, typography } from '../theme';
 import { strings } from '../i18n/strings';
 import { useAuth } from '../auth/AuthProvider';
 import { AuthSession, Device } from '../auth/types';
 
+import {
+  SettingsCanvas,
+  SettingsHero,
+  SettingsIcon,
+} from '../components/settings/SettingsPresentation';
 import { SessionDeviceCard } from '../components/settings/SessionDeviceCard';
 
 export function SessionsScreen() {
@@ -71,75 +71,66 @@ export function SessionsScreen() {
   };
 
   return (
-    <Screen testID="sessions-screen">
-      <ScrollView contentContainerStyle={styles.content}>
-        {/* Stitch-inspired Hero Header */}
-        <View style={styles.header}>
-          <AppText style={[styles.overline, { color: colors.primary }]}>
-            SECURITY & DEVICES
+    <SettingsCanvas testID="sessions-screen">
+      <SettingsHero
+        title={strings.sessions.title}
+        subtitle={strings.sessions.body}
+        eyebrow="Security & devices"
+      />
+
+      {error ? <StatusBanner tone="error">{error}</StatusBanner> : null}
+
+      {loading ? (
+        <AppText style={styles.loadingText}>{strings.sessions.loading}</AppText>
+      ) : null}
+
+      {!loading && sessions.length === 0 ? (
+        <AppText style={styles.emptyText}>{strings.sessions.empty}</AppText>
+      ) : null}
+
+      {/* Sessions Section */}
+      {sessions.length > 0 ? (
+        <View style={styles.section}>
+          <AppText style={[styles.sectionTitle, { color: colors.textMuted }]}>
+            Active Sessions
           </AppText>
-          <Heading>{strings.sessions.title}</Heading>
-          <AppText style={[styles.body, { color: colors.textMuted }]}>
-            {strings.sessions.body}
-          </AppText>
+          {sessions.map(session => (
+            <SessionDeviceCard
+              icon={<SettingsIcon kind="device" />}
+              isRevoked={Boolean(session.revoked_at)}
+              key={session.id}
+              onRevoke={() => revokeSession(session.id)}
+              revoking={revoking === session.id}
+              subtitle={formatDate(session.last_used_at)}
+              title={`${strings.sessions.device}: ${deviceName(
+                session.device_id,
+                devices,
+              )}`}
+            />
+          ))}
         </View>
+      ) : null}
 
-        {error ? <StatusBanner tone="error">{error}</StatusBanner> : null}
-
-        {loading ? (
-          <AppText style={styles.loadingText}>
-            {strings.sessions.loading}
+      {/* Devices Section */}
+      {devices.length > 0 ? (
+        <View style={styles.section}>
+          <AppText style={[styles.sectionTitle, { color: colors.textMuted }]}>
+            {strings.sessions.devices}
           </AppText>
-        ) : null}
-
-        {!loading && sessions.length === 0 ? (
-          <AppText style={styles.emptyText}>{strings.sessions.empty}</AppText>
-        ) : null}
-
-        {/* Sessions Section */}
-        {sessions.length > 0 ? (
-          <View style={styles.section}>
-            <AppText style={[styles.sectionTitle, { color: colors.primary }]}>
-              Active Sessions
-            </AppText>
-            {sessions.map(session => (
-              <SessionDeviceCard
-                icon="🔐"
-                isRevoked={Boolean(session.revoked_at)}
-                key={session.id}
-                onRevoke={() => revokeSession(session.id)}
-                revoking={revoking === session.id}
-                subtitle={formatDate(session.last_used_at)}
-                title={`${strings.sessions.device}: ${deviceName(
-                  session.device_id,
-                  devices,
-                )}`}
-              />
-            ))}
-          </View>
-        ) : null}
-
-        {/* Devices Section */}
-        {devices.length > 0 ? (
-          <View style={styles.section}>
-            <AppText style={[styles.sectionTitle, { color: colors.primary }]}>
-              {strings.sessions.devices}
-            </AppText>
-            {devices.map(device => (
-              <SessionDeviceCard
-                icon="📱"
-                isRevoked={Boolean(device.revoked_at)}
-                key={device.id}
-                onRevoke={() => revokeDevice(device.id)}
-                revoking={revoking === device.id}
-                subtitle={device.device_identifier}
-                title={device.name || device.platform}
-              />
-            ))}
-          </View>
-        ) : null}
-      </ScrollView>
-    </Screen>
+          {devices.map(device => (
+            <SessionDeviceCard
+              icon={<SettingsIcon kind="device" />}
+              isRevoked={Boolean(device.revoked_at)}
+              key={device.id}
+              onRevoke={() => revokeDevice(device.id)}
+              revoking={revoking === device.id}
+              subtitle={device.device_identifier}
+              title={device.name || device.platform}
+            />
+          ))}
+        </View>
+      ) : null}
+    </SettingsCanvas>
   );
 }
 
@@ -154,24 +145,6 @@ function formatDate(value: string): string {
 }
 
 const styles = StyleSheet.create({
-  content: {
-    gap: spacing.md,
-    paddingBottom: spacing.xxl,
-  },
-  header: {
-    gap: 2,
-    marginBottom: spacing.xs,
-  },
-  overline: {
-    fontSize: typography.caption,
-    fontWeight: '700',
-    letterSpacing: 1,
-  },
-  body: {
-    fontSize: typography.caption,
-    lineHeight: 18,
-    marginTop: 2,
-  },
   section: {
     gap: spacing.xs,
     marginTop: spacing.sm,
@@ -179,7 +152,7 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: typography.caption,
     fontWeight: '700',
-    letterSpacing: 0.8,
+    letterSpacing: 1.6,
     paddingHorizontal: 2,
     textTransform: 'uppercase',
   },

@@ -80,7 +80,14 @@ export function PushPermissionCard({
       testID="push-permission-card"
     >
       <View style={styles.headerRow}>
-        <AppText style={styles.icon}>{icon}</AppText>
+        <View
+          style={[
+            styles.iconCircle,
+            { backgroundColor: colors.primaryContainer },
+          ]}
+        >
+          <AppText style={styles.icon}>{icon}</AppText>
+        </View>
         <View style={styles.content}>
           <AppText style={[styles.title, { color: colors.text }]}>
             {strings.tasks.pushTitle}
@@ -121,7 +128,7 @@ export function PushPermissionCard({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: radii.md,
+    borderRadius: 22,
     borderWidth: 1,
     gap: spacing.sm,
     marginTop: spacing.sm,
@@ -129,11 +136,17 @@ const styles = StyleSheet.create({
   },
   headerRow: {
     flexDirection: 'row',
-    gap: spacing.sm,
+    gap: 12,
+  },
+  iconCircle: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 42,
+    height: 42,
+    borderRadius: radii.full,
   },
   icon: {
-    fontSize: 20,
-    marginTop: 2,
+    fontSize: 22,
   },
   content: {
     flex: 1,
@@ -144,8 +157,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   description: {
-    fontSize: typography.caption,
-    lineHeight: 18,
+    fontSize: 13,
+    lineHeight: 20,
   },
   actionContainer: {
     alignItems: 'flex-start',

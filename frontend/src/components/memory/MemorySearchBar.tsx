@@ -1,6 +1,5 @@
 import React from 'react';
-import { StyleSheet, TextInput, View } from 'react-native';
-import { ActionButton, AppText, Card } from '../ui/Primitives';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAppTheme } from '../../design/ThemeProvider';
 import { radii, shadows, spacing, typography } from '../../theme';
 import { strings } from '../../i18n/strings';
@@ -23,78 +22,99 @@ export function MemorySearchBar({
   const { colors } = useAppTheme();
 
   return (
-    <Card
+    <View
       style={[
-        styles.card,
+        styles.container,
         {
           backgroundColor: colors.surface,
-          borderColor: colors.border,
+          borderColor: colors.borderSubtle,
         },
+        shadows.sm,
       ]}
       testID="memory-search-card"
     >
-      <AppText style={[styles.title, { color: colors.text }]}>
-        {strings.memory.searchTitle}
-      </AppText>
-
-      <View style={styles.inputContainer}>
-        <TextInput
-          accessibilityLabel={strings.memory.searchLabel}
-          editable={enabled && !searching}
-          onChangeText={onQueryChange}
-          onSubmitEditing={onSearch}
-          placeholder={strings.memory.searchPlaceholder}
-          placeholderTextColor={colors.textSubtle}
-          returnKeyType="search"
-          style={[
-            styles.input,
-            {
-              color: colors.text,
-              borderColor: colors.border,
-              backgroundColor: colors.surfaceLow,
-            },
-          ]}
-          testID="memory-search-input"
-          value={query}
-        />
+      <View style={styles.iconCircle}>
+        <Text style={styles.icon}>🔍</Text>
       </View>
 
-      <ActionButton
-        disabled={!enabled || searching}
-        label={searching ? strings.memory.searching : strings.memory.search}
-        onPress={onSearch}
-        style={styles.searchButton}
-        testID="memory-search"
-        variant="primary"
+      <TextInput
+        accessibilityLabel={strings.memory.searchLabel}
+        editable={enabled && !searching}
+        onChangeText={onQueryChange}
+        onSubmitEditing={onSearch}
+        placeholder={strings.memory.searchPlaceholder}
+        placeholderTextColor={colors.textSubtle}
+        returnKeyType="search"
+        style={[
+          styles.input,
+          {
+            color: colors.text,
+          },
+        ]}
+        testID="memory-search-input"
+        value={query}
       />
-    </Card>
+
+      <Pressable
+        accessibilityLabel={strings.memory.search}
+        accessibilityRole="button"
+        disabled={!enabled || searching}
+        onPress={onSearch}
+        style={({ pressed }) => [
+          styles.searchButton,
+          {
+            opacity: !enabled || searching ? 0.5 : pressed ? 0.85 : 1,
+          },
+        ]}
+        testID="memory-search"
+      >
+        <Text style={styles.searchButtonText}>
+          {searching ? strings.memory.searching : strings.memory.search}
+        </Text>
+      </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    borderRadius: radii.md,
+  container: {
+    alignItems: 'center',
+    borderRadius: radii.xl,
     borderWidth: 1,
-    gap: spacing.sm,
-    padding: spacing.md,
-    ...shadows.sm,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    padding: 6,
   },
-  title: {
-    fontSize: typography.body,
-    fontWeight: '700',
+  iconCircle: {
+    alignItems: 'center',
+    backgroundColor: '#F3E8FF',
+    borderRadius: 20,
+    height: 40,
+    justifyContent: 'center',
+    marginLeft: 2,
+    width: 40,
   },
-  inputContainer: {
-    marginTop: spacing.xs,
+  icon: {
+    fontSize: 18,
   },
   input: {
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    fontSize: typography.body,
-    minHeight: 48,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    flex: 1,
+    fontSize: 15,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.xs,
   },
   searchButton: {
-    marginTop: spacing.xs,
+    alignItems: 'center',
+    backgroundColor: '#8B5CF6',
+    borderRadius: 18,
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+  },
+  searchButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });
+

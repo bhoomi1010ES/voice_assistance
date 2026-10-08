@@ -6,15 +6,22 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  TextInput,
   View,
 } from 'react-native';
-import { ActionButton, AppText, Heading, Screen } from '../ui/Primitives';
+import { AppText, Card, Screen } from '../ui/Primitives';
 import { useAppTheme } from '../../design/ThemeProvider';
-import { radii, spacing, typography } from '../../theme';
 import { strings } from '../../i18n/strings';
 import { dateInputForOffset, schedulePreview } from '../../tasks/scheduling';
-import { TaskPriority } from '../../tasks/types';
+import { Task, TaskPriority } from '../../tasks/types';
+import {
+  EditorField,
+  EditorHeader,
+  EditorSummary,
+  ScheduleLine,
+  TaskBadge,
+  TaskButton,
+  presentationStyles as ui,
+} from './TaskPresentation';
 
 export type TaskDraft = {
   title: string;
@@ -33,6 +40,8 @@ interface TaskEditorModalProps {
   onChange: (draft: TaskDraft) => void;
   onClose: () => void;
   onSave: () => void;
+  task?: Task;
+  onDelete?: () => void;
 }
 
 export function TaskEditorModal({
@@ -43,9 +52,10 @@ export function TaskEditorModal({
   onChange,
   onClose,
   onSave,
+  task,
+  onDelete,
 }: TaskEditorModalProps) {
   const { colors } = useAppTheme();
-
   return (
     <Modal animationType="slide" onRequestClose={onClose} visible={visible}>
       <Screen>
@@ -54,138 +64,83 @@ export function TaskEditorModal({
           style={styles.flex}
         >
           <ScrollView
-            contentContainerStyle={styles.scrollContent}
+            contentContainerStyle={ui.scroll}
             keyboardShouldPersistTaps="handled"
           >
-            <View style={styles.header}>
-              <Heading>
-                {mode === 'create'
+            <EditorHeader
+              onClose={onClose}
+              subtitle="Update task details and schedule"
+              title={
+                mode === 'create'
                   ? strings.tasks.createTask
-                  : strings.tasks.editTask}
-              </Heading>
-              <AppText style={[styles.subtitle, { color: colors.textMuted }]}>
-                {strings.tasks.body}
-              </AppText>
-            </View>
-
-            {/* Title Field */}
-            <View style={styles.field}>
-              <AppText style={[styles.fieldLabel, { color: colors.text }]}>
-                {strings.tasks.titleLabel} *
-              </AppText>
-              <TextInput
+                  : strings.tasks.editTask
+              }
+            />
+            {mode === 'edit' && task ? (
+              <EditorSummary title={task.title}>
+                <ScheduleLine at={task.due_at} timezone={task.timezone} />
+                <View style={ui.badges}>
+                  <TaskBadge
+                    label={`● ${task.priority}`}
+                    tone={task.priority}
+                  />
+                  <TaskBadge
+                    label={task.status.replace('_', ' ')}
+                    tone={
+                      task.status === 'completed'
+                        ? 'completed'
+                        : task.status === 'cancelled'
+                        ? 'cancelled'
+                        : 'pending'
+                    }
+                  />
+                  {task.source_turn_id ? (
+                    <TaskBadge label="🎙 Voice created" tone="voice" />
+                  ) : null}
+                </View>
+              </EditorSummary>
+            ) : null}
+            <Card style={ui.formCard}>
+              <EditorField
                 accessibilityLabel={strings.tasks.titleLabel}
+                label="Title *"
                 onChangeText={title => onChange({ ...draft, title })}
                 placeholder="What needs to be done?"
-                placeholderTextColor={colors.textSubtle}
-                style={[
-                  styles.input,
-                  {
-                    color: colors.text,
-                    borderColor: colors.border,
-                    backgroundColor: colors.surface,
-                  },
-                ]}
                 testID="todo-title-input"
                 value={draft.title}
               />
-            </View>
-
-            {/* Description Field */}
-            <View style={styles.field}>
-              <AppText style={[styles.fieldLabel, { color: colors.text }]}>
-                {strings.tasks.descriptionLabel}
-              </AppText>
-              <TextInput
+              <EditorField
                 accessibilityLabel={strings.tasks.descriptionLabel}
+                label="Description / notes"
                 multiline
                 numberOfLines={3}
                 onChangeText={description =>
                   onChange({ ...draft, description })
                 }
                 placeholder="Add additional notes or details (optional)"
-                placeholderTextColor={colors.textSubtle}
-                style={[
-                  styles.input,
-                  styles.multilineInput,
-                  {
-                    color: colors.text,
-                    borderColor: colors.border,
-                    backgroundColor: colors.surface,
-                  },
-                ]}
                 testID="todo-description-input"
                 value={draft.description}
               />
-            </View>
-
-            {/* Priority Selector */}
-            <View style={styles.field}>
-              <AppText style={[styles.fieldLabel, { color: colors.text }]}>
-                Priority
-              </AppText>
-              <View style={styles.priorityRow}>
-                {(['low', 'normal', 'high', 'urgent'] as const).map(p => (
-                  <Pressable
-                    key={p}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: draft.priority === p }}
-                    onPress={() => onChange({ ...draft, priority: p })}
-                    style={[
-                      styles.priorityPill,
-                      {
-                        borderColor:
-                          draft.priority === p ? colors.primary : colors.border,
-                        backgroundColor:
-                          draft.priority === p
-                            ? colors.primaryContainer
-                            : colors.surface,
-                      },
-                    ]}
-                  >
-                    <AppText
-                      style={[
-                        styles.priorityPillText,
-                        {
-                          color:
-                            draft.priority === p
-                              ? colors.onPrimaryContainer
-                              : colors.textMuted,
-                          fontWeight: draft.priority === p ? '700' : '500',
-                          textTransform: 'capitalize',
-                        },
-                      ]}
-                    >
-                      {p}
-                    </AppText>
-                  </Pressable>
-                ))}
+              <View style={ui.pairedFields}>
+                <EditorField
+                  accessibilityLabel={strings.tasks.dateLabel}
+                  label="Date"
+                  onChangeText={date => onChange({ ...draft, date })}
+                  placeholder="YYYY-MM-DD"
+                  testID="task-due-date-input"
+                  value={draft.date}
+                />
+                <EditorField
+                  accessibilityLabel={strings.tasks.timeLabel}
+                  label="Time"
+                  onChangeText={time => onChange({ ...draft, time })}
+                  placeholder="HH:mm"
+                  testID="task-time-input"
+                  value={draft.time}
+                />
               </View>
-            </View>
-
-            {/* Date & Time Fields */}
-            <View style={styles.field}>
-              <AppText style={[styles.fieldLabel, { color: colors.text }]}>
-                {strings.tasks.dateLabel}
-              </AppText>
-              <TextInput
-                accessibilityLabel={strings.tasks.dateLabel}
-                onChangeText={date => onChange({ ...draft, date })}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={colors.textSubtle}
-                style={[
-                  styles.input,
-                  {
-                    color: colors.text,
-                    borderColor: colors.border,
-                    backgroundColor: colors.surface,
-                  },
-                ]}
-                testID="task-due-date-input"
-                value={draft.date}
-              />
-              <View style={styles.quickDateRow}>
-                <ActionButton
+              <View style={styles.quickDate}>
+                <TaskButton
                   label={strings.tasks.tomorrow}
                   onPress={() =>
                     onChange({ ...draft, date: dateInputForOffset(1) })
@@ -194,90 +149,87 @@ export function TaskEditorModal({
                   variant="secondary"
                 />
               </View>
-            </View>
-
-            <View style={styles.field}>
-              <AppText style={[styles.fieldLabel, { color: colors.text }]}>
-                {strings.tasks.timeLabel}
-              </AppText>
-              <TextInput
-                accessibilityLabel={strings.tasks.timeLabel}
-                onChangeText={time => onChange({ ...draft, time })}
-                placeholder="HH:mm"
-                placeholderTextColor={colors.textSubtle}
-                style={[
-                  styles.input,
-                  {
-                    color: colors.text,
-                    borderColor: colors.border,
-                    backgroundColor: colors.surface,
-                  },
-                ]}
-                testID="task-time-input"
-                value={draft.time}
-              />
-            </View>
-
-            <View style={styles.field}>
-              <AppText style={[styles.fieldLabel, { color: colors.text }]}>
-                {strings.tasks.timezoneLabel}
-              </AppText>
-              <TextInput
+              <EditorField
                 accessibilityLabel={strings.tasks.timezoneLabel}
+                label="Time zone"
                 onChangeText={timezone => onChange({ ...draft, timezone })}
                 placeholder="e.g. Asia/Kolkata, UTC"
-                placeholderTextColor={colors.textSubtle}
-                style={[
-                  styles.input,
-                  {
-                    color: colors.text,
-                    borderColor: colors.border,
-                    backgroundColor: colors.surface,
-                  },
-                ]}
                 testID="task-timezone-input"
                 value={draft.timezone}
               />
-            </View>
-
-            {/* Schedule Preview Banner */}
-            <View
-              style={[
-                styles.previewContainer,
-                {
-                  backgroundColor: colors.surfaceLow,
-                  borderColor: colors.borderSubtle,
-                },
-              ]}
-            >
-              <AppText
-                style={[
-                  styles.previewLabel,
-                  { color: colors.primary, fontWeight: '700' },
-                ]}
+              <View style={ui.field}>
+                <AppText style={[ui.fieldLabel, { color: colors.textMuted }]}>
+                  Priority
+                </AppText>
+                <View style={styles.priorityRow}>
+                  {(['low', 'normal', 'high', 'urgent'] as const).map(p => (
+                    <Pressable
+                      key={p}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: draft.priority === p }}
+                      onPress={() => onChange({ ...draft, priority: p })}
+                      style={[
+                        styles.priorityOption,
+                        draft.priority === p
+                          ? { borderColor: colors.primary }
+                          : null,
+                      ]}
+                    >
+                      <TaskBadge label={`● ${p}`} tone={p} />
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+              {task?.source_turn_id ? (
+                <View style={ui.badges}>
+                  <AppText style={ui.fieldLabel}>Source</AppText>
+                  <TaskBadge label="🎙 Voice created" tone="voice" />
+                </View>
+              ) : null}
+              <View
+                style={[ui.preview, { backgroundColor: colors.surfaceLow }]}
               >
-                {strings.tasks.preview}
-              </AppText>
-              <AppText
-                style={[styles.previewValue, { color: colors.text }]}
-                testID="todo-schedule-preview"
-              >
-                {schedulePreview(draft.date, draft.time, draft.timezone)}
-              </AppText>
-            </View>
-
-            {/* Action Buttons */}
-            <View style={styles.modalActions}>
-              <ActionButton
+                <AppText style={[ui.fieldLabel, { color: colors.primary }]}>
+                  {strings.tasks.preview}
+                </AppText>
+                <AppText
+                  style={styles.previewValue}
+                  testID="todo-schedule-preview"
+                >
+                  {schedulePreview(draft.date, draft.time, draft.timezone)}
+                </AppText>
+              </View>
+            </Card>
+            <View style={ui.footer}>
+              <TaskButton
+                disabled={saving}
+                label={
+                  saving
+                    ? strings.tasks.saving
+                    : mode === 'edit'
+                    ? 'Save changes'
+                    : strings.tasks.save
+                }
+                onPress={onSave}
+                testID="todo-save"
+              />
+              {mode === 'edit' && onDelete ? (
+                <TaskButton
+                  destructive
+                  disabled={saving}
+                  label="Delete task"
+                  onPress={() => {
+                    onClose();
+                    onDelete();
+                  }}
+                  testID="todo-editor-delete"
+                  variant="quiet"
+                />
+              ) : null}
+              <TaskButton
                 label={strings.tasks.cancel}
                 onPress={onClose}
                 variant="quiet"
-              />
-              <ActionButton
-                disabled={saving}
-                label={saving ? strings.tasks.saving : strings.tasks.save}
-                onPress={onSave}
-                testID="todo-save"
               />
             </View>
           </ScrollView>
@@ -288,79 +240,16 @@ export function TaskEditorModal({
 }
 
 const styles = StyleSheet.create({
-  flex: {
-    flex: 1,
-  },
-  scrollContent: {
-    gap: spacing.md,
-    paddingBottom: spacing.xxl,
-  },
-  header: {
-    gap: spacing.xs,
-    marginBottom: spacing.xs,
-  },
-  subtitle: {
-    fontSize: typography.caption,
-  },
-  field: {
-    gap: spacing.xs,
-  },
-  fieldLabel: {
-    fontSize: typography.body,
-    fontWeight: '600',
-  },
-  input: {
-    borderRadius: radii.sm,
+  flex: { flex: 1 },
+  quickDate: { alignItems: 'flex-start', marginTop: -10 },
+  priorityRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5 },
+  priorityOption: {
+    borderColor: 'transparent',
+    borderRadius: 18,
     borderWidth: 1,
-    fontSize: typography.body,
-    minHeight: 48,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  multilineInput: {
-    minHeight: 80,
-    textAlignVertical: 'top',
-  },
-  priorityRow: {
-    flexDirection: 'row',
-    gap: spacing.xs,
-  },
-  priorityPill: {
-    alignItems: 'center',
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    flex: 1,
+    padding: 2,
+    minHeight: 44,
     justifyContent: 'center',
-    minHeight: 40,
-    paddingVertical: spacing.xs,
   },
-  priorityPillText: {
-    fontSize: typography.caption,
-  },
-  quickDateRow: {
-    alignItems: 'flex-start',
-    marginTop: spacing.xs,
-  },
-  previewContainer: {
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    gap: spacing.xs,
-    padding: spacing.md,
-  },
-  previewLabel: {
-    fontSize: typography.caption,
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-  },
-  previewValue: {
-    fontSize: typography.body,
-    fontWeight: '500',
-  },
-  modalActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-    justifyContent: 'flex-end',
-    marginTop: spacing.md,
-  },
+  previewValue: { fontSize: 13, lineHeight: 20 },
 });

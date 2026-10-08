@@ -17,13 +17,7 @@ import {
 import { useAuth } from '../auth/AuthProvider';
 import { useVoiceSocket } from '../voice/VoiceSocketProvider';
 import { safeUserMessage, toClientError } from '../api/errors';
-import {
-  ActionButton,
-  AppText,
-  Heading,
-  Screen,
-  StatusBanner,
-} from '../components/ui/Primitives';
+import { AppText, StatusBanner } from '../components/ui/Primitives';
 import { useAppTheme } from '../design/ThemeProvider';
 import { radii, spacing, typography } from '../theme';
 import { strings } from '../i18n/strings';
@@ -71,6 +65,7 @@ import {
   PushPermissionState,
 } from '../components/tasks/PushPermissionCard';
 import { Confirmation, ConfirmModal } from '../components/tasks/ConfirmModal';
+import { TaskButton } from '../components/tasks/TaskPresentation';
 import { syncPushToken } from '../notifications/PushNotificationService';
 
 const PHASE7_RECURRENCE_ACCEPTED = true;
@@ -594,7 +589,10 @@ export function TasksScreen({ initialPage = 'tasks' }: TasksScreenProps = {}) {
   }, [visibleReminders, colors]);
 
   return (
-    <Screen testID="tasks-screen">
+    <View
+      style={[styles.screen, { backgroundColor: colors.background }]}
+      testID="tasks-screen"
+    >
       <ScrollView
         contentContainerStyle={styles.content}
         refreshControl={
@@ -607,10 +605,6 @@ export function TasksScreen({ initialPage = 'tasks' }: TasksScreenProps = {}) {
         {/* Stitch-inspired Hero Header */}
         <View style={styles.header}>
           <View style={styles.titleArea}>
-            <AppText style={[styles.overline, { color: colors.primary }]}>
-              AGENDA
-            </AppText>
-            <Heading>{strings.tasks.title}</Heading>
             <AppText style={[styles.subtitle, { color: colors.textMuted }]}>
               {page === 'tasks'
                 ? `${taskCounts.upcoming} upcoming • ${taskCounts.all} total`
@@ -621,13 +615,13 @@ export function TasksScreen({ initialPage = 'tasks' }: TasksScreenProps = {}) {
           {/* Floating/Primary Add Action */}
           <View style={styles.headerActionArea}>
             {page === 'tasks' ? (
-              <ActionButton
+              <TaskButton
                 label={strings.tasks.createTask}
                 onPress={openCreateTask}
                 testID="todo-create"
               />
             ) : (
-              <ActionButton
+              <TaskButton
                 label={strings.tasks.createReminder}
                 onPress={openCreateReminder}
                 testID="reminder-create"
@@ -790,6 +784,20 @@ export function TasksScreen({ initialPage = 'tasks' }: TasksScreenProps = {}) {
         draft={taskForm}
         mode={taskFormMode}
         onChange={setTaskForm}
+        task={tasks.find(task => task.id === editingTaskId)}
+        onDelete={
+          editingTaskId
+            ? () => {
+                const task = tasks.find(item => item.id === editingTaskId);
+                if (task)
+                  setConfirmation({
+                    kind: 'todo-delete',
+                    id: task.id,
+                    label: task.title,
+                  });
+              }
+            : undefined
+        }
         onClose={() => setTaskFormOpen(false)}
         onSave={saveTask}
         saving={busyKey?.startsWith('todo-save-') ?? false}
@@ -800,6 +808,22 @@ export function TasksScreen({ initialPage = 'tasks' }: TasksScreenProps = {}) {
         draft={reminderForm}
         mode={reminderFormMode}
         onChange={setReminderForm}
+        reminder={reminders.find(reminder => reminder.id === editingReminderId)}
+        onDelete={
+          editingReminderId
+            ? () => {
+                const reminder = reminders.find(
+                  item => item.id === editingReminderId,
+                );
+                if (reminder)
+                  setConfirmation({
+                    kind: 'reminder-delete',
+                    id: reminder.id,
+                    label: reminder.title,
+                  });
+              }
+            : undefined
+        }
         onClose={() => setReminderFormOpen(false)}
         onSave={saveReminder}
         saving={busyKey?.startsWith('reminder-save-') ?? false}
@@ -813,17 +837,22 @@ export function TasksScreen({ initialPage = 'tasks' }: TasksScreenProps = {}) {
         onCancel={() => setConfirmation(null)}
         onConfirm={resolveConfirmation}
       />
-    </Screen>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+  },
   content: {
     gap: spacing.md,
     paddingBottom: spacing.xxl,
   },
   header: {
-    alignItems: 'flex-start',
+    alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
     gap: spacing.sm,
@@ -831,11 +860,6 @@ const styles = StyleSheet.create({
   titleArea: {
     flex: 1,
     gap: 2,
-  },
-  overline: {
-    fontSize: typography.caption,
-    fontWeight: '700',
-    letterSpacing: 1,
   },
   subtitle: {
     fontSize: typography.caption,
@@ -851,7 +875,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   section: {
-    gap: spacing.xs,
+    gap: spacing.sm,
     marginTop: spacing.xs,
   },
   sectionHeader: {

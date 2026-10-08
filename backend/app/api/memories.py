@@ -216,6 +216,7 @@ async def list_memories(
     principal: Annotated[AuthPrincipal, Depends(get_current_principal)],
     limit: int = Query(default=50, ge=1, le=100),
     before: datetime | None = None,
+    offset: int = Query(default=0, ge=0),
 ) -> list[MemoryItem]:
     user = await _owned_user(session, principal)
     query = (
@@ -223,6 +224,7 @@ async def list_memories(
         .where(MemoryItem.user_id == user.id, MemoryItem.status == "active")
         .order_by(MemoryItem.created_at.desc(), MemoryItem.id.desc())
         .limit(limit)
+        .offset(offset)
     )
     if before is not None:
         query = query.where(MemoryItem.created_at < before)

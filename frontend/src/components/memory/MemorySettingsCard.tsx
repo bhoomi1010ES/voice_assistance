@@ -1,18 +1,14 @@
 import React from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
-import { ActionButton, AppText, Card } from '../ui/Primitives';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppText } from '../ui/Primitives';
 import { useAppTheme } from '../../design/ThemeProvider';
-import { radii, shadows, spacing, typography } from '../../theme';
+import { radii, shadows, spacing } from '../../theme';
 import { strings } from '../../i18n/strings';
-import { KnowledgeMode } from '../../memory/types';
 
 interface MemorySettingsCardProps {
   enabled: boolean;
   saving: boolean;
   loading: boolean;
-  knowledgeMode: KnowledgeMode;
-  okfAvailable: boolean;
-  onKnowledgeModeChange: (mode: KnowledgeMode) => void;
   onToggle: () => void;
 }
 
@@ -20,200 +16,115 @@ export function MemorySettingsCard({
   enabled,
   saving,
   loading,
-  knowledgeMode,
-  okfAvailable,
-  onKnowledgeModeChange,
   onToggle,
 }: MemorySettingsCardProps) {
   const { colors } = useAppTheme();
 
   return (
-    <Card
+    <View
       style={[
         styles.card,
         {
           backgroundColor: colors.surface,
-          borderColor: colors.border,
+          borderColor: colors.borderSubtle,
         },
+        shadows.sm,
       ]}
       testID="memory-settings-card"
     >
-      <View style={styles.headerRow}>
-        <View
-          style={[
-            styles.iconContainer,
-            {
-              backgroundColor: colors.primaryContainer,
-            },
-          ]}
-        >
-          <AppText style={styles.icon}>🧠</AppText>
+      <View style={styles.topRow}>
+        <View style={styles.iconCircle}>
+          <Text style={styles.icon}>🧠</Text>
         </View>
 
-        <View style={styles.titleContainer}>
+        <View style={styles.textContainer}>
           <View style={styles.titleRow}>
             <AppText style={[styles.title, { color: colors.text }]}>
               {strings.memory.settings}
             </AppText>
             <View
               style={[
-                styles.statusBadge,
+                styles.badge,
                 {
-                  backgroundColor: enabled
-                    ? colors.successContainer
-                    : colors.surfaceMuted,
+                  backgroundColor: enabled ? '#DCFCE7' : '#F3F4F6',
                 },
               ]}
             >
-              <AppText
+              <Text
                 style={[
-                  styles.statusText,
+                  styles.badgeText,
                   {
-                    color: enabled ? colors.success : colors.textMuted,
+                    color: enabled ? '#15803D' : '#6B7280',
                   },
                 ]}
               >
                 {enabled ? 'Active' : 'Paused'}
-              </AppText>
+              </Text>
             </View>
           </View>
-          <AppText style={[styles.description, { color: colors.textMuted }]}>
+
+          <Text style={[styles.description, { color: colors.textMuted }]}>
             {loading
               ? strings.memory.loading
               : enabled
               ? strings.memory.enabledDescription
               : strings.memory.disabledDescription}
-          </AppText>
+          </Text>
         </View>
       </View>
 
-      <ActionButton
+      <Pressable
         accessibilityLabel={
           enabled ? strings.memory.turnOff : strings.memory.turnOn
         }
         accessibilityRole="switch"
         accessibilityState={{ checked: enabled }}
         disabled={loading || saving}
-        label={enabled ? strings.memory.turnOff : strings.memory.turnOn}
         onPress={onToggle}
-        style={styles.actionButton}
+        style={({ pressed }) => [
+          styles.toggleButton,
+          {
+            backgroundColor: colors.surfaceLow,
+            borderColor: colors.borderSubtle,
+            opacity: loading || saving ? 0.6 : pressed ? 0.8 : 1,
+          },
+        ]}
         testID="memory-toggle"
-        variant={enabled ? 'secondary' : 'primary'}
-      />
-
-      <View style={[styles.modeSection, { borderTopColor: colors.border }]}>
-        <AppText style={[styles.modeTitle, { color: colors.text }]}>
-          {strings.memory.knowledgeMode}
-        </AppText>
-        <AppText style={[styles.modeDescription, { color: colors.textMuted }]}>
-          {strings.memory.knowledgeModeDescription}
-        </AppText>
-        <Pressable
-          accessibilityLabel={strings.memory.hybridRag}
-          accessibilityRole="radio"
-          accessibilityState={{
-            selected: knowledgeMode === 'rag',
-            disabled: loading || saving,
-          }}
-          disabled={loading || saving}
-          onPress={() => onKnowledgeModeChange('rag')}
-          style={({ pressed }) => [
-            styles.modeOption,
-            { opacity: pressed ? 0.72 : 1 },
-          ]}
-          testID="knowledge-mode-rag"
-        >
-          <View style={[styles.radio, { borderColor: colors.accent }]}>
-            {knowledgeMode === 'rag' ? (
-              <View
-                style={[
-                  styles.radioSelected,
-                  { backgroundColor: colors.accent },
-                ]}
-              />
-            ) : null}
-          </View>
-          <View style={styles.modeCopy}>
-            <AppText style={[styles.optionTitle, { color: colors.text }]}>
-              {strings.memory.hybridRag}
-            </AppText>
-            <AppText
-              style={[styles.optionDescription, { color: colors.textMuted }]}
-            >
-              {strings.memory.hybridRagDescription}
-            </AppText>
-          </View>
-        </Pressable>
-        <Pressable
-          accessibilityLabel={strings.memory.okf}
-          accessibilityRole="radio"
-          accessibilityState={{
-            selected: knowledgeMode === 'okf',
-            disabled: loading || saving || !okfAvailable,
-          }}
-          disabled={loading || saving || !okfAvailable}
-          onPress={() => onKnowledgeModeChange('okf')}
-          style={({ pressed }) => [
-            styles.modeOption,
-            { opacity: !okfAvailable ? 0.5 : pressed ? 0.72 : 1 },
-          ]}
-          testID="knowledge-mode-okf"
-        >
-          <View style={[styles.radio, { borderColor: colors.accent }]}>
-            {knowledgeMode === 'okf' ? (
-              <View
-                style={[
-                  styles.radioSelected,
-                  { backgroundColor: colors.accent },
-                ]}
-              />
-            ) : null}
-          </View>
-          <View style={styles.modeCopy}>
-            <AppText style={[styles.optionTitle, { color: colors.text }]}>
-              {strings.memory.okf}
-            </AppText>
-            <AppText
-              style={[styles.optionDescription, { color: colors.textMuted }]}
-            >
-              {okfAvailable
-                ? strings.memory.okfDescription
-                : strings.memory.okfUnavailable}
-            </AppText>
-          </View>
-        </Pressable>
-      </View>
-    </Card>
+      >
+        <Text style={[styles.toggleButtonText, { color: colors.text }]}>
+          {enabled ? strings.memory.turnOff : strings.memory.turnOn}
+        </Text>
+      </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: radii.md,
+    borderRadius: radii.xl,
     borderWidth: 1,
     gap: spacing.md,
     padding: spacing.md,
-    ...shadows.sm,
   },
-  headerRow: {
+  topRow: {
     alignItems: 'flex-start',
     flexDirection: 'row',
     gap: spacing.sm,
   },
-  iconContainer: {
+  iconCircle: {
     alignItems: 'center',
-    borderRadius: radii.full,
-    height: 40,
+    backgroundColor: '#FDE8E8',
+    borderRadius: 22,
+    height: 44,
     justifyContent: 'center',
-    marginTop: 2,
-    width: 40,
+    width: 44,
   },
   icon: {
-    fontSize: 18,
+    fontSize: 22,
   },
-  titleContainer: {
+  textContainer: {
     flex: 1,
-    gap: spacing.xs,
+    gap: 4,
   },
   titleRow: {
     alignItems: 'center',
@@ -221,70 +132,32 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   title: {
-    fontSize: typography.subheading,
+    fontSize: 17,
     fontWeight: '700',
-    letterSpacing: -0.2,
   },
-  statusBadge: {
-    borderRadius: radii.pill,
-    paddingHorizontal: spacing.sm,
+  badge: {
+    borderRadius: 12,
+    paddingHorizontal: 8,
     paddingVertical: 2,
   },
-  statusText: {
-    fontSize: typography.caption,
-    fontWeight: '700',
-  },
-  description: {
-    fontSize: typography.caption,
-    lineHeight: 18,
-  },
-  actionButton: {
-    marginTop: spacing.xs,
-  },
-  modeSection: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    gap: spacing.sm,
-    marginTop: spacing.xs,
-    paddingTop: spacing.md,
-  },
-  modeTitle: {
-    fontSize: typography.body,
-    fontWeight: '700',
-  },
-  modeDescription: {
-    fontSize: typography.caption,
-    lineHeight: 20,
-  },
-  modeOption: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: spacing.sm,
-    minHeight: 54,
-    paddingVertical: spacing.xs,
-  },
-  radio: {
-    alignItems: 'center',
-    borderRadius: 99,
-    borderWidth: 2,
-    height: 22,
-    justifyContent: 'center',
-    width: 22,
-  },
-  radioSelected: {
-    borderRadius: 99,
-    height: 10,
-    width: 10,
-  },
-  modeCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  optionTitle: {
-    fontSize: typography.body,
+  badgeText: {
+    fontSize: 12,
     fontWeight: '600',
   },
-  optionDescription: {
-    fontSize: typography.caption,
+  description: {
+    fontSize: 13,
     lineHeight: 18,
+  },
+  toggleButton: {
+    alignItems: 'center',
+    borderRadius: 14,
+    borderWidth: 1,
+    justifyContent: 'center',
+    paddingVertical: 12,
+    width: '100%',
+  },
+  toggleButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
   },
 });

@@ -5,14 +5,22 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
-  TextInput,
   View,
 } from 'react-native';
-import { ActionButton, AppText, Heading, Screen } from '../ui/Primitives';
+import { AppText, Card, Screen } from '../ui/Primitives';
 import { useAppTheme } from '../../design/ThemeProvider';
-import { radii, spacing, typography } from '../../theme';
 import { strings } from '../../i18n/strings';
 import { dateInputForOffset, schedulePreview } from '../../tasks/scheduling';
+import { Reminder } from '../../tasks/types';
+import {
+  EditorField,
+  EditorHeader,
+  EditorSummary,
+  ScheduleLine,
+  TaskBadge,
+  TaskButton,
+  presentationStyles as ui,
+} from './TaskPresentation';
 
 export type ReminderDraft = {
   title: string;
@@ -31,6 +39,8 @@ interface ReminderEditorModalProps {
   onChange: (draft: ReminderDraft) => void;
   onClose: () => void;
   onSave: () => void;
+  reminder?: Reminder;
+  onDelete?: () => void;
 }
 
 const RECURRENCE_OPTIONS = ['none', 'daily', 'weekly'] as const;
@@ -43,9 +53,10 @@ export function ReminderEditorModal({
   onChange,
   onClose,
   onSave,
+  reminder,
+  onDelete,
 }: ReminderEditorModalProps) {
   const { colors } = useAppTheme();
-
   return (
     <Modal animationType="slide" onRequestClose={onClose} visible={visible}>
       <Screen>
@@ -54,92 +65,81 @@ export function ReminderEditorModal({
           style={styles.flex}
         >
           <ScrollView
-            contentContainerStyle={styles.scrollContent}
+            contentContainerStyle={ui.scroll}
             keyboardShouldPersistTaps="handled"
           >
-            <View style={styles.header}>
-              <Heading>
-                {mode === 'create'
+            <EditorHeader
+              onClose={onClose}
+              subtitle="Schedule when the reminder appears"
+              title={
+                mode === 'create'
                   ? strings.tasks.createReminder
-                  : strings.tasks.editReminder}
-              </Heading>
-              <AppText style={[styles.subtitle, { color: colors.textMuted }]}>
-                {strings.tasks.body}
-              </AppText>
-            </View>
-
-            {/* Title Field */}
-            <View style={styles.field}>
-              <AppText style={[styles.fieldLabel, { color: colors.text }]}>
-                {strings.tasks.titleLabel} *
-              </AppText>
-              <TextInput
+                  : strings.tasks.editReminder
+              }
+            />
+            {mode === 'edit' && reminder ? (
+              <EditorSummary reminder title={reminder.title}>
+                <ScheduleLine
+                  at={reminder.trigger_at}
+                  timezone={reminder.timezone}
+                />
+                <View style={ui.badges}>
+                  <TaskBadge
+                    label={
+                      reminder.status === 'sent' ? 'Delivered' : reminder.status
+                    }
+                    tone={reminder.status}
+                  />
+                  <TaskBadge
+                    label={
+                      reminder.delivery_channel === 'push'
+                        ? '🔔 Push notification'
+                        : reminder.delivery_channel
+                    }
+                    tone="voice"
+                  />
+                </View>
+              </EditorSummary>
+            ) : null}
+            <Card style={ui.formCard}>
+              <EditorField
                 accessibilityLabel={strings.tasks.titleLabel}
+                label="Reminder title *"
                 onChangeText={title => onChange({ ...draft, title })}
                 placeholder="What should we remind you about?"
-                placeholderTextColor={colors.textSubtle}
-                style={[
-                  styles.input,
-                  {
-                    color: colors.text,
-                    borderColor: colors.border,
-                    backgroundColor: colors.surface,
-                  },
-                ]}
                 testID="reminder-title-input"
                 value={draft.title}
               />
-            </View>
-
-            {/* Body Field */}
-            <View style={styles.field}>
-              <AppText style={[styles.fieldLabel, { color: colors.text }]}>
-                {strings.tasks.bodyLabel}
-              </AppText>
-              <TextInput
+              <EditorField
                 accessibilityLabel={strings.tasks.bodyLabel}
+                label="Message"
                 multiline
                 numberOfLines={3}
                 onChangeText={body => onChange({ ...draft, body })}
                 placeholder="Additional reminder details (optional)"
-                placeholderTextColor={colors.textSubtle}
-                style={[
-                  styles.input,
-                  styles.multilineInput,
-                  {
-                    color: colors.text,
-                    borderColor: colors.border,
-                    backgroundColor: colors.surface,
-                  },
-                ]}
                 testID="reminder-body-input"
                 value={draft.body}
               />
-            </View>
-
-            {/* Date & Time Fields */}
-            <View style={styles.field}>
-              <AppText style={[styles.fieldLabel, { color: colors.text }]}>
-                {strings.tasks.dateLabel} *
-              </AppText>
-              <TextInput
-                accessibilityLabel={strings.tasks.dateLabel}
-                onChangeText={date => onChange({ ...draft, date })}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={colors.textSubtle}
-                style={[
-                  styles.input,
-                  {
-                    color: colors.text,
-                    borderColor: colors.border,
-                    backgroundColor: colors.surface,
-                  },
-                ]}
-                testID="reminder-date-input"
-                value={draft.date}
-              />
-              <View style={styles.quickDateRow}>
-                <ActionButton
+              <View style={ui.pairedFields}>
+                <EditorField
+                  accessibilityLabel={strings.tasks.dateLabel}
+                  label="Date *"
+                  onChangeText={date => onChange({ ...draft, date })}
+                  placeholder="YYYY-MM-DD"
+                  testID="reminder-date-input"
+                  value={draft.date}
+                />
+                <EditorField
+                  accessibilityLabel={strings.tasks.timeLabel}
+                  label="Time *"
+                  onChangeText={time => onChange({ ...draft, time })}
+                  placeholder="HH:mm"
+                  testID="reminder-time-input"
+                  value={draft.time}
+                />
+              </View>
+              <View style={styles.quickDate}>
+                <TaskButton
                   label={strings.tasks.tomorrow}
                   onPress={() =>
                     onChange({ ...draft, date: dateInputForOffset(1) })
@@ -148,115 +148,99 @@ export function ReminderEditorModal({
                   variant="secondary"
                 />
               </View>
-            </View>
-
-            <View style={styles.field}>
-              <AppText style={[styles.fieldLabel, { color: colors.text }]}>
-                {strings.tasks.timeLabel} *
-              </AppText>
-              <TextInput
-                accessibilityLabel={strings.tasks.timeLabel}
-                onChangeText={time => onChange({ ...draft, time })}
-                placeholder="HH:mm"
-                placeholderTextColor={colors.textSubtle}
-                style={[
-                  styles.input,
-                  {
-                    color: colors.text,
-                    borderColor: colors.border,
-                    backgroundColor: colors.surface,
-                  },
-                ]}
-                testID="reminder-time-input"
-                value={draft.time}
-              />
-            </View>
-
-            <View style={styles.field}>
-              <AppText style={[styles.fieldLabel, { color: colors.text }]}>
-                {strings.tasks.timezoneLabel} *
-              </AppText>
-              <TextInput
+              <EditorField
                 accessibilityLabel={strings.tasks.timezoneLabel}
+                label="Time zone *"
                 onChangeText={timezone => onChange({ ...draft, timezone })}
                 placeholder="e.g. Asia/Kolkata, UTC"
-                placeholderTextColor={colors.textSubtle}
-                style={[
-                  styles.input,
-                  {
-                    color: colors.text,
-                    borderColor: colors.border,
-                    backgroundColor: colors.surface,
-                  },
-                ]}
                 testID="reminder-timezone-input"
                 value={draft.timezone}
               />
-            </View>
-
-            {/* Schedule Preview Banner */}
-            <View
-              style={[
-                styles.previewContainer,
-                {
-                  backgroundColor: colors.surfaceLow,
-                  borderColor: colors.borderSubtle,
-                },
-              ]}
-            >
-              <AppText
-                style={[
-                  styles.previewLabel,
-                  { color: colors.primary, fontWeight: '700' },
-                ]}
-              >
-                {strings.tasks.preview}
-              </AppText>
-              <AppText
-                style={[styles.previewValue, { color: colors.text }]}
-                testID="reminder-schedule-preview"
-              >
-                {schedulePreview(draft.date, draft.time, draft.timezone)}
-              </AppText>
-              <AppText
-                style={[styles.previewHelp, { color: colors.textMuted }]}
-              >
-                {strings.tasks.serverValidation}
-              </AppText>
-            </View>
-
-            {/* Recurrence Selector */}
-            <View style={styles.field}>
-              <AppText style={[styles.fieldLabel, { color: colors.text }]}>
-                {strings.tasks.recurrence}
-              </AppText>
-              <View style={styles.recurrenceRow}>
-                {RECURRENCE_OPTIONS.map(choice => (
-                  <ActionButton
-                    key={choice}
-                    label={choice}
-                    onPress={() => onChange({ ...draft, recurrence: choice })}
-                    testID={`recurrence-${choice}`}
-                    variant={
-                      draft.recurrence === choice ? 'primary' : 'secondary'
-                    }
-                  />
-                ))}
+              <View style={ui.field}>
+                <AppText style={[ui.fieldLabel, { color: colors.textMuted }]}>
+                  Repeat
+                </AppText>
+                <View style={styles.recurrenceRow}>
+                  {RECURRENCE_OPTIONS.map(choice => (
+                    <TaskButton
+                      key={choice}
+                      accessibilityState={{
+                        selected: draft.recurrence === choice,
+                      }}
+                      label={
+                        choice === 'none'
+                          ? 'Never'
+                          : choice === 'daily'
+                          ? 'Daily'
+                          : 'Weekly'
+                      }
+                      onPress={() => onChange({ ...draft, recurrence: choice })}
+                      style={styles.recurrenceOption}
+                      testID={`recurrence-${choice}`}
+                      variant={
+                        draft.recurrence === choice ? 'primary' : 'secondary'
+                      }
+                    />
+                  ))}
+                </View>
               </View>
-            </View>
-
-            {/* Action Buttons */}
-            <View style={styles.modalActions}>
-              <ActionButton
+              <View style={ui.field}>
+                <AppText style={[ui.fieldLabel, { color: colors.textMuted }]}>
+                  Delivery type
+                </AppText>
+                <View style={ui.badges}>
+                  <TaskBadge label="🔔 Push notification" tone="voice" />
+                </View>
+              </View>
+              <View
+                style={[ui.preview, { backgroundColor: colors.surfaceLow }]}
+              >
+                <AppText style={[ui.fieldLabel, { color: colors.primary }]}>
+                  {strings.tasks.preview}
+                </AppText>
+                <AppText
+                  style={styles.previewValue}
+                  testID="reminder-schedule-preview"
+                >
+                  {schedulePreview(draft.date, draft.time, draft.timezone)}
+                </AppText>
+                <AppText
+                  style={[styles.previewHelp, { color: colors.textMuted }]}
+                >
+                  {strings.tasks.serverValidation}
+                </AppText>
+              </View>
+            </Card>
+            <View style={ui.footer}>
+              <TaskButton
+                disabled={saving}
+                label={
+                  saving
+                    ? strings.tasks.saving
+                    : mode === 'edit'
+                    ? 'Save reminder'
+                    : strings.tasks.save
+                }
+                onPress={onSave}
+                testID="reminder-save"
+              />
+              {mode === 'edit' && onDelete ? (
+                <TaskButton
+                  destructive
+                  disabled={saving}
+                  label="Delete reminder"
+                  onPress={() => {
+                    onClose();
+                    onDelete();
+                  }}
+                  testID="reminder-editor-delete"
+                  variant="quiet"
+                />
+              ) : null}
+              <TaskButton
                 label={strings.tasks.cancel}
                 onPress={onClose}
                 variant="quiet"
-              />
-              <ActionButton
-                disabled={saving}
-                label={saving ? strings.tasks.saving : strings.tasks.save}
-                onPress={onSave}
-                testID="reminder-save"
               />
             </View>
           </ScrollView>
@@ -267,72 +251,10 @@ export function ReminderEditorModal({
 }
 
 const styles = StyleSheet.create({
-  flex: {
-    flex: 1,
-  },
-  scrollContent: {
-    gap: spacing.md,
-    paddingBottom: spacing.xxl,
-  },
-  header: {
-    gap: spacing.xs,
-    marginBottom: spacing.xs,
-  },
-  subtitle: {
-    fontSize: typography.caption,
-  },
-  field: {
-    gap: spacing.xs,
-  },
-  fieldLabel: {
-    fontSize: typography.body,
-    fontWeight: '600',
-  },
-  input: {
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    fontSize: typography.body,
-    minHeight: 48,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  multilineInput: {
-    minHeight: 80,
-    textAlignVertical: 'top',
-  },
-  quickDateRow: {
-    alignItems: 'flex-start',
-    marginTop: spacing.xs,
-  },
-  previewContainer: {
-    borderRadius: radii.sm,
-    borderWidth: 1,
-    gap: spacing.xs,
-    padding: spacing.md,
-  },
-  previewLabel: {
-    fontSize: typography.caption,
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-  },
-  previewValue: {
-    fontSize: typography.body,
-    fontWeight: '500',
-  },
-  previewHelp: {
-    fontSize: typography.caption,
-    marginTop: spacing.xs,
-  },
-  recurrenceRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.xs,
-  },
-  modalActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-    justifyContent: 'flex-end',
-    marginTop: spacing.md,
-  },
+  flex: { flex: 1 },
+  quickDate: { alignItems: 'flex-start', marginTop: -10 },
+  recurrenceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  recurrenceOption: { flex: 1, minWidth: 65, paddingHorizontal: 8 },
+  previewValue: { fontSize: 13, lineHeight: 20 },
+  previewHelp: { fontSize: 12, lineHeight: 18 },
 });

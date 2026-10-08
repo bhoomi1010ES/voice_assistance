@@ -84,3 +84,7 @@ export function useVoiceSocket(): VoiceSocketContextValue {
   }
   return value;
 }
+
+export function useOptionalVoiceSocket(): VoiceSocketContextValue | null {
+  return useContext(VoiceSocketContext);
+}

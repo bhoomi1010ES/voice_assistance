@@ -1,6 +1,6 @@
 import React from 'react';
-import { StyleSheet, TextInput, View } from 'react-native';
-import { ActionButton, AppText, Card } from '../ui/Primitives';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { AppText } from '../ui/Primitives';
 import { useAppTheme } from '../../design/ThemeProvider';
 import { radii, shadows, spacing, typography } from '../../theme';
 import { strings } from '../../i18n/strings';
@@ -21,21 +21,28 @@ export function MemoryCreateCard({
   enabled,
 }: MemoryCreateCardProps) {
   const { colors } = useAppTheme();
+  const isSubmitDisabled = !enabled || saving || !newContent.trim();
 
   return (
-    <Card
+    <View
       style={[
         styles.card,
         {
           backgroundColor: colors.surface,
-          borderColor: colors.border,
+          borderColor: colors.borderSubtle,
         },
+        shadows.sm,
       ]}
       testID="memory-create-card"
     >
-      <AppText style={[styles.title, { color: colors.text }]}>
-        {strings.memory.createTitle}
-      </AppText>
+      <View style={styles.headerRow}>
+        <View style={styles.iconCircle}>
+          <Text style={styles.icon}>✏️</Text>
+        </View>
+        <AppText style={[styles.title, { color: colors.text }]}>
+          {strings.memory.createTitle}
+        </AppText>
+      </View>
 
       <View style={styles.inputContainer}>
         <TextInput
@@ -48,10 +55,9 @@ export function MemoryCreateCard({
           placeholderTextColor={colors.textSubtle}
           style={[
             styles.input,
-            styles.multilineInput,
             {
               color: colors.text,
-              borderColor: colors.border,
+              borderColor: colors.borderSubtle,
               backgroundColor: colors.surfaceLow,
             },
           ]}
@@ -60,45 +66,87 @@ export function MemoryCreateCard({
         />
       </View>
 
-      <ActionButton
-        disabled={!enabled || saving || !newContent.trim()}
-        label={saving ? strings.memory.creating : strings.memory.create}
+      <Pressable
+        accessibilityLabel={
+          saving ? strings.memory.creating : strings.memory.create
+        }
+        accessibilityRole="button"
+        disabled={isSubmitDisabled}
         onPress={onSave}
-        style={styles.actionButton}
+        style={({ pressed }) => [
+          styles.saveButton,
+          {
+            backgroundColor: isSubmitDisabled ? colors.surfaceMuted : '#8B5CF6',
+            opacity: isSubmitDisabled ? 0.6 : pressed ? 0.85 : 1,
+          },
+          shadows.sm,
+        ]}
         testID="memory-create"
-        variant="primary"
-      />
-    </Card>
+      >
+        <Text
+          style={[
+            styles.saveButtonText,
+            {
+              color: isSubmitDisabled ? colors.textMuted : '#FFFFFF',
+            },
+          ]}
+        >
+          {saving ? strings.memory.creating : strings.memory.create}
+        </Text>
+      </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: radii.md,
+    borderRadius: radii.xl,
     borderWidth: 1,
     gap: spacing.sm,
     padding: spacing.md,
-    ...shadows.sm,
+  },
+  headerRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  iconCircle: {
+    alignItems: 'center',
+    backgroundColor: '#FFE4E6',
+    borderRadius: 18,
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
+  },
+  icon: {
+    fontSize: 16,
   },
   title: {
     fontSize: typography.body,
     fontWeight: '700',
   },
   inputContainer: {
-    marginTop: spacing.xs,
+    marginTop: spacing.xxs,
   },
   input: {
-    borderRadius: radii.sm,
+    borderRadius: radii.md,
     borderWidth: 1,
     fontSize: typography.body,
+    minHeight: 80,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-  },
-  multilineInput: {
-    minHeight: 80,
     textAlignVertical: 'top',
   },
-  actionButton: {
+  saveButton: {
+    alignItems: 'center',
+    borderRadius: radii.pill,
+    justifyContent: 'center',
     marginTop: spacing.xs,
+    paddingVertical: spacing.sm + 2,
+  },
+  saveButtonText: {
+    fontSize: typography.body,
+    fontWeight: '700',
   },
 });
+

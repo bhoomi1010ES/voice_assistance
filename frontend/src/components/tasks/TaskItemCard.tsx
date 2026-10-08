@@ -1,11 +1,15 @@
 import React from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
-import { ActionButton, AppText, Card } from '../ui/Primitives';
+import { AppText, Card } from '../ui/Primitives';
 import { useAppTheme } from '../../design/ThemeProvider';
-import { radii, shadows, spacing, typography } from '../../theme';
 import { strings } from '../../i18n/strings';
-import { formatScheduledTime } from '../../tasks/scheduling';
-import { Task, TaskPriority } from '../../tasks/types';
+import { Task } from '../../tasks/types';
+import {
+  ScheduleLine,
+  TaskBadge,
+  TaskButton,
+  presentationStyles,
+} from './TaskPresentation';
 
 interface TaskItemCardProps {
   task: Task;
@@ -24,48 +28,12 @@ export function TaskItemCard({
 }: TaskItemCardProps) {
   const { colors } = useAppTheme();
   const isCompleted = task.status === 'completed';
-
-  const priorityColors: Record<
-    TaskPriority,
-    { bg: string; text: string; dot: string }
-  > = {
-    urgent: {
-      bg: colors.errorContainer,
-      text: colors.error,
-      dot: colors.error,
-    },
-    high: {
-      bg: colors.primaryContainer,
-      text: colors.primary,
-      dot: colors.primary,
-    },
-    normal: {
-      bg: colors.surfaceMuted,
-      text: colors.textMuted,
-      dot: colors.tertiary,
-    },
-    low: {
-      bg: colors.surfaceLow,
-      text: colors.textSubtle,
-      dot: colors.disabled,
-    },
-  };
-
-  const priorityStyle = priorityColors[task.priority] || priorityColors.normal;
-
   return (
     <Card
-      style={[
-        styles.card,
-        {
-          backgroundColor: colors.surface,
-          borderColor: isCompleted ? colors.borderSubtle : colors.border,
-          opacity: isCompleted ? 0.75 : 1,
-        },
-      ]}
+      style={[styles.card, isCompleted ? styles.completedCard : null]}
       testID={`todo-${task.id}`}
     >
-      <View style={styles.headerRow}>
+      <View style={styles.row}>
         <Pressable
           accessibilityLabel={
             isCompleted
@@ -76,160 +44,81 @@ export function TaskItemCard({
           accessibilityState={{ checked: isCompleted }}
           disabled={busy || isCompleted}
           onPress={() => onComplete(task)}
-          style={[
-            styles.checkbox,
-            {
-              borderColor: isCompleted ? colors.success : colors.border,
-              backgroundColor: isCompleted ? colors.success : 'transparent',
-            },
-          ]}
+          style={styles.checkTarget}
         >
-          {isCompleted ? (
-            <AppText style={[styles.checkmark, { color: colors.onPrimary }]}>
-              ✓
-            </AppText>
-          ) : null}
+          <View
+            style={[
+              styles.checkbox,
+              isCompleted
+                ? {
+                    borderColor: colors.success,
+                    backgroundColor: colors.success,
+                  }
+                : null,
+            ]}
+          >
+            {isCompleted ? <AppText style={styles.checkmark}>✓</AppText> : null}
+          </View>
         </Pressable>
-
-        <View style={styles.titleContainer}>
+        <View style={styles.content}>
           <AppText
             style={[
               styles.title,
               {
                 color: isCompleted ? colors.textMuted : colors.text,
-                textDecorationLine: isCompleted ? 'line-through' : 'none',
               },
+              isCompleted ? styles.completedTitle : null,
             ]}
           >
             {task.title}
           </AppText>
-
           {task.description ? (
-            <AppText
-              style={[
-                styles.description,
-                {
-                  color: isCompleted ? colors.textSubtle : colors.textMuted,
-                },
-              ]}
-            >
+            <AppText style={[styles.description, { color: colors.textMuted }]}>
               {task.description}
             </AppText>
           ) : null}
-        </View>
-      </View>
-
-      <View style={styles.metaRow}>
-        {/* Schedule Badge */}
-        <View
-          style={[
-            styles.badge,
-            {
-              backgroundColor: colors.surfaceLow,
-              borderColor: colors.borderSubtle,
-            },
-          ]}
-        >
-          <AppText style={[styles.badgeText, { color: colors.textMuted }]}>
-            🕒 {formatScheduledTime(task.due_at, task.timezone)} ·{' '}
-            {task.timezone}
-          </AppText>
-        </View>
-
-        {/* Priority Badge */}
-        <View
-          style={[
-            styles.badge,
-            {
-              backgroundColor: priorityStyle.bg,
-              borderColor: 'transparent',
-            },
-          ]}
-        >
-          <View
-            style={[styles.priorityDot, { backgroundColor: priorityStyle.dot }]}
-          />
-          <AppText
-            style={[
-              styles.badgeText,
-              {
-                color: priorityStyle.text,
-                textTransform: 'capitalize',
-                fontWeight: '600',
-              },
-            ]}
-          >
-            {task.priority}
-          </AppText>
-        </View>
-
-        {/* Status Badge */}
-        <View
-          style={[
-            styles.badge,
-            {
-              backgroundColor: isCompleted
-                ? colors.successContainer
-                : colors.surfaceMuted,
-              borderColor: 'transparent',
-            },
-          ]}
-        >
-          <AppText
-            style={[
-              styles.badgeText,
-              {
-                color: isCompleted ? colors.success : colors.textMuted,
-                textTransform: 'capitalize',
-              },
-            ]}
-          >
-            {task.status}
-          </AppText>
-        </View>
-
-        {/* Real Voice Origin Badge (Only if source_turn_id is present) */}
-        {task.source_turn_id ? (
-          <View
-            style={[
-              styles.badge,
-              {
-                backgroundColor: colors.secondaryContainer,
-                borderColor: 'transparent',
-              },
-            ]}
-            testID={`todo-voice-badge-${task.id}`}
-          >
-            <AppText
-              style={[
-                styles.badgeText,
-                { color: colors.onSecondaryContainer, fontWeight: '600' },
-              ]}
-            >
-              🎙 Voice Created
-            </AppText>
+          <ScheduleLine at={task.due_at} timezone={task.timezone} />
+          <View style={presentationStyles.badges}>
+            <TaskBadge label={`● ${task.priority}`} tone={task.priority} />
+            <TaskBadge
+              label={task.status.replace('_', ' ')}
+              tone={
+                isCompleted
+                  ? 'completed'
+                  : task.status === 'cancelled'
+                  ? 'cancelled'
+                  : 'pending'
+              }
+            />
+            {task.source_turn_id ? (
+              <TaskBadge
+                label="🎙 Voice created"
+                testID={`todo-voice-badge-${task.id}`}
+                tone="voice"
+              />
+            ) : null}
           </View>
-        ) : null}
+        </View>
       </View>
-
-      <View style={styles.actionsRow}>
+      <View style={styles.actions}>
         {!isCompleted ? (
-          <ActionButton
+          <TaskButton
             disabled={busy}
             label={strings.tasks.complete}
             onPress={() => onComplete(task)}
+            style={styles.complete}
             testID={`todo-complete-${task.id}`}
-            variant="secondary"
           />
         ) : null}
-        <ActionButton
+        <TaskButton
           disabled={busy}
           label={strings.tasks.edit}
           onPress={() => onEdit(task)}
           testID={`todo-edit-${task.id}`}
           variant="quiet"
         />
-        <ActionButton
+        <TaskButton
+          destructive
           disabled={busy}
           label={strings.tasks.delete}
           onPress={() => onDelete(task)}
@@ -242,74 +131,44 @@ export function TaskItemCard({
 }
 
 const styles = StyleSheet.create({
-  card: {
-    borderRadius: radii.md,
-    borderWidth: 1,
-    gap: spacing.sm,
-    marginTop: spacing.sm,
-    padding: spacing.md,
-    ...shadows.sm,
-  },
-  headerRow: {
-    alignItems: 'flex-start',
-    flexDirection: 'row',
-    gap: spacing.sm,
+  completedCard: { opacity: 0.75 },
+  completedTitle: { textDecorationLine: 'line-through' },
+  card: { borderRadius: 22, padding: 14, gap: 12, marginTop: 6 },
+  row: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  checkTarget: {
+    width: 36,
+    minHeight: 44,
+    alignItems: 'center',
+    paddingTop: 4,
   },
   checkbox: {
-    alignItems: 'center',
-    borderRadius: radii.full,
+    borderColor: '#DCC8C7',
+    width: 26,
+    height: 26,
+    borderRadius: 15,
     borderWidth: 2,
-    height: 24,
+    alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 2,
-    width: 24,
   },
   checkmark: {
-    fontSize: 14,
-    fontWeight: '700',
-    lineHeight: 16,
-  },
-  titleContainer: {
-    flex: 1,
-    gap: spacing.xs,
-  },
-  title: {
-    fontSize: typography.subheading,
-    fontWeight: '600',
-    letterSpacing: -0.2,
-  },
-  description: {
-    fontSize: typography.body,
+    color: '#FFFFFF',
+    fontSize: 15,
     lineHeight: 20,
+    fontWeight: '700',
   },
-  metaRow: {
+  content: { flex: 1, gap: 8 },
+  title: {
+    fontSize: 18,
+    lineHeight: 24,
+    fontWeight: '700',
+    letterSpacing: -0.4,
+  },
+  description: { fontSize: 13, lineHeight: 19 },
+  actions: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: spacing.xs,
-    marginTop: spacing.xs,
-  },
-  badge: {
-    alignItems: 'center',
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 4,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 3,
-  },
-  priorityDot: {
-    borderRadius: radii.full,
-    height: 6,
-    width: 6,
-  },
-  badgeText: {
-    fontSize: typography.caption,
-  },
-  actionsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
     justifyContent: 'flex-end',
-    marginTop: spacing.xs,
+    gap: 4,
   },
+  complete: { flexGrow: 1, minWidth: 105, maxWidth: 155 },
 });

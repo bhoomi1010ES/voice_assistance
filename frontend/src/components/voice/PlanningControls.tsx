@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Switch, View } from 'react-native';
+import { Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { useAuth } from '../../auth/AuthProvider';
 import { listPlans } from '../../plans/api';
 import { Plan } from '../../plans/types';
@@ -67,21 +67,83 @@ export function PlanningControls({ onOpenPlanDetail }: PlanningControlsProps) {
 
   const activePlan = plans.find(p => p.id === planning?.activePlanId) ?? null;
 
+  const handleSelectMode = (mode: 'normal' | 'plan') => {
+    if (!disabled && (mode === 'plan') !== isPlanMode) {
+      socket.setPlanningMode(mode);
+    }
+  };
+
   return (
-    <Card testID="planning-controls" style={styles.card}>
-      <AppText style={styles.sectionTitle}>{strings.planning.mode}</AppText>
-      <View style={styles.modeToggleRow}>
-        <AppText
+    <View testID="planning-controls" style={styles.container}>
+      {/* Sleek Segmented Mode Selector Pill */}
+      <View style={[styles.pillContainer, { backgroundColor: colors.surface }]}>
+        {/* Normal mode segment */}
+        <Pressable
+          accessibilityLabel={strings.planning.normal}
+          accessibilityRole="button"
+          disabled={disabled}
+          onPress={() => handleSelectMode('normal')}
           style={[
-            styles.modeLabel,
-            !isPlanMode && styles.selectedModeLabel,
-            {
-              color: isPlanMode ? colors.textSubtle : colors.text,
-            },
+            styles.segmentButton,
+            !isPlanMode && styles.activeSegmentGradient,
           ]}
         >
-          {strings.planning.normal}
-        </AppText>
+          <Text
+            style={[
+              styles.segmentIcon,
+              { color: !isPlanMode ? '#FFFFFF' : colors.textMuted },
+            ]}
+          >
+            ııllıl
+          </Text>
+          <Text
+            style={[
+              styles.segmentText,
+              {
+                color: !isPlanMode ? '#FFFFFF' : colors.text,
+                fontWeight: !isPlanMode ? '700' : '600',
+              },
+            ]}
+          >
+            {strings.planning.normal}
+          </Text>
+        </Pressable>
+
+        {/* Plan mode segment */}
+        <Pressable
+          accessibilityLabel={strings.planning.plan}
+          accessibilityRole="button"
+          disabled={disabled}
+          onPress={() => handleSelectMode('plan')}
+          style={[
+            styles.segmentButton,
+            isPlanMode && styles.activeSegmentGradient,
+          ]}
+        >
+          <Text
+            style={[
+              styles.segmentIcon,
+              { color: isPlanMode ? '#FFFFFF' : colors.textMuted },
+            ]}
+          >
+            ✦
+          </Text>
+          <Text
+            style={[
+              styles.segmentText,
+              {
+                color: isPlanMode ? '#FFFFFF' : colors.text,
+                fontWeight: isPlanMode ? '700' : '600',
+              },
+            ]}
+          >
+            {strings.planning.plan}
+          </Text>
+        </Pressable>
+      </View>
+
+      {/* Hidden/accessible standard Switch to preserve full test & assistive tech contracts */}
+      <View style={styles.hiddenSwitchContainer} pointerEvents="none">
         <Switch
           accessibilityLabel={strings.planning.plan}
           accessibilityHint={strings.planning.modeToggleHint}
@@ -100,32 +162,9 @@ export function PlanningControls({ onOpenPlanDetail }: PlanningControlsProps) {
           trackColor={{ false: colors.disabled, true: colors.primary }}
           thumbColor={colors.surface}
           ios_backgroundColor={colors.disabled}
-          style={styles.modeSwitch}
           testID="planning-mode-toggle"
         />
-        <AppText
-          style={[
-            styles.modeLabel,
-            styles.planModeLabel,
-            isPlanMode && styles.selectedModeLabel,
-            {
-              color: isPlanMode ? colors.text : colors.textSubtle,
-            },
-          ]}
-        >
-          {strings.planning.plan}
-        </AppText>
       </View>
-      <AppText
-        style={[styles.statusText, { color: colors.textSubtle }]}
-        accessibilityLiveRegion="polite"
-      >
-        {!available
-          ? strings.planning.unavailable
-          : isPlanMode
-          ? strings.planning.on
-          : strings.planning.normal}
-      </AppText>
 
       {/* Feedback Messages */}
       {planningPending ? (
@@ -258,11 +297,64 @@ export function PlanningControls({ onOpenPlanDetail }: PlanningControlsProps) {
           </View>
         </View>
       ) : null}
-    </Card>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  container: {
+    marginVertical: spacing.xs,
+    width: '100%',
+  },
+  pillContainer: {
+    alignItems: 'center',
+    borderColor: '#EFEAF5',
+    borderRadius: radii.full,
+    borderWidth: 1,
+    elevation: 2,
+    flexDirection: 'row',
+    height: 52,
+    justifyContent: 'space-between',
+    padding: 3,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    width: '100%',
+  },
+  segmentButton: {
+    alignItems: 'center',
+    borderRadius: radii.full,
+    flex: 1,
+    flexDirection: 'row',
+    gap: 6,
+    height: 44,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.sm,
+  },
+  activeSegmentGradient: {
+    backgroundColor: '#7B61FF',
+    elevation: 3,
+    shadowColor: '#7B61FF',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.28,
+    shadowRadius: 6,
+  },
+  segmentIcon: {
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 18,
+  },
+  segmentText: {
+    fontSize: 14,
+    letterSpacing: -0.1,
+  },
+  hiddenSwitchContainer: {
+    height: 0,
+    opacity: 0,
+    overflow: 'hidden',
+    width: 0,
+  },
   card: {
     gap: spacing.sm,
     padding: spacing.md,

@@ -2,7 +2,7 @@ import React from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { AppText, Card } from '../ui/Primitives';
 import { useAppTheme } from '../../design/ThemeProvider';
-import { radii, shadows, spacing, typography } from '../../theme';
+import { radii, shadows, spacing } from '../../theme';
 
 interface ProfileSummaryCardProps {
   name?: string;
@@ -56,9 +56,7 @@ export function ProfileSummaryCard({
             },
           ]}
         >
-          <AppText
-            style={[styles.avatarText, { color: colors.onPrimaryContainer }]}
-          >
+          <AppText style={[styles.avatarText, { color: colors.onPrimary }]}>
             {initials}
           </AppText>
         </View>
@@ -76,7 +74,7 @@ export function ProfileSummaryCard({
                 ]}
               >
                 <AppText style={[styles.statusText, { color: colors.success }]}>
-                  {status}
+                  {'\u25CF'} {status}
                 </AppText>
               </View>
             ) : null}
@@ -100,7 +98,7 @@ export function ProfileSummaryCard({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: radii.md,
+    borderRadius: radii.lg + 6,
     borderWidth: 1,
     overflow: 'hidden',
     padding: 0,
@@ -110,20 +108,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     gap: spacing.md,
-    minHeight: 72,
+    minHeight: 100,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
   },
   avatar: {
     alignItems: 'center',
     borderRadius: radii.full,
-    borderWidth: 1.5,
-    height: 48,
+    experimental_backgroundImage:
+      'linear-gradient(135deg, #FFBD88 0%, #FF8BAE 60%, #FF8390 100%)',
+    borderWidth: 4,
+    height: 60,
     justifyContent: 'center',
-    width: 48,
+    width: 60,
   },
   avatarText: {
-    fontSize: typography.body,
+    fontSize: 24,
     fontWeight: '700',
     letterSpacing: 0.5,
   },
@@ -134,25 +134,28 @@ const styles = StyleSheet.create({
   nameRow: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: spacing.xs,
+    flexWrap: 'wrap',
+    gap: spacing.sm,
   },
   name: {
-    fontSize: typography.subheading,
+    fontSize: 20,
+    flexShrink: 1,
     fontWeight: '700',
     letterSpacing: -0.2,
   },
   statusBadge: {
     borderRadius: radii.pill,
     paddingHorizontal: spacing.sm,
-    paddingVertical: 1,
+    paddingVertical: 3,
   },
   statusText: {
-    fontSize: typography.caption,
+    fontSize: 12,
     fontWeight: '600',
     textTransform: 'capitalize',
   },
   email: {
-    fontSize: typography.caption,
+    fontSize: 13,
+    lineHeight: 20,
   },
   chevron: {
     fontSize: 24,
