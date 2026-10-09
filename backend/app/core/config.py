@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     stt_diagnostic_capture_enabled: bool = False
     stt_diagnostic_capture_dir: str = "scratch/phase4_stt_diagnostics"
 
+    # Server-side silence guard (QA-VOICE-001). Disabled by default in
+    # production; enabled explicitly via configuration or tests.
+    stt_silence_guard_enabled: bool = False
+    stt_silence_guard_min_rms: float = Field(default=25.0, ge=0.0, le=32767.0)
+    stt_silence_guard_min_peak: int = Field(default=100, ge=0, le=32767)
+    stt_silence_guard_window_ms: int = Field(default=100, ge=10, le=2000)
+
     # Legacy local CPU Whisper settings. They are not loaded by the default
     # Windows engine and can be removed after the migration is accepted.
     stt_model_path: str = "models/whisper-large-v3-turbo-ct2"

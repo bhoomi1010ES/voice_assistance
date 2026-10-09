@@ -17,6 +17,7 @@ import httpx
 
 from app.core.config import Settings
 from app.services.latency_trace import LatencyTracer, latency_span
+from app.stt.audio_energy import evaluate_pcm16_speech_energy
 from app.stt.base import (
     EnginePartialCallback,
     STTAudioError,
@@ -253,6 +254,30 @@ class RemoteTranscriptionEngine(STTEngine):
             raise STTConfigurationError("remote STT client is not initialized")
         if state.cancelled or generation != state.generation:
             raise STTCancelledError("STT turn is no longer active")
+        if self.settings.stt_silence_guard_enabled:
+            energy = evaluate_pcm16_speech_energy(
+                state.audio,
+                sample_rate_hz=self.settings.voice_sample_rate_hz,
+                window_ms=self.settings.stt_silence_guard_window_ms,
+                min_rms=self.settings.stt_silence_guard_min_rms,
+                min_peak=self.settings.stt_silence_guard_min_peak,
+            )
+            if not energy.has_speech:
+                LOGGER.info(
+                    "Remote STT turn rejected by silence guard",
+                    extra={
+                        "event": "STT_SILENCE_GUARD_REJECTED",
+                        "session_id": str(state.handle.session_id),
+                        "turn_id": str(state.handle.turn_id),
+                        "response_id": str(state.handle.response_id),
+                        "audio_bytes": len(state.audio),
+                        "global_rms": energy.global_rms,
+                        "peak_window_rms": energy.peak_window_rms,
+                        "peak_amplitude": energy.peak_amplitude,
+                        "duration_ms": energy.duration_ms,
+                    },
+                )
+                raise STTEmptyTranscriptError("No speech detected in audio turn")
         wav_bytes = self._to_wav(bytes(state.audio))
         data: dict[str, str] = {
             "response_format": self.settings.stt_api_response_format,
