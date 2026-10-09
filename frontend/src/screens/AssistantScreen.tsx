@@ -120,10 +120,6 @@ export function AssistantScreen() {
   );
 
   useEffect(() => {
-    socket.connect().catch(() => undefined);
-  }, [socket]);
-
-  useEffect(() => {
     getVoiceOutputPreferences()
       .then(preferences => setVoiceOutputEnabledState(preferences.enabled))
       .catch(() => undefined);

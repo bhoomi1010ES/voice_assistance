@@ -118,6 +118,7 @@ from app.websocket.protocol import (
     ControlMessageType,
     ConversationResetMessage,
     DeviceTimeContextPayload,
+    InteractionStateMessage,
     PlanningSelectPlanMessage,
     PlanningSetModeMessage,
     ProtocolError,
@@ -329,6 +330,9 @@ class VoiceGateway:
         self._connection_started = time.monotonic()
         self._session_started = self._connection_started
         self._turn_started: float | None = None
+        self._interaction_active = True
+        self._turn_paused_at: float | None = None
+        self._turn_paused_seconds = 0.0
         self._last_activity = self._connection_started
         self._last_ping = self._connection_started
         self._last_auth_check = self._connection_started
@@ -548,6 +552,8 @@ class VoiceGateway:
             await self._handle_session_start(message)
         elif isinstance(message, TurnStartMessage):
             await self._handle_turn_start(message)
+        elif isinstance(message, InteractionStateMessage):
+            self._handle_interaction_state(message)
         elif isinstance(message, AudioCommitMessage):
             await self._handle_audio_commit(message)
         elif isinstance(message, ResponseCancelMessage):
@@ -566,6 +572,21 @@ class VoiceGateway:
             await self._handle_ping(message)
         elif isinstance(message, SessionEndMessage):
             await self._handle_session_end(message)
+
+    def _handle_interaction_state(self, message: InteractionStateMessage) -> None:
+        # This signal belongs only to the authenticated socket's session. It
+        # changes recording elapsed time, never STT, tools, or response execution.
+        self._require_session()
+        if message.active == self._interaction_active:
+            return
+        now = time.monotonic()
+        self._interaction_active = message.active
+        if message.active:
+            if self._turn_paused_at is not None:
+                self._turn_paused_seconds += max(0.0, now - self._turn_paused_at)
+            self._turn_paused_at = None
+        elif self._turn_started is not None:
+            self._turn_paused_at = now
 
     async def _handle_session_start(self, message: SessionStartMessage) -> None:
         if self.state.state != VoiceState.AUTHENTICATED:
@@ -695,6 +716,7 @@ class VoiceGateway:
                 },
                 max_session_seconds=self.settings.voice_max_session_seconds,
                 max_turn_seconds=self.settings.voice_max_turn_seconds,
+                interaction_pause_supported=True,
                 heartbeat_interval_seconds=self.settings.voice_heartbeat_interval_seconds,
                 heartbeat_timeout_seconds=self.settings.voice_heartbeat_timeout_seconds,
                 queue_capacity_frames=self.settings.voice_queue_capacity_frames,
@@ -1107,6 +1129,8 @@ class VoiceGateway:
         self._last_response_id = response_id
         self._timing_state(turn.id).response_id = response_id
         self._turn_started = time.monotonic()
+        self._turn_paused_seconds = 0.0
+        self._turn_paused_at = None if self._interaction_active else self._turn_started
         self._capture_turn_timing(turn.id, "turn_started_at", monotonic=self._turn_started)
         self.cancel_guard.activate(response_id)
         LOGGER.info(
@@ -5282,7 +5306,8 @@ class VoiceGateway:
                 if (
                     self._turn_started is not None
                     and self._stt_finalize_task is None
-                    and now - self._turn_started > self.settings.voice_max_turn_seconds
+                    and (self._elapsed_turn_ms(now=now) or 0)
+                    > self.settings.voice_max_turn_seconds * 1000
                 ):
                     await self._timeout("turn_timeout")
                     return
@@ -5641,10 +5666,13 @@ class VoiceGateway:
             self.voice_session.total_frames = self._session_total_frames
             self.voice_session.total_bytes = self._session_total_bytes
 
-    def _elapsed_turn_ms(self) -> int | None:
+    def _elapsed_turn_ms(self, *, now: float | None = None) -> int | None:
         if self._turn_started is None:
             return None
-        return max(0, int((time.monotonic() - self._turn_started) * 1000))
+        paused_at = getattr(self, "_turn_paused_at", None)
+        end = paused_at if paused_at is not None else (time.monotonic() if now is None else now)
+        elapsed = end - self._turn_started - getattr(self, "_turn_paused_seconds", 0.0)
+        return max(0, int(elapsed * 1000))
 
     def _safe_llm_session_info(self) -> dict[str, Any]:
         info = self.llm_service.provider_info

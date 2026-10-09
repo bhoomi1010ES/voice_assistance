@@ -110,6 +110,7 @@ function createVoiceSocket(
     },
     start: jest.fn(),
     connect: jest.fn().mockResolvedValue(undefined),
+    setAssistantVisible: jest.fn().mockResolvedValue(undefined),
     startTurn: jest.fn().mockResolvedValue(undefined),
     stop: jest.fn().mockResolvedValue(undefined),
     commitTurn: jest.fn().mockResolvedValue(undefined),

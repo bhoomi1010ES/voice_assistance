@@ -112,6 +112,74 @@ def _session_start_message() -> dict:
     }
 
 
+def test_visibility_pause_keeps_one_session_turn_and_contiguous_audio(voice_client) -> None:
+    client, settings, emails = voice_client
+    email = _email("visibility")
+    emails.add(email)
+    tokens = _create_account(client, email, "visibility-device")
+    with client.websocket_connect("/v1/voice", headers=_auth(tokens["access_token"])) as socket:
+        socket.send_json(_session_start_message())
+        session = socket.receive_json()
+        assert session["interaction_pause_supported"] is True
+        socket.send_json({"type": "client.turn.start"})
+        turn = socket.receive_json()
+        assert turn["type"] == "server.turn.ready"
+        for sequence in range(3):
+            socket.send_bytes(
+                encode_pcm_frame(
+                    sequence_no=sequence,
+                    client_timestamp_ms=sequence * 20,
+                    payload=b"\x00" * settings.voice_frame_bytes,
+                )
+            )
+            for active in [False, False, True, True]:
+                socket.send_json({"type": "client.interaction.state", "active": active})
+            socket.send_json({"type": "client.ping", "client_timestamp_ms": sequence * 20})
+            pong = socket.receive_json()
+            assert pong["type"] == "server.pong"
+            assert pong["session_id"] == session["session_id"]
+        socket.send_json(
+            {
+                "type": "client.audio.commit",
+                "last_sequence_no": 2,
+                "frame_count": 3,
+                "byte_count": settings.voice_frame_bytes * 3,
+                "duration_ms": 60,
+            }
+        )
+        completed = socket.receive_json()
+        assert completed["type"] == "server.turn.completed"
+        assert completed["turn_id"] == turn["turn_id"]
+        assert completed["response_id"] == turn["response_id"]
+        assert completed["frame_count"] == 3
+        socket.send_json({"type": "client.session.end", "reason": "test_complete"})
+        assert socket.receive_json()["type"] == "server.session.ending"
+        assert socket.receive_json()["type"] == "server.session.ended"
+
+    async def verify_one_durable_turn() -> None:
+        engine = create_async_engine(settings.database_dsn)
+        try:
+            async with async_sessionmaker(engine, expire_on_commit=False)() as db:
+                turns = list(
+                    (
+                        await db.scalars(
+                            select(ConversationTurn).where(
+                                    ConversationTurn.session_id
+                                == uuid.UUID(session["session_id"])
+                            )
+                        )
+                    ).all()
+                )
+                assert len(turns) == 1
+                assert str(turns[0].id) == turn["turn_id"]
+                assert turns[0].frame_count == 3
+                assert turns[0].byte_count == settings.voice_frame_bytes * 3
+        finally:
+            await engine.dispose()
+
+    asyncio.run(verify_one_durable_turn())
+
+
 def test_voice_gateway_streams_binary_audio_and_persists_metadata(voice_client) -> None:
     client, settings, emails = voice_client
     email = _email("binary-flow")

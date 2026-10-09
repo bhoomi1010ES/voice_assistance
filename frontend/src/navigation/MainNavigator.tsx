@@ -1,5 +1,5 @@
 import { AppIcon } from '../components/ui/AppIcon';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { strings } from '../i18n/strings';
@@ -35,6 +35,13 @@ export function MainNavigator() {
   const { colors } = useAppTheme();
   const insets = useSafeAreaInsets();
   const [route, setRoute] = useState<MainRoute>('assistant');
+  useLayoutEffect(() => {
+    socket.setAssistantVisible(route === 'assistant').catch(() => undefined);
+  }, [route, socket]);
+
+  useEffect(() => {
+    socket.connect().catch(() => undefined);
+  }, [socket]);
   const [tasksInitialPage, setTasksInitialPage] = useState<
     'tasks' | 'reminders'
   >('tasks');
@@ -52,6 +59,9 @@ export function MainNavigator() {
   }, [controller]);
 
   const navigate = (nextRoute: MainRoute) => {
+    socket
+      .setAssistantVisible(nextRoute === 'assistant')
+      .catch(() => undefined);
     setRoute(nextRoute);
   };
 

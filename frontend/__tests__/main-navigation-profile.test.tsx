@@ -88,6 +88,7 @@ function createVoiceSocket(): VoiceSocket {
     },
     start: jest.fn(),
     connect: jest.fn().mockResolvedValue(undefined),
+    setAssistantVisible: jest.fn().mockResolvedValue(undefined),
     stop: jest.fn().mockResolvedValue(undefined),
     dispose: jest.fn().mockResolvedValue(undefined),
   } as unknown as VoiceSocket;
@@ -121,6 +122,35 @@ async function renderAuthenticated(
 
   return { controller, renderer: renderer! };
 }
+
+test.each(['memory', 'tasks', 'settings'])(
+  'VIS-NAV %s navigation updates the engine and return does not reconnect',
+  async route => {
+    const fetchImpl = jest
+      .fn()
+      .mockImplementation((url: string) =>
+        response(200, url.includes('/auth/') ? tokenResponse : []),
+      );
+    const socket = createVoiceSocket();
+    const { renderer } = await renderAuthenticated(
+      fetchImpl,
+      <MainNavigator />,
+      socket,
+    );
+    await act(async () => {
+      renderer.root.findByProps({ testID: `tab-${route}` }).props.onPress();
+    });
+    expect(socket.setAssistantVisible).toHaveBeenLastCalledWith(false);
+    await act(async () => {
+      renderer.root.findByProps({ testID: 'tab-assistant' }).props.onPress();
+    });
+    expect(socket.setAssistantVisible).toHaveBeenLastCalledWith(true);
+    expect(socket.connect).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      renderer.unmount();
+    });
+  },
+);
 
 test('bottom navigation opens settings and profile actions', async () => {
   const fetchImpl = jest.fn().mockImplementation((url: string) => {

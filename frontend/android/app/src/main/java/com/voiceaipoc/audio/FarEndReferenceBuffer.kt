@@ -150,6 +150,7 @@ class FarEndReferenceBuffer(
     private var lastTimestampConfidence = TIMESTAMP_NONE
     private var playbackStartedNs = 0L
     private var finalPresentationNs = 0L
+    private var pausedAtNs: Long? = null
     private var lastAssessment = Assessment.stopped()
 
     fun onPlaybackStarted(
@@ -158,6 +159,7 @@ class FarEndReferenceBuffer(
         nowNs: Long = clockNs(),
     ) = synchronized(lock) {
         this.responseId = responseId
+        pausedAtNs = null
         sourceSampleRateHz = sampleRateHz.coerceAtLeast(1)
         resampler = PcmResampler(sourceSampleRateHz, referenceSampleRateHz)
         state = State.BUFFERING
@@ -261,11 +263,13 @@ class FarEndReferenceBuffer(
     fun onPlaybackStopped(responseId: String, nowNs: Long = clockNs()) = synchronized(lock) {
         if (this.responseId != responseId) return@synchronized
         state = State.STOPPED
+        pausedAtNs = null
         finalPresentationNs = nowNs
         lastAssessment = assessmentLocked(nowNs)
     }
 
     fun reset() = synchronized(lock) {
+        pausedAtNs = null
         state = State.STOPPED
         responseId = null
         ringStart = 0
@@ -279,6 +283,25 @@ class FarEndReferenceBuffer(
         finalPresentationNs = 0L
         resampler.reset()
         lastAssessment = Assessment.stopped(clockNs())
+    }
+
+    fun onPlaybackPaused(responseId: String, nowNs: Long = clockNs()) = synchronized(lock) {
+        if (this.responseId == responseId && pausedAtNs == null) pausedAtNs = nowNs
+    }
+
+    fun onPlaybackResumed(responseId: String, nowNs: Long = clockNs()) = synchronized(lock) {
+        if (this.responseId != responseId) return@synchronized
+        val pauseStart = pausedAtNs ?: return@synchronized
+        val pausedNs = (nowNs - pauseStart).coerceAtLeast(0L)
+        // Already-presented reference stays in the past. Shift the unplayed
+        // portion of AudioTrack's buffer to its new presentation time.
+        for (index in 0 until ringSize) {
+            val slot = (ringStart + index) % capacitySamples
+            if (ringTimesNs[slot] >= pauseStart) ringTimesNs[slot] += pausedNs
+        }
+        nextReferenceTimeNs += pausedNs
+        pausedAtNs = null
+        lastAssessment = assessmentLocked(nowNs)
     }
 
     /** Queries the reference over the exact microphone capture interval. */
@@ -466,7 +489,7 @@ class FarEndReferenceBuffer(
         val tailActive = state == State.TAIL_SUPPRESSION
         return Assessment(
             state = state,
-            playbackActive = active || tailActive,
+            playbackActive = pausedAtNs == null && (active || tailActive),
             responseId = responseId,
             playbackPositionMs = if (sourceSampleRateHz <= 0) 0L else {
                 presentedSourceFrames * 1_000L / sourceSampleRateHz.toLong()

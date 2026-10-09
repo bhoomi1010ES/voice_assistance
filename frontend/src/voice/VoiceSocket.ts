@@ -14,6 +14,7 @@ import {
   setVoicePlanningMode,
   selectVoicePlan,
   stopVoicePlayback,
+  setVoiceInteractionActive,
   startMicrophone,
   startVoiceSession,
   startVoiceTurn,
@@ -117,6 +118,8 @@ export const VOICE_SERVER_EVENT_TYPES = [
   'tts.cancelled',
   'tts.failed',
   'tts.playback.started',
+  'tts.playback.paused',
+  'tts.playback.resumed',
   'tts.playback.completed',
   'tts.playback.stopped',
   'voice.confirmation.required',
@@ -157,11 +160,14 @@ export type VoiceTtsPlaybackState =
   | 'idle'
   | 'buffering'
   | 'speaking'
+  | 'paused'
   | 'stopping'
   | 'completed'
   | 'failed';
 
 export type VoiceSocketSnapshot = {
+  assistantVisible: boolean;
+  interactionPause: 'listening' | 'speaking' | 'processing' | null;
   planning?: PlanningState | null;
   planningPending?: boolean;
   planningError?: string | null;
@@ -226,6 +232,7 @@ export type VoiceSocketAdapter = {
   setPlanningMode?: typeof setVoicePlanningMode;
   selectPlan?: typeof selectVoicePlan;
   stopPlayback?: () => Promise<VoiceGatewayStatus>;
+  setInteractionActive?: (active: boolean) => Promise<VoiceGatewayStatus>;
   retryResponse?: (
     turnId: string,
     originalResponseId: string,
@@ -280,6 +287,8 @@ export type VoiceTurnCommitOptions = {
 };
 
 const INITIAL_SNAPSHOT: VoiceSocketSnapshot = {
+  assistantVisible: true,
+  interactionPause: null,
   connectionGeneration: 0,
   connection: 'disconnected',
   planning: null,
@@ -416,6 +425,7 @@ const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
   setPlanningMode: setVoicePlanningMode,
   selectPlan: selectVoicePlan,
   stopPlayback: stopVoicePlayback,
+  setInteractionActive: setVoiceInteractionActive,
   retryResponse: retryVoiceResponse,
   resolveConfirmation: resolveVoiceConfirmation,
   endSession: endVoiceSession,
@@ -594,6 +604,8 @@ export class VoiceSocket {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private autoListenTimer: ReturnType<typeof setTimeout> | null = null;
   private speechEndCommitTimer: ReturnType<typeof setTimeout> | null = null;
+  private speechEndCommitDeadlineMs: number | null = null;
+  private pausedSpeechEndCommitDelayMs: number | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private statusUnsubscribe: (() => void) | null = null;
   private eventUnsubscribe: (() => void) | null = null;
@@ -623,6 +635,12 @@ export class VoiceSocket {
   private autoListenSuppressed = false;
   private lastHeartbeatSessionId: string | null = null;
   private notifiedTaskToolCallIds = new Set<string>();
+  private assistantVisible = true;
+  private visibilityApplied = false;
+  private visibilityVersion = 0;
+  private pauseHadInteraction = false;
+  private turnPauseStartedAtMs: number | null = null;
+  private turnStartOperation: object | null = null;
 
   constructor(options: VoiceSocketOptions = {}) {
     this.adapter = options.adapter ?? nativeVoiceSocketAdapter;
@@ -699,6 +717,88 @@ export class VoiceSocket {
 
   getSnapshot(): VoiceSocketSnapshot {
     return this.snapshot;
+  }
+
+  /** Navigation suspends resources, never session/turn ownership or requests. */
+  async setAssistantVisible(visible: boolean): Promise<void> {
+    if (this.visibilityApplied && this.assistantVisible === visible) return;
+    this.visibilityApplied = true;
+    this.assistantVisible = visible;
+    const version = ++this.visibilityVersion;
+    const epoch = this.sessionEpoch;
+    if (!visible) {
+      this.pauseHadInteraction = Boolean(
+        this.turnStartOperation ||
+          this.autoListenTimer ||
+          [
+            'starting',
+            'recording',
+            'speech_detected',
+            'committing',
+            'waiting',
+          ].includes(this.snapshot.turn) ||
+          ['buffering', 'speaking', 'paused'].includes(
+            this.snapshot.ttsPlaybackState,
+          ),
+      );
+      if (
+        this.turnStartedAtMs !== null &&
+        ['starting', 'recording', 'speech_detected'].includes(
+          this.snapshot.turn,
+        )
+      ) {
+        this.turnPauseStartedAtMs = this.now();
+      }
+      const speechEndDelay =
+        this.speechEndCommitDeadlineMs === null
+          ? this.pausedSpeechEndCommitDelayMs
+          : Math.max(0, this.speechEndCommitDeadlineMs - this.now());
+      this.clearAutoListenTimer();
+      this.clearSpeechEndCommitTimer();
+      this.pausedSpeechEndCommitDelayMs = speechEndDelay;
+      this.sileroSpeechSegmentStartedAtMs = null;
+      this.sileroSpeechSegmentStartedDuringGuard = false;
+    } else if (this.turnPauseStartedAtMs !== null) {
+      if (this.turnStartedAtMs !== null) {
+        this.turnStartedAtMs += this.now() - this.turnPauseStartedAtMs;
+      }
+      this.turnPauseStartedAtMs = null;
+    }
+    this.setSnapshot({ assistantVisible: visible });
+    try {
+      if (this.adapter.setInteractionActive) {
+        // Native calls retain their order; stale promise results never replace
+        // newer turn/status state. The native gate also covers in-flight starts.
+        await this.adapter.setInteractionActive(visible);
+      } else if (!visible) {
+        await this.stopMicrophoneSafely();
+      } else if (
+        this.pauseHadInteraction &&
+        ['recording', 'speech_detected'].includes(this.snapshot.turn)
+      ) {
+        await this.adapter.startMicrophone?.();
+      }
+      if (
+        version !== this.visibilityVersion ||
+        epoch !== this.sessionEpoch ||
+        !visible
+      )
+        return;
+      if (this.pauseHadInteraction) {
+        const speechEndDelay = this.pausedSpeechEndCommitDelayMs;
+        this.pausedSpeechEndCommitDelayMs = null;
+        if (speechEndDelay !== null && this.snapshot.turn === 'recording') {
+          this.scheduleSpeechEndCommit(speechEndDelay);
+        }
+        this.maybeStartVoiceConfirmationTurn();
+        this.scheduleContinuousListen(true);
+      }
+      this.pauseHadInteraction = false;
+    } catch (error) {
+      if (version === this.visibilityVersion && epoch === this.sessionEpoch) {
+        this.setSnapshot({ error: safeVoiceError(error) });
+      }
+    }
   }
 
   async connect(): Promise<void> {
@@ -906,16 +1006,23 @@ export class VoiceSocket {
   }
 
   async startTurn(options: VoiceTurnStartOptions = {}): Promise<void> {
-    let expectedEpoch: number | null = null;
+    if (
+      (!this.assistantVisible && !options.bargeInReplacement) ||
+      this.turnStartOperation
+    )
+      return;
+    const operation = {};
+    this.turnStartOperation = operation;
+    const expectedEpoch = this.sessionEpoch;
     try {
       await this.ensureReadySessionForTurn();
-      expectedEpoch = this.sessionEpoch;
+      if (expectedEpoch !== this.sessionEpoch || this.explicitStop) return;
       options = {
         ...options,
         autoCommitOnSpeechEnd:
           options.autoCommitOnSpeechEnd ?? this.continuousListening,
       };
-      if (this.snapshot.ttsPlaybackState === 'speaking') {
+      if (['speaking', 'paused'].includes(this.snapshot.ttsPlaybackState)) {
         throw new Error(
           'Wait for playback-aware speech confirmation before starting a turn.',
         );
@@ -993,6 +1100,7 @@ export class VoiceSocket {
         this.bargeInTurnId = null;
       }
       this.turnStartedAtMs = this.now();
+      this.turnPauseStartedAtMs = this.assistantVisible ? null : this.now();
       this.speechEndedAtMs = null;
       emitLatencyTrace({
         sessionId: this.snapshot.sessionId,
@@ -1023,7 +1131,7 @@ export class VoiceSocket {
       this.handleStatus(status);
       this.ensureTranscriptPlaceholder('listening');
     } catch (error) {
-      if (expectedEpoch !== null && expectedEpoch !== this.sessionEpoch) {
+      if (expectedEpoch !== this.sessionEpoch) {
         this.logLifecycle('stale_turn_start_error_ignored');
         return;
       }
@@ -1038,6 +1146,8 @@ export class VoiceSocket {
         error: safeVoiceError(error),
       });
       throw new Error(this.snapshot.error ?? 'Unable to start the voice turn.');
+    } finally {
+      if (this.turnStartOperation === operation) this.turnStartOperation = null;
     }
   }
 
@@ -1056,7 +1166,10 @@ export class VoiceSocket {
 
     const durationMs = Math.max(
       0,
-      Math.round(this.now() - (this.turnStartedAtMs ?? this.now())),
+      Math.round(
+        (this.turnPauseStartedAtMs ?? this.now()) -
+          (this.turnStartedAtMs ?? this.now()),
+      ),
     );
     this.speechEndedAtMs = this.speechEndedAtMs ?? this.now();
     emitLatencyTrace({
@@ -1159,7 +1272,9 @@ export class VoiceSocket {
   async stopPlayback(): Promise<void> {
     if (
       !this.snapshot.ttsResponseId ||
-      !['buffering', 'speaking'].includes(this.snapshot.ttsPlaybackState)
+      !['buffering', 'speaking', 'paused'].includes(
+        this.snapshot.ttsPlaybackState,
+      )
     ) {
       return;
     }
@@ -1433,6 +1548,10 @@ export class VoiceSocket {
   }
 
   async stop(reason = 'client_stopped'): Promise<void> {
+    // Invalidate pending permission/start/visibility results before teardown awaits.
+    this.sessionEpoch += 1;
+    this.pauseHadInteraction = false;
+    this.turnStartOperation = null;
     this.desiredConnection = false;
     this.desiredSession = false;
     this.explicitStop = true;
@@ -1450,7 +1569,9 @@ export class VoiceSocket {
     const operations: Promise<unknown>[] = [];
     if (
       this.adapter.stopPlayback &&
-      ['buffering', 'speaking'].includes(this.snapshot.ttsPlaybackState)
+      ['buffering', 'speaking', 'paused'].includes(
+        this.snapshot.ttsPlaybackState,
+      )
     ) {
       operations.push(this.adapter.stopPlayback());
     }
@@ -2308,6 +2429,7 @@ export class VoiceSocket {
         });
         break;
       case 'tts.playback.started':
+      case 'tts.playback.resumed':
         emitLatencyTrace({
           sessionId: event.sessionId,
           turnId: event.turnId,
@@ -2321,7 +2443,8 @@ export class VoiceSocket {
         // origin for the startup guard; later chunks/events must not extend it.
         if (
           this.ttsPlaybackResponseId !== event.responseId ||
-          this.ttsPlaybackStartedAtMs === null
+          this.ttsPlaybackStartedAtMs === null ||
+          event.type === 'tts.playback.resumed'
         ) {
           this.ttsPlaybackResponseId = event.responseId;
           this.ttsPlaybackStartedAtMs = event.timestampMs ?? this.now();
@@ -2330,6 +2453,12 @@ export class VoiceSocket {
           ttsPlaybackState: 'speaking',
           ttsResponseId: event.responseId,
           ttsError: null,
+        });
+        break;
+      case 'tts.playback.paused':
+        this.setSnapshot({
+          ttsPlaybackState: 'paused',
+          ttsResponseId: event.responseId,
         });
         break;
       case 'tts.playback.completed':
@@ -2386,7 +2515,10 @@ export class VoiceSocket {
           ttsPlaybackState: 'failed',
           ttsResponseId: event.responseId,
           ttsError:
-            event.errorMessage ?? event.errorCode ?? 'Voice output failed.',
+            event.errorMessage ??
+            event.errorCode ??
+            event.stopReason ??
+            'Voice output failed.',
         });
         this.finalizeResponseIfReady();
         break;
@@ -2688,6 +2820,7 @@ export class VoiceSocket {
 
   private scheduleContinuousListen(preserveMicrophone = false): void {
     if (
+      !this.assistantVisible ||
       !this.continuousListening ||
       this.autoListenSuppressed ||
       this.confirmationAwaitingVoice ||
@@ -2703,6 +2836,7 @@ export class VoiceSocket {
     this.autoListenTimer = setTimeout(() => {
       this.autoListenTimer = null;
       if (
+        !this.assistantVisible ||
         this.autoListenSuppressed ||
         this.snapshot.turn !== 'idle' ||
         this.snapshot.session !== 'ready' ||
@@ -2728,20 +2862,25 @@ export class VoiceSocket {
   }
 
   private clearSpeechEndCommitTimer(): void {
+    this.speechEndCommitDeadlineMs = null;
+    this.pausedSpeechEndCommitDelayMs = null;
     if (this.speechEndCommitTimer) {
       clearTimeout(this.speechEndCommitTimer);
       this.speechEndCommitTimer = null;
     }
   }
 
-  private scheduleSpeechEndCommit(): void {
+  private scheduleSpeechEndCommit(delayMs = SPEECH_END_COMMIT_GRACE_MS): void {
     this.clearSpeechEndCommitTimer();
-    if (!this.autoCommitBargeInTurn) {
+    if (!this.assistantVisible || !this.autoCommitBargeInTurn) {
       return;
     }
+    this.speechEndCommitDeadlineMs = this.now() + delayMs;
     this.speechEndCommitTimer = setTimeout(() => {
       this.speechEndCommitTimer = null;
+      this.speechEndCommitDeadlineMs = null;
       if (
+        !this.assistantVisible ||
         !this.autoCommitBargeInTurn ||
         this.snapshot.turn !== 'recording' ||
         this.snapshot.speechDetected
@@ -2749,11 +2888,12 @@ export class VoiceSocket {
         return;
       }
       this.commitBargeInTurn().catch(() => undefined);
-    }, SPEECH_END_COMMIT_GRACE_MS);
+    }, delayMs);
   }
 
   private maybeStartVoiceConfirmationTurn(): void {
     if (
+      !this.assistantVisible ||
       this.autoListenSuppressed ||
       !this.confirmationAwaitingVoice ||
       this.confirmationTurnStartInFlight ||
@@ -2786,6 +2926,7 @@ export class VoiceSocket {
 
   private canBargeInDuringPlayback(): boolean {
     return (
+      this.assistantVisible &&
       Boolean(this.snapshot.turnId && this.snapshot.responseId) &&
       this.snapshot.ttsPlaybackState === 'speaking' &&
       ['committing', 'waiting'].includes(this.snapshot.turn) &&
@@ -2840,6 +2981,9 @@ export class VoiceSocket {
   }
 
   private handleNativeBargeInEvent(input: unknown): void {
+    // Native capture/detection is visibility-gated. A confirmation already
+    // issued before pause has stopped its AudioTrack and must finish the
+    // legitimate replacement workflow even if bridge delivery is delayed.
     if (!this.nativePlaybackDetectorAvailable) {
       return;
     }
@@ -2899,6 +3043,7 @@ export class VoiceSocket {
       return;
     }
 
+    const expectedEpoch = this.sessionEpoch;
     this.bargeInInFlight = true;
     const nativeDetectionNs =
       nativeEvent && typeof nativeEvent.monotonicNs === 'string'
@@ -3032,6 +3177,7 @@ export class VoiceSocket {
       // message, but do not await the server acknowledgement. The native
       // transport retains the microphone and buffers the interruption while
       // the server finishes cancelling the old response.
+      if (expectedEpoch !== this.sessionEpoch || this.explicitStop) return;
       const cancellation = this.adapter.cancelResponse('barge_in');
       cancellation
         .then(() => {
@@ -3097,6 +3243,7 @@ export class VoiceSocket {
   }
 
   private handleVadEvent(input: unknown): void {
+    if (!this.assistantVisible) return;
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       return;
     }
@@ -3917,7 +4064,7 @@ export class VoiceSocket {
     });
     this.adapter.stopMicrophone?.().catch(() => undefined);
     if (
-      ['buffering', 'speaking', 'stopping'].includes(
+      ['buffering', 'speaking', 'paused', 'stopping'].includes(
         this.snapshot.ttsPlaybackState,
       )
     ) {
@@ -3931,6 +4078,9 @@ export class VoiceSocket {
     error: string | null = null,
     abortServerResponse = true,
   ): void {
+    this.turnPauseStartedAtMs = null;
+    this.turnStartOperation = null;
+    this.pauseHadInteraction = false;
     this.sessionEpoch += 1;
     const sessionId = this.snapshot.sessionId;
     const turnId = this.snapshot.turnId;
@@ -4111,6 +4261,9 @@ export class VoiceSocket {
   }
 
   private resetToDisconnected(): void {
+    this.turnPauseStartedAtMs = null;
+    this.turnStartOperation = null;
+    this.pauseHadInteraction = false;
     this.sessionEpoch += 1;
     this.clearAutoListenTimer();
     this.clearSpeechEndCommitTimer();
@@ -4164,6 +4317,22 @@ export class VoiceSocket {
       patch = { ...patch, planning: null, planningPending: false };
     }
     this.snapshot = { ...this.snapshot, ...patch };
+    const { turn, ttsPlaybackState } = this.snapshot;
+    this.snapshot = {
+      ...this.snapshot,
+      assistantVisible: this.assistantVisible,
+      interactionPause: this.assistantVisible
+        ? null
+        : ['speaking', 'paused'].includes(ttsPlaybackState)
+        ? 'speaking'
+        : ['starting', 'recording', 'speech_detected'].includes(turn)
+        ? 'listening'
+        : turn === 'committing' ||
+          turn === 'waiting' ||
+          ttsPlaybackState === 'buffering'
+        ? 'processing'
+        : null,
+    };
     this.notify();
   }
 

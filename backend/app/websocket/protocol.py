@@ -12,6 +12,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     StrictInt,
     StrictStr,
     TypeAdapter,
@@ -68,6 +69,11 @@ class TurnStartMessage(ControlMessage):
     type: Literal["client.turn.start"]
     client_turn_id: uuid.UUID | None = None
     device_time_context: DeviceTimeContextPayload | None = None
+
+
+class InteractionStateMessage(ControlMessage):
+    type: Literal["client.interaction.state"]
+    active: StrictBool
 
 
 class AudioCommitMessage(ControlMessage):
@@ -133,6 +139,7 @@ class PlanningSelectPlanMessage(ControlMessage):
 
 ControlMessageType = Annotated[
     SessionStartMessage
+    | InteractionStateMessage
     | TurnStartMessage
     | AudioCommitMessage
     | ResponseCancelMessage

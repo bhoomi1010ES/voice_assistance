@@ -930,6 +930,7 @@ type NativeVoiceModule = {
     eventId: string,
   ) => Promise<VoiceGatewayStatus>;
   stopVoicePlayback: () => Promise<VoiceGatewayStatus>;
+  setVoiceInteractionActive: (active: boolean) => Promise<VoiceGatewayStatus>;
   getVoiceOutputPreferences: () => Promise<VoiceOutputPreferences>;
   setVoiceOutputEnabled: (enabled: boolean) => Promise<VoiceOutputPreferences>;
   retryVoiceResponse: (
@@ -1179,6 +1180,12 @@ export async function resetVoiceConversation(): Promise<VoiceGatewayStatus> {
 /** Stops only local TTS playback; the committed text response remains intact. */
 export async function stopVoicePlayback(): Promise<VoiceGatewayStatus> {
   return requireNativeVoiceModule().stopVoicePlayback();
+}
+
+export async function setVoiceInteractionActive(
+  active: boolean,
+): Promise<VoiceGatewayStatus> {
+  return requireNativeVoiceModule().setVoiceInteractionActive(active);
 }
 
 export async function getVoiceOutputPreferences(): Promise<VoiceOutputPreferences> {

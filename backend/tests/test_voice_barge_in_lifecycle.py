@@ -60,6 +60,9 @@ def _gateway(*, old_turn_id: uuid.UUID, old_response_id: uuid.UUID, new_turn_id:
     gateway._last_response_id = old_response_id
     gateway._response_turn_id = old_turn_id
     gateway._turn_started = None
+    gateway._interaction_active = True
+    gateway._turn_paused_at = None
+    gateway._turn_paused_seconds = 0.0
     gateway._pending_turn_start = None
     gateway._turn_start_event_ids = set()
     gateway._cancelled_response_ids = set()

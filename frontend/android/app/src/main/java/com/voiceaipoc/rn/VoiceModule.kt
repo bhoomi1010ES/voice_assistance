@@ -60,6 +60,12 @@ class VoiceModule(
     )
     @Volatile
     private var voiceOutputEnabled = voicePreferences.getBoolean("enabled", true)
+    @Volatile
+    private var voiceInteractionActive = true
+    @Volatile
+    private var interactionCaptureCutoffNs = 0L
+    @Volatile
+    private var resumeMicrophoneAfterPause = false
     private val rolloutConfig = VoiceRolloutConfig.fromBuildConfig()
     private val audioConfig = AudioConfig(
         enableAcousticEchoCancellation = rolloutConfig.platformAecEnabled,
@@ -248,6 +254,7 @@ class VoiceModule(
             return
         }
         bargeInDetector.reset("transport_teardown")
+        resumeMicrophoneAfterPause = false
         val result = audioEngineReference?.stopRecording()
         val microphone = audioEngineReference?.getStatus()
         Log.i(
@@ -611,7 +618,42 @@ class VoiceModule(
     }
 
     @ReactMethod
+    @Synchronized
+    fun setVoiceInteractionActive(active: Boolean, promise: Promise) {
+        if (voiceInteractionActive != active) {
+            voiceInteractionActive = active
+            interactionCaptureCutoffNs = SystemClock.elapsedRealtimeNanos()
+            bargeInDetector.reset("assistant_visibility_changed")
+            if (!active) {
+                resumeMicrophoneAfterPause = audioEngine.isRecording()
+                voiceGateway.setInteractionActive(false)
+                if (audioEngine.isRecording()) audioEngine.stopRecording()
+            } else {
+                val gateway = voiceGateway.getStatus()
+                if (resumeMicrophoneAfterPause && gateway.connected && gateway.sessionStarted) {
+                    val result = audioEngine.startRecording()
+                    if (!result.succeeded) {
+                        resumeMicrophoneAfterPause = false
+                        voiceGateway.setInteractionActive(true)
+                        promise.reject(result.errorCode, result.errorMessage)
+                        return
+                    }
+                }
+                resumeMicrophoneAfterPause = false
+                voiceGateway.setInteractionActive(true)
+            }
+        }
+        promise.resolve(toWritableVoiceGatewayMap(voiceGateway.getStatus()))
+    }
+
+    @ReactMethod
+    @Synchronized
     fun startMicrophone(promise: Promise) {
+        if (!voiceInteractionActive) {
+            resumeMicrophoneAfterPause = true
+            promise.resolve(toWritableMap(audioEngine.getStatus()))
+            return
+        }
         diagnosticSession.ensureActive()
         bargeInDetector.reset("microphone_restart")
         val result = audioEngine.startRecording()
@@ -631,7 +673,9 @@ class VoiceModule(
     }
 
     @ReactMethod
+    @Synchronized
     fun stopMicrophone(promise: Promise) {
+        resumeMicrophoneAfterPause = false
         bargeInDetector.reset("microphone_stopped")
         val result = audioEngine.stopRecording()
         val gateway = voiceGateway.getStatus()
@@ -1141,6 +1185,7 @@ class VoiceModule(
         eventName: String,
         event: SileroVadEngine.Event,
     ) {
+        if (!voiceInteractionActive || event.captureEndNs <= interactionCaptureCutoffNs) return
         // The detector runs before the bridge guard so React lifecycle state
         // cannot change the native decision path.
         if (rolloutConfig.nativeBargeInDetectorEnabled) {

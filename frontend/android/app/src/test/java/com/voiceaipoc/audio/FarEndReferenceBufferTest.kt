@@ -11,6 +11,30 @@ import org.junit.Test
 
 class FarEndReferenceBufferTest {
     @Test
+    fun pauseSuppressesBargeInReferenceAndResumeShiftsOnlyUnplayedPresentation() {
+        val reference = FarEndReferenceBuffer(analysisContextMs = 80)
+        val pcm = sinePcm(1_280, 320.0, 8_000.0, 16_000)
+        val now = 10_000_000_000L
+        reference.onPlaybackStarted("paused", 16_000, now)
+        reference.onPcmWritten("paused", pcm, 0, pcm.size, 16_000, 1_600L,
+            TtsPlaybackPosition(0L, null, now))
+        val before = reference.assess(pcm.decodePcm16(), 1_280, now + 100_000_000, now + 180_000_000, 16_000)
+        assertTrue(before.echoLikely)
+        reference.onPlaybackPaused("paused", now + 50_000_000)
+        reference.onPlaybackPaused("paused", now + 60_000_000)
+        val hidden = reference.assess(pcm.decodePcm16(), 1_280, now + 100_000_000, now + 180_000_000, 16_000)
+        assertFalse(hidden.playbackActive)
+        reference.onPlaybackResumed("obsolete", now + 5_050_000_000)
+        assertFalse(reference.assess(pcm.decodePcm16(), 1_280, now + 100_000_000, now + 180_000_000, 16_000).playbackActive)
+        reference.onPlaybackResumed("paused", now + 5_050_000_000)
+        reference.onPlaybackResumed("paused", now + 6_050_000_000)
+        val resumed = reference.assess(pcm.decodePcm16(), 1_280, now + 5_100_000_000, now + 5_180_000_000, 16_000)
+        assertTrue(resumed.playbackActive)
+        assertTrue(resumed.referenceAvailable)
+        assertTrue(resumed.echoLikely)
+    }
+
+    @Test
     fun presentationQueryRemainsAlignedWhenWritesAreAheadBy50To500Ms() {
         val responseId = "response-alignment"
         val pcm = sinePcm(1_920, 320.0, 8_000.0, 16_000)

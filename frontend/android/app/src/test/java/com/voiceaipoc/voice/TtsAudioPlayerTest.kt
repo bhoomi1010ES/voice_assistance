@@ -13,6 +13,184 @@ import org.junit.Test
 
 class TtsAudioPlayerTest {
     @Test
+    fun rapidPauseResumeRetainsOneTrackWithoutRewritingConsumedPcm() {
+        val factory = FakeTrackFactory(autoAdvancePlaybackHead = false)
+        val player = TtsAudioPlayer(trackFactory = factory, startupPrebufferBytes = 4)
+        val id = UUID.randomUUID()
+        try {
+            assertTrue(player.start(id, 24_000)); assertTrue(player.write(id, ByteArray(4)))
+            waitUntil { factory.tracks.single().writtenBytes == 4 }
+            val track = factory.tracks.single()
+            repeat(50) { player.setPaused(true); player.setPaused(false) }
+            assertEquals(1, factory.tracks.size)
+            assertEquals(4, track.writtenBytes)
+            assertEquals(51, track.playCalls)
+            assertEquals(50, track.pauseCalls)
+            assertEquals(0, track.flushCalls)
+            assertEquals(0, track.stopCalls)
+            assertTrue(player.finish(id)); track.advancePlaybackHead(2)
+            waitUntil { track.released }
+        } finally { player.shutdown() }
+    }
+
+    @Test
+    fun pauseAtPlaybackStartCannotOvertakeStartNotification() {
+        val started = CountDownLatch(1)
+        val releaseStart = CountDownLatch(1)
+        val callbacks = CopyOnWriteArrayList<String>()
+        val factory = FakeTrackFactory()
+        val player = TtsAudioPlayer(trackFactory = factory, startupPrebufferBytes = 4,
+            listener = object : TtsAudioPlayer.Listener {
+                override fun onPlaybackStarted(responseId: UUID) {
+                    started.countDown()
+                    releaseStart.await(1, TimeUnit.SECONDS)
+                    callbacks += "started"
+                }
+                override fun onPlaybackPaused(responseId: UUID) { callbacks += "paused" }
+            })
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val id = UUID.randomUUID()
+            assertTrue(player.start(id, 24_000)); assertTrue(player.write(id, ByteArray(4)))
+            assertTrue(started.await(1, TimeUnit.SECONDS))
+            val pausing = executor.submit { player.setPaused(true) }
+            releaseStart.countDown()
+            pausing.get(1, TimeUnit.SECONDS)
+            assertEquals(listOf("started", "paused"), callbacks.toList())
+            assertEquals(1, factory.tracks.single().pauseCalls)
+        } finally { releaseStart.countDown(); executor.shutdownNow(); player.shutdown() }
+    }
+
+    @Test
+    fun pausedPlaybackKeepsTrackHeadAndContinuesOnlyRemainingPcm() {
+        val factory = FakeTrackFactory(autoAdvancePlaybackHead = false)
+        val events = Events()
+        val player = TtsAudioPlayer(trackFactory = factory, listener = events, startupPrebufferBytes = 4, maxQueueBytes = 64)
+        val id = UUID.randomUUID()
+        try {
+            assertTrue(player.start(id, 24_000))
+            assertTrue(player.write(id, byteArrayOf(1, 2, 3, 4)))
+            waitUntil { factory.tracks.single().writtenBytes == 4 }
+            val track = factory.tracks.single()
+            track.advancePlaybackHead(1) // One PCM sample already heard.
+            player.setPaused(true)
+            player.setPaused(true)
+            assertTrue(player.write(id, byteArrayOf(5, 6, 7, 8)))
+            assertTrue(player.finish(id))
+            Thread.sleep(30)
+            assertEquals(4, track.writtenBytes)
+            assertEquals(1, track.playbackHeadPosition())
+            assertEquals(1, track.pauseCalls)
+            assertEquals(0, track.stopCalls)
+            assertEquals(0, track.flushCalls)
+            assertFalse(track.released)
+            player.setPaused(false)
+            player.setPaused(false)
+            waitUntil { track.writtenBytes == 8 }
+            assertEquals(listOf<Byte>(1, 2, 3, 4, 5, 6, 7, 8), track.pcm.toList())
+            assertEquals(1, factory.tracks.size)
+            assertEquals(2, track.playCalls)
+            assertEquals(1, track.playbackHeadPosition())
+            track.advancePlaybackHead(3)
+            waitUntil { events.completed.count == 1L }
+            assertTrue(track.released)
+            assertEquals(1L, events.completed.count)
+        } finally { player.shutdown() }
+    }
+
+    @Test
+    fun responseArrivingWhileHiddenBuffersUntilVisibleIncludingFinish() {
+        val factory = FakeTrackFactory()
+        val events = Events()
+        val player = TtsAudioPlayer(trackFactory = factory, listener = events, startupPrebufferBytes = 4, maxQueueBytes = 8)
+        val id = UUID.randomUUID()
+        try {
+            player.setPaused(true)
+            assertTrue(player.start(id, 24_000))
+            repeat(8) { assertTrue(player.write(id, ByteArray(4) { (it + 1).toByte() })) }
+            assertTrue(player.finish(id))
+            Thread.sleep(30)
+            val track = factory.tracks.single()
+            assertEquals(0, track.playCalls)
+            assertEquals(0, track.writtenBytes)
+            assertFalse(track.released)
+            player.setPaused(false)
+            waitUntil { events.completed.count == 1L }
+            assertTrue(track.released)
+            assertEquals(32, track.writtenBytes)
+            assertEquals(1, track.playCalls)
+            assertEquals(1L, events.completed.count)
+        } finally { player.shutdown() }
+    }
+
+    @Test
+    fun pauseDuringPartialWritePreservesOffsetWithoutDuplicatedPcm() {
+        val writeStarted = CountDownLatch(1)
+        val releaseWrite = CountDownLatch(1)
+        val factory = FakeTrackFactory(writeLimit = 2, writeStarted = writeStarted, releaseWrite = releaseWrite)
+        val player = TtsAudioPlayer(trackFactory = factory, startupPrebufferBytes = 4, maxQueueBytes = 64)
+        val id = UUID.randomUUID()
+        try {
+            assertTrue(player.start(id, 24_000))
+            assertTrue(player.write(id, byteArrayOf(1, 2, 3, 4, 5, 6)))
+            assertTrue(writeStarted.await(1, TimeUnit.SECONDS))
+            player.setPaused(true)
+            releaseWrite.countDown()
+            waitUntil { factory.tracks.single().writtenBytes == 2 }
+            Thread.sleep(30)
+            assertEquals(2, factory.tracks.single().writtenBytes)
+            player.setPaused(false)
+            assertTrue(player.finish(id))
+            waitUntil { factory.tracks.single().released }
+            assertEquals(listOf<Byte>(1, 2, 3, 4, 5, 6), factory.tracks.single().pcm.toList())
+        } finally { releaseWrite.countDown(); player.shutdown() }
+    }
+
+    @Test
+    fun pausedBufferIsBoundedAndFailureDoesNotResumeAbandonedAudio() {
+        val factory = FakeTrackFactory()
+        val events = Events()
+        val player = TtsAudioPlayer(trackFactory = factory, listener = events, startupPrebufferBytes = 4, maxQueueBytes = 8, maxPausedQueueBytes = 12)
+        val id = UUID.randomUUID()
+        try {
+            player.setPaused(true)
+            assertTrue(player.start(id, 24_000))
+            repeat(3) { assertTrue(player.write(id, ByteArray(4))) }
+            assertFalse(player.write(id, ByteArray(4)))
+            assertTrue(events.error.await(1, TimeUnit.SECONDS))
+            player.setPaused(false)
+            assertFalse(player.isActive(id))
+            assertEquals(0, factory.tracks.single().playCalls)
+            assertTrue(factory.tracks.single().released)
+        } finally { player.shutdown() }
+    }
+
+    @Test
+    fun pausedOldResponseCannotWriteIntoSupersedingResponseOrSurviveLogout() {
+        val factory = FakeTrackFactory()
+        val player = TtsAudioPlayer(trackFactory = factory, startupPrebufferBytes = 4, maxQueueBytes = 64)
+        val old = UUID.randomUUID()
+        val current = UUID.randomUUID()
+        try {
+            player.setPaused(true)
+            assertTrue(player.start(old, 24_000)); assertTrue(player.write(old, ByteArray(4)))
+            assertTrue(player.start(current, 24_000))
+            assertFalse(player.write(old, ByteArray(4))); assertFalse(player.finish(old))
+            assertTrue(player.write(current, ByteArray(4))); assertTrue(player.finish(current))
+            repeat(20) { player.setPaused(true) }
+            player.setPaused(false)
+            waitUntil { factory.tracks[1].released }
+            assertEquals(0, factory.tracks[0].playCalls)
+            assertEquals(4, factory.tracks[1].writtenBytes)
+            player.setPaused(true)
+            val logout = UUID.randomUUID()
+            assertTrue(player.start(logout, 24_000)); assertTrue(player.write(logout, ByteArray(4)))
+            assertTrue(player.cancel(logout)); player.setPaused(false)
+            assertEquals(0, factory.tracks[2].playCalls)
+        } finally { player.shutdown() }
+    }
+
+    @Test
     fun playbackWaitsForPrebufferAndUsesOneTrackPerResponse() {
         val factory = FakeTrackFactory()
         val events = Events()
@@ -214,7 +392,7 @@ class TtsAudioPlayerTest {
             assertTrue(player.start(responseId, 24_000))
             assertTrue(player.write(responseId, ByteArray(8)))
             assertTrue(player.finish(responseId))
-            Thread.sleep(25)
+            waitUntil { factory.tracks.single().writtenBytes == 8 }
             assertEquals(2L, events.completed.count)
 
             factory.tracks.single().advancePlaybackHead(4)
@@ -291,7 +469,7 @@ class TtsAudioPlayerTest {
     }
 
     private fun waitUntil(condition: () -> Boolean) {
-        repeat(100) {
+        repeat(500) {
             if (condition()) return
             Thread.sleep(10)
         }
@@ -349,21 +527,26 @@ class TtsAudioPlayerTest {
         initialPlaybackHead: Int,
     ) : TtsAudioTrack {
         override val isInitialized = true
-        var playCalls = 0
-        var writtenBytes = 0
-        var released = false
-        var stopCalls = 0
-        var flushCalls = 0
-        private var playbackHead = initialPlaybackHead
+        @Volatile var playCalls = 0
+        @Volatile var pauseCalls = 0
+        val pcm = CopyOnWriteArrayList<Byte>()
+        @Volatile var writtenBytes = 0
+        @Volatile var released = false
+        @Volatile var stopCalls = 0
+        @Volatile var flushCalls = 0
+        @Volatile private var playbackHead = initialPlaybackHead
 
         override fun play() {
             playCalls += 1
         }
 
+        override fun pause() { pauseCalls += 1 }
+
         override fun write(data: ByteArray, offsetInBytes: Int, sizeInBytes: Int, mode: Int): Int {
             writeStarted?.countDown()
             releaseWrite?.await(1, TimeUnit.SECONDS)
             val written = minOf(sizeInBytes, writeLimit)
+            pcm.addAll(data.slice(offsetInBytes until offsetInBytes + written))
             writtenBytes += written
             if (autoAdvancePlaybackHead) playbackHead += written / 2
             return written

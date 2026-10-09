@@ -23,6 +23,7 @@ import java.util.IdentityHashMap
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 internal fun acceptsVoiceTransportCallback(
     activeSocket: Any?,
@@ -183,6 +184,12 @@ class VoiceWebSocketTransport(
     private var webSocket: WebSocket? = null
     private var heartbeatTask: ScheduledFuture<*>? = null
     private var status = Status()
+    @Volatile
+    private var interactionActive = true
+    @Volatile
+    private var interactionPauseSupported = false
+    private val pendingTtsIngressBytes = AtomicInteger(0)
+    private val maxDeferredTtsBytes = 24_000 * 2 * 300
     private var turnFrameCount = 0L
     private var turnByteCount = 0L
     private var turnGeneration = 0L
@@ -198,6 +205,7 @@ class VoiceWebSocketTransport(
     private val ttsSequenceTracker = TtsFrameSequenceTracker()
     private var localCloseRequested = false
     private var localCloseReason: String? = null
+    @Volatile
     private var activeTtsResponseId: String? = null
     private var activeTtsFirstAudioElapsedMs: Long? = null
     private var activeTtsFirstAudioElapsedNs: Long? = null
@@ -243,6 +251,16 @@ class VoiceWebSocketTransport(
                 farEndReferenceBuffer.onPlaybackDraining(responseId.toString())
             }
 
+            override fun onPlaybackPaused(responseId: java.util.UUID) {
+                farEndReferenceBuffer.onPlaybackPaused(responseId.toString())
+                notifyTtsPlayback("tts.playback.paused", responseId)
+            }
+
+            override fun onPlaybackResumed(responseId: java.util.UUID) {
+                farEndReferenceBuffer.onPlaybackResumed(responseId.toString())
+                notifyTtsPlayback("tts.playback.resumed", responseId)
+            }
+
             override fun onPlaybackCompletedAt(
                 responseId: java.util.UUID,
                 position: TtsPlaybackPosition,
@@ -271,7 +289,11 @@ class VoiceWebSocketTransport(
                         "elapsedMs=${SystemClock.elapsedRealtime()}",
                 )
                 ttsLogError("TTS_PLAYBACK_ERROR response_id=$responseId code=$errorCode")
-                notifyTtsPlayback("tts.playback.stopped", responseId)
+                if (errorCode == "paused_audio_buffer_full" || errorCode == "deferred_audio_buffer_full") {
+                    notifyTtsPlayback("tts.failed", responseId, errorCode)
+                } else {
+                    notifyTtsPlayback("tts.playback.stopped", responseId)
+                }
             }
 
             override fun onPcmEnqueued(
@@ -584,6 +606,7 @@ class VoiceWebSocketTransport(
 
     /** Called from the native PCM consumer; never blocks on network I/O. */
     fun offerPcmFrame(buffer: ShortArray, samplesRead: Int): Boolean {
+        if (!interactionActive) return false
         val timestampMs = SystemClock.elapsedRealtime()
         val turn = synchronized(stateLock) {
             if (!status.turnActive || status.state !in setOf(State.TURN_STARTING, State.STREAMING_AUDIO)) {
@@ -922,6 +945,24 @@ class VoiceWebSocketTransport(
 
     fun stopTtsPlayback() {
         ttsAudioPlayer.cancel()
+    }
+
+    /** Suspend only interaction resources; transport/session ownership is unchanged. */
+    fun setInteractionActive(active: Boolean) {
+        if (interactionActive == active) return
+        interactionActive = active
+        if (!active) sendQueue.clearPreRoll()
+        if (active) {
+            val currentResponse = synchronized(stateLock) { status.responseId }
+            if (activeTtsResponseId != null && activeTtsResponseId != currentResponse) {
+                ttsAudioPlayer.cancel()
+            }
+        }
+        ttsAudioPlayer.setPaused(!active)
+        val current = getStatus()
+        if (current.connected && current.sessionStarted && interactionPauseSupported) {
+            postControl(JSONObject().put("type", "client.interaction.state").put("active", active))
+        }
     }
 
     fun shutdown() {
@@ -1493,6 +1534,7 @@ class VoiceWebSocketTransport(
                 "elapsedMs=${SystemClock.elapsedRealtime()}",
         )
         if (eventType == "server.session.ready") {
+            interactionPauseSupported = json.optBoolean("interaction_pause_supported", false)
             scheduleHeartbeat(
                 json.optLong("heartbeat_interval_seconds", DEFAULT_HEARTBEAT_INTERVAL_SECONDS),
                 connectionGeneration,
@@ -1634,6 +1676,9 @@ class VoiceWebSocketTransport(
             Log.w(TAG, "STALE_SERVER_EVENT_DELIVERY_IGNORED connection_generation=$connectionGeneration")
             return
         }
+        if (eventType == "server.session.ready" && !interactionActive && interactionPauseSupported) {
+            postControl(JSONObject().put("type", "client.interaction.state").put("active", false))
+        }
         notifyStatus()
         listener.onServerEvent(
             eventType,
@@ -1771,28 +1816,39 @@ class VoiceWebSocketTransport(
                 return
             }
         }
+        val ingressBytes = frame.payload.size
+        if (pendingTtsIngressBytes.addAndGet(ingressBytes) > maxDeferredTtsBytes) {
+            pendingTtsIngressBytes.addAndGet(-ingressBytes)
+            ttsAudioPlayer.rejectResponse(frame.responseId, "deferred_audio_buffer_full")
+            return
+        }
         try {
             // TtsAudioPlayer may wait for its bounded PCM queue to drain. Keep
             // that wait off OkHttp's WebSocket callback thread so control
             // messages and application heartbeats remain responsive.
             ttsFrameExecutor.execute {
-                if (!ttsAudioPlayer.write(frame.responseId, frame.sequence, frame.payload)) {
-                    if (!ttsAudioPlayer.isActive(frame.responseId)) {
-                        Log.w(
-                            TAG,
-                            "TTS_STALE_FRAME response_id=${frame.responseId} sequence=${frame.sequence} " +
-                                "reason=playback_inactive",
-                        )
+                try {
+                    if (!ttsAudioPlayer.write(frame.responseId, frame.sequence, frame.payload)) {
+                        if (!ttsAudioPlayer.isActive(frame.responseId)) {
+                            Log.w(
+                                TAG,
+                                "TTS_STALE_FRAME response_id=${frame.responseId} sequence=${frame.sequence} " +
+                                    "reason=playback_inactive",
+                            )
+                            return@execute
+                        }
+                        ttsAudioPlayer.rejectResponse(frame.responseId, "pcm_queue_failed")
                         return@execute
                     }
-                    recordError("E_TTS_PLAYBACK", "TTS PCM could not be queued for playback.")
-                    return@execute
-                }
-                if (frame.endsResponse) {
-                    ttsAudioPlayer.finish(frame.responseId)
+                    if (frame.endsResponse) {
+                        ttsAudioPlayer.finish(frame.responseId)
+                    }
+                } finally {
+                    pendingTtsIngressBytes.addAndGet(-ingressBytes)
                 }
             }
         } catch (_: RejectedExecutionException) {
+            pendingTtsIngressBytes.addAndGet(-ingressBytes)
             recordError("E_TTS_PLAYBACK", "TTS PCM worker is not available.")
         }
     }
