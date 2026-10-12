@@ -41,7 +41,10 @@ _CURRENT_TIME_MENTION = re.compile(
     r"\b(?:what time is it|current time|time now)\b",
     re.I,
 )
-_CONTROL = re.compile(r"^(?:stop|pause|cancel)\s+listening[.!]*$", re.I)
+_CONTROL = re.compile(
+    r"^(?:(?:stop|pause|cancel)\s+listening|stop\s+now|pause\s+now)[.!]*$",
+    re.I,
+)
 _AFFIRMATIVE = {"yes", "yeah", "yep", "okay", "ok", "sure", "confirm"}
 _NEGATIVE = {"no", "nope", "cancel", "stop", "never mind", "nevermind"}
 _TASK_WRITE = re.compile(
@@ -181,10 +184,10 @@ def classify_transcript(transcript: str) -> RouteDecision:
     # A pending confirmation is resolved by the authenticated gateway callback
     # before this function is called. Bare yes/no and unclear controls are not
     # interpreted as actions here.
-    if text in _AFFIRMATIVE or text in _NEGATIVE:
-        return _decision(RouteName.MIXED_AMBIGUOUS)
     if _CONTROL.fullmatch(text):
         return _decision(RouteName.CONTROL)
+    if text in _AFFIRMATIVE or text in _NEGATIVE:
+        return _decision(RouteName.MIXED_AMBIGUOUS)
     if re.match(r"^(?:stop|cancel)\b", text):
         return _decision(RouteName.MIXED_AMBIGUOUS)
 

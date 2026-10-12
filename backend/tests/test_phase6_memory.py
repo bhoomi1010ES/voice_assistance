@@ -381,6 +381,36 @@ def test_automatic_extraction_handles_durable_forms_and_rejections() -> None:
         assert extract_explicit_candidates(utterance) == ()
 
 
+def test_explicit_favorite_attribute_extraction_and_okf_mapping() -> None:
+    utterance = "Please remember that my favorite beverage is espresso."
+    candidates = extract_explicit_candidates(utterance)
+    assert len(candidates) == 1
+    cand = candidates[0]
+    assert cand.memory_type == MemoryType.PREFERENCE
+    assert cand.subject == "user"
+    assert cand.predicate == "beverage"
+    assert cand.object_json == {"value": "espresso"}
+
+    source = SimpleNamespace(
+        status="active",
+        memory_type=cand.memory_type.value,
+        subject=cand.subject,
+        predicate=cand.predicate,
+        object_json=cand.object_json,
+        content=cand.content,
+        confidence=1.0,
+        valid_from=None,
+        valid_to=None,
+        id=uuid.uuid4(),
+    )
+    proposal = map_memory_to_proposal(source)
+    assert proposal is not None
+    assert proposal.canonical_key == "preferences/beverage"
+    assert proposal.concept_type == "preference"
+    assert proposal.display_text == "espresso"
+    assert proposal.value_json == {"value": "espresso"}
+
+
 def test_chunking_and_rrf_collapse_are_bounded_and_stable() -> None:
     chunks = chunk_text("one two three four five six seven eight", max_chars=128, overlap_chars=3)
     assert chunks

@@ -17,7 +17,10 @@ import httpx
 
 from app.core.config import Settings
 from app.services.latency_trace import LatencyTracer, latency_span
-from app.stt.audio_energy import evaluate_pcm16_speech_energy
+from app.stt.audio_energy import (
+    evaluate_pcm16_speech_energy,
+    trim_pcm16_trailing_silence,
+)
 from app.stt.base import (
     EnginePartialCallback,
     STTAudioError,
@@ -254,6 +257,7 @@ class RemoteTranscriptionEngine(STTEngine):
             raise STTConfigurationError("remote STT client is not initialized")
         if state.cancelled or generation != state.generation:
             raise STTCancelledError("STT turn is no longer active")
+        audio_to_transcribe = bytes(state.audio)
         if self.settings.stt_silence_guard_enabled:
             energy = evaluate_pcm16_speech_energy(
                 state.audio,
@@ -278,7 +282,45 @@ class RemoteTranscriptionEngine(STTEngine):
                     },
                 )
                 raise STTEmptyTranscriptError("No speech detected in audio turn")
-        wav_bytes = self._to_wav(bytes(state.audio))
+
+            if self.settings.stt_trailing_silence_trimming_enabled and energy.has_speech:
+                trimmed_bytes, _trim_energy, trimmed_ms = trim_pcm16_trailing_silence(
+                    state.audio,
+                    sample_rate_hz=self.settings.voice_sample_rate_hz,
+                    window_ms=self.settings.stt_silence_guard_window_ms,
+                    min_rms=self.settings.stt_silence_guard_min_rms,
+                    min_peak=self.settings.stt_silence_guard_min_peak,
+                    padding_ms=self.settings.stt_trailing_silence_padding_ms,
+                    pre_evaluated=energy,
+                )
+                if trimmed_ms > 0:
+                    LOGGER.info(
+                        "Remote STT trailing silence trimmed",
+                        extra={
+                            "event": "STT_TRAILING_SILENCE_TRIMMED",
+                            "session_id": str(state.handle.session_id),
+                            "turn_id": str(state.handle.turn_id),
+                            "response_id": str(state.handle.response_id),
+                            "original_bytes": len(state.audio),
+                            "trimmed_bytes": len(trimmed_bytes),
+                            "trimmed_ms": trimmed_ms,
+                            "speech_end_ms": energy.speech_end_ms,
+                        },
+                    )
+                    audio_to_transcribe = trimmed_bytes
+        elif self.settings.stt_trailing_silence_trimming_enabled:
+            trimmed_bytes, _trim_energy, trimmed_ms = trim_pcm16_trailing_silence(
+                state.audio,
+                sample_rate_hz=self.settings.voice_sample_rate_hz,
+                window_ms=self.settings.stt_silence_guard_window_ms,
+                min_rms=self.settings.stt_silence_guard_min_rms,
+                min_peak=self.settings.stt_silence_guard_min_peak,
+                padding_ms=self.settings.stt_trailing_silence_padding_ms,
+            )
+            if trimmed_ms > 0:
+                audio_to_transcribe = trimmed_bytes
+
+        wav_bytes = self._to_wav(audio_to_transcribe)
         data: dict[str, str] = {
             "response_format": self.settings.stt_api_response_format,
         }
@@ -291,7 +333,7 @@ class RemoteTranscriptionEngine(STTEngine):
         request_start_monotonic_ns = time.perf_counter_ns()
         request_start_monotonic_ms = round(request_start_monotonic_ns / 1_000_000, 3)
         audio_duration_ms = round(
-            state.audio_samples / self.settings.voice_sample_rate_hz * 1000,
+            (len(audio_to_transcribe) // 2) / self.settings.voice_sample_rate_hz * 1000,
             1,
         )
         with latency_span(
@@ -311,7 +353,7 @@ class RemoteTranscriptionEngine(STTEngine):
                     "response_id": str(state.handle.response_id),
                     "generation": generation,
                     "endpoint_host": urlsplit(self.settings.stt_api_url_resolved).netloc,
-                    "audio_bytes": len(state.audio),
+                    "audio_bytes": len(audio_to_transcribe),
                     "audio_duration_ms": audio_duration_ms,
                     "request_start_timestamp_ms": request_start_wall_ms,
                     "request_start_monotonic_ms": request_start_monotonic_ms,
@@ -324,7 +366,7 @@ class RemoteTranscriptionEngine(STTEngine):
             component="stt",
             event="stt_request_start",
             monotonic_ns=request_start_monotonic_ns,
-            metadata={"audio_bytes": len(state.audio), "audio_duration_ms": audio_duration_ms},
+            metadata={"audio_bytes": len(audio_to_transcribe), "audio_duration_ms": audio_duration_ms},
         )
         self._latency_tracer.emit(
             session_id=state.handle.session_id,
@@ -342,7 +384,7 @@ class RemoteTranscriptionEngine(STTEngine):
             component="stt",
             event="stt_request_started",
             monotonic_ns=started_ns,
-            metadata={"audio_bytes": len(state.audio), "audio_duration_ms": audio_duration_ms},
+            metadata={"audio_bytes": len(audio_to_transcribe), "audio_duration_ms": audio_duration_ms},
         )
 
         transport_started: dict[str, int] = {}

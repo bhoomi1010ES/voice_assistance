@@ -33,7 +33,10 @@ _DURABLE_FACT = re.compile(
     r"^(?:i\s+work\s+(?:at|for|remotely)|my\s+(?:home\s+base|timezone|laptop)\s+is)\b",
     re.IGNORECASE,
 )
-_PREFERRED_ATTRIBUTE = re.compile(r"^my\s+preferred\s+(.+?)\s+is\s+(.+)$", re.IGNORECASE)
+_PREFERRED_ATTRIBUTE = re.compile(
+    r"^my\s+(?:preferred|favorite|favourite)\s+(.+?)\s+is\s+(.+)$",
+    re.IGNORECASE,
+)
 _ROUTINE = re.compile(
     r"^(?:i\s+usually\s+.+|every\s+\w+\s+i\s+.+)$",
     re.IGNORECASE,
@@ -194,6 +197,8 @@ def _candidate_from_content(
                 project_attribute.group("predicate").casefold(),
             )
             if project_attribute
+            else preferred_attribute.group(1).strip().casefold().replace(" ", "_")
+            if preferred_attribute
             else "preference"
             if memory_type == MemoryType.PREFERENCE
             else "relationship"
@@ -203,6 +208,8 @@ def _candidate_from_content(
         object_json=(
             {"name": project_attribute.group("value").strip().rstrip(".")}
             if project_attribute
+            else {"value": preferred_attribute.group(2).strip().rstrip(".")}
+            if preferred_attribute
             else {"value": relationship.group(2).strip()}
             if relationship
             else None

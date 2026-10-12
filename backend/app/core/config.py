@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     stt_silence_guard_min_rms: float = Field(default=25.0, ge=0.0, le=32767.0)
     stt_silence_guard_min_peak: int = Field(default=100, ge=0, le=32767)
     stt_silence_guard_window_ms: int = Field(default=100, ge=10, le=2000)
+    stt_trailing_silence_trimming_enabled: bool = True
+    stt_trailing_silence_padding_ms: int = Field(default=800, ge=0, le=5000)
 
     # Legacy local CPU Whisper settings. They are not loaded by the default
     # Windows engine and can be removed after the migration is accepted.

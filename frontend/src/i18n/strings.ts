@@ -98,6 +98,8 @@ export const strings = {
     tagline: 'Listen • Understand • Help',
     tapToSpeak: 'Tap to speak',
     readyWhenYouAre: 'Ready when you are',
+    waitingForWakeWord: 'Waiting for Hey Mycroft',
+    wakeWordOnDevice: 'Wake-word detection stays on this device.',
     currentChat: 'Current chat',
     currentChatSubtitle: 'Tap to view your ongoing conversation',
     greeting: 'Hello',

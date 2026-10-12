@@ -198,6 +198,7 @@ docs/latency_runs/
 # Generated Gradle caches and Android build output.
 # Keep build.gradle, settings.gradle, gradle.properties and the wrapper tracked.
 **/.gradle*/
+**/gradle-home/
 **/.kotlin/
 **/build/
 *.apk

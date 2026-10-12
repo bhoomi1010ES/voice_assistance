@@ -1275,6 +1275,17 @@ export function subscribeVoiceVadEvent(
   return () => subscriptions.forEach(subscription => subscription.remove());
 }
 
+/** Subscribes to local wake-word detections; the event contains metadata only. */
+export function subscribeVoiceWakeWordEvent(
+  listener: (event: WakeWordDetectionEvent) => void,
+): () => void {
+  const subscription = DeviceEventEmitter.addListener(
+    'WAKE_WORD_DETECTED',
+    listener,
+  );
+  return () => subscription.remove();
+}
+
 /** Subscribes to native playback-aware barge-in decisions. */
 export function subscribeVoiceBargeInEvent(
   listener: (event: BargeInSemanticEvent) => void,

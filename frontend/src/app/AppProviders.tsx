@@ -8,6 +8,7 @@ import { VoiceSocketProvider } from '../voice/VoiceSocketProvider';
 
 const APP_VOICE_OPTIONS = {
   continuousListening: true,
+  handsFreeWakeWordRestart: true,
 };
 
 export function AppProviders({

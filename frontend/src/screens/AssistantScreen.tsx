@@ -387,10 +387,14 @@ export function AssistantScreen() {
           isActive={
             ['recording', 'speech_detected', 'committing', 'waiting'].includes(
               socketState.turn,
-            ) || socketState.ttsPlaybackState === 'speaking'
+            ) ||
+            socketState.ttsPlaybackState === 'speaking' ||
+            socketState.wakeWordStandby
           }
           primaryStatus={
-            socketState.turn === 'failed'
+            socketState.wakeWordStandby
+              ? strings.assistant.waitingForWakeWord
+              : socketState.turn === 'failed'
               ? strings.assistant.tryAgain
               : ['recording', 'speech_detected'].includes(socketState.turn)
               ? strings.assistant.listening
@@ -401,7 +405,9 @@ export function AssistantScreen() {
               : strings.assistant.tapToSpeak
           }
           subStatus={
-            socketState.turn === 'failed'
+            socketState.wakeWordStandby
+              ? strings.assistant.wakeWordOnDevice
+              : socketState.turn === 'failed'
               ? socketState.transcriptError?.message ??
                 strings.assistant.turnFailed
               : ['recording', 'speech_detected'].includes(socketState.turn)

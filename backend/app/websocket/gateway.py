@@ -1672,6 +1672,9 @@ class VoiceGateway:
             )
 
             await self._complete_response_state(counters.response_id, release_pending=False)
+            suppress_auto_listen = bool(
+                isinstance(llm_result, dict) and llm_result.get("suppress_auto_listen")
+            )
             await self._send(
                 server_event(
                     "server.turn.completed",
@@ -1686,6 +1689,7 @@ class VoiceGateway:
                     stt_enabled=self._stt_enabled,
                     llm_enabled=self.llm_service.enabled,
                     llm_status=llm_result["status"],
+                    suppress_auto_listen=suppress_auto_listen,
                 )
             )
             await self._create_pending_turn_if_ready()
@@ -3132,6 +3136,22 @@ class VoiceGateway:
                 response_id=response_id,
                 transcript=transcript,
             )
+
+        if decision.route == RouteName.CONTROL:
+            text = "Stopped listening."
+            await self._emit_routed_final_text(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+                route=RouteName.CONTROL,
+            )
+            return {
+                "status": "completed",
+                "route": RouteName.CONTROL.value,
+                "suppress_auto_listen": True,
+                "executed_tool_names": [],
+            }
 
         if decision.route == RouteName.GENERAL_LLM:
             self._trace_latency(

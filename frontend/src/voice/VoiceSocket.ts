@@ -6,6 +6,7 @@ import {
   connectVoiceGateway,
   disconnectVoiceGateway,
   endVoiceSession,
+  getMicrophoneStatus,
   getVoiceGatewayStatus,
   requestMicrophonePermission,
   resolveVoiceConfirmation,
@@ -23,9 +24,11 @@ import {
   subscribeVoiceGatewayStatus,
   subscribeVoiceBargeInEvent,
   subscribeVoiceVadEvent,
+  subscribeVoiceWakeWordEvent,
   BargeInSemanticEvent,
   VoiceGatewayEvent,
   VoiceGatewayStatus,
+  WakeWordDetectionEvent,
 } from '../native/VoiceModule';
 import {
   PlanningActionReceipt,
@@ -80,7 +83,8 @@ export const VOICE_GATEWAY_URL = `${publicApiConfig.websocketBaseUrl}/v1/voice`;
 // Native Silero VAD confirms silence after 320 ms. Keep the turn open a little
 // longer so a normal pause inside a sentence can be followed by more speech.
 // A new speech-start event cancels this timer and preserves the same STT turn.
-export const SPEECH_END_COMMIT_GRACE_MS = 900;
+export const SPEECH_END_COMMIT_GRACE_MS = 1200;
+export const MAX_UTTERANCE_DURATION_MS = 25000;
 
 export const VOICE_SERVER_EVENT_TYPES = [
   'voice.connection.opened',
@@ -187,6 +191,7 @@ export type VoiceSocketSnapshot = {
   ttsError: string | null;
   waitPhrase: string | null;
   continuousListening: boolean;
+  wakeWordStandby: boolean;
   followUpQueued: boolean;
   confirmationAwaitingVoice: boolean;
   speechDetected: boolean;
@@ -247,8 +252,10 @@ export type VoiceSocketAdapter = {
   getStatus: () => Promise<VoiceGatewayStatus>;
   startMicrophone?: () => Promise<unknown>;
   stopMicrophone?: () => Promise<unknown>;
+  getMicrophoneStatus?: () => Promise<{ isRecording?: boolean; state?: string }>;
   requestMicrophonePermission?: () => Promise<string>;
   subscribeVad?: (listener: (event: unknown) => void) => () => void;
+  subscribeWakeWord?: (listener: (event: unknown) => void) => () => void;
   subscribeBargeIn?: (listener: (event: unknown) => void) => () => void;
   subscribeStatus: (
     listener: (status: VoiceGatewayStatus) => void,
@@ -272,7 +279,10 @@ export type VoiceSocketOptions = {
   heartbeatCheckIntervalMs?: number;
   reconnectDelaysMs?: number[];
   continuousListening?: boolean;
+  handsFreeWakeWordRestart?: boolean;
   autoStartSession?: boolean;
+  speechEndGraceMs?: number;
+  maxUtteranceDurationMs?: number;
 };
 
 export type VoiceTurnStartOptions = {
@@ -280,6 +290,8 @@ export type VoiceTurnStartOptions = {
   includePreRoll?: boolean;
   autoCommitOnSpeechEnd?: boolean;
   bargeInReplacement?: boolean;
+  speechEndGraceMs?: number;
+  maxDurationMs?: number;
 };
 
 export type VoiceTurnCommitOptions = {
@@ -308,6 +320,7 @@ const INITIAL_SNAPSHOT: VoiceSocketSnapshot = {
   ttsError: null,
   waitPhrase: null,
   continuousListening: true,
+  wakeWordStandby: false,
   followUpQueued: false,
   confirmationAwaitingVoice: false,
   speechDetected: false,
@@ -432,10 +445,13 @@ const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
   getStatus: getVoiceGatewayStatus,
   startMicrophone,
   stopMicrophone,
+  getMicrophoneStatus,
   requestMicrophonePermission,
   subscribeStatus: subscribeVoiceGatewayStatus,
   subscribeEvent: subscribeVoiceGatewayEvent,
   subscribeVad: subscribeVoiceVadEvent,
+  subscribeWakeWord:
+    Platform.OS === 'android' ? subscribeVoiceWakeWordEvent : undefined,
   subscribeBargeIn:
     Platform.OS === 'android' ? subscribeVoiceBargeInEvent : undefined,
 };
@@ -460,6 +476,8 @@ export type NormalizedVoiceEvent = {
   retryable?: boolean;
   sampleRateHz?: number | null;
   stopReason?: string;
+  route?: string;
+  suppressAutoListen?: boolean;
 };
 
 /**
@@ -537,6 +555,10 @@ export function normalizeVoiceGatewayEvent(
     record.stopReason ?? record.stop_reason,
     MAX_ID_LENGTH,
   );
+  const route = readString(record.route, 32);
+  const suppressAutoListen = readBoolean(
+    record.suppressAutoListen ?? record.suppress_auto_listen,
+  );
   return {
     ...(connectionGeneration !== null && connectionGeneration >= 0
       ? { connectionGeneration }
@@ -562,6 +584,8 @@ export function normalizeVoiceGatewayEvent(
     ...(retryable !== null ? { retryable } : {}),
     ...(sampleRateHz !== null ? { sampleRateHz } : {}),
     ...(stopReason ? { stopReason } : {}),
+    ...(route ? { route } : {}),
+    ...(suppressAutoListen !== null ? { suppressAutoListen } : {}),
   };
 }
 
@@ -579,6 +603,7 @@ export class VoiceSocket {
   private readonly heartbeatCheckIntervalMs: number;
   private readonly reconnectDelaysMs: number[];
   private readonly continuousListening: boolean;
+  private readonly handsFreeWakeWordRestart: boolean;
   private readonly autoStartSession: boolean;
   private readonly listeners = new Set<VoiceSocketListener>();
   private readonly seenEventIds = new Set<string>();
@@ -606,10 +631,21 @@ export class VoiceSocket {
   private speechEndCommitTimer: ReturnType<typeof setTimeout> | null = null;
   private speechEndCommitDeadlineMs: number | null = null;
   private pausedSpeechEndCommitDelayMs: number | null = null;
+  private maxTurnDurationTimer: ReturnType<typeof setTimeout> | null = null;
+  private maxTurnDurationDeadlineMs: number | null = null;
+  private pausedMaxDurationRemainingMs: number | null = null;
+  private readonly defaultSpeechEndGraceMs: number;
+  private readonly defaultMaxUtteranceDurationMs: number;
+  private currentSpeechEndGraceMs: number = SPEECH_END_COMMIT_GRACE_MS;
+  private currentMaxTurnDurationMs: number = MAX_UTTERANCE_DURATION_MS;
+  private autoCommitOnSpeechEnd = true;
+  private speechEverDetectedInTurn = false;
+  private turnCommitInFlight = false;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private statusUnsubscribe: (() => void) | null = null;
   private eventUnsubscribe: (() => void) | null = null;
   private vadUnsubscribe: (() => void) | null = null;
+  private wakeWordUnsubscribe: (() => void) | null = null;
   private bargeInUnsubscribe: (() => void) | null = null;
   /** True for the Android adapter whose native detector owns playback policy. */
   private nativePlaybackDetectorAvailable = false;
@@ -641,6 +677,8 @@ export class VoiceSocket {
   private pauseHadInteraction = false;
   private turnPauseStartedAtMs: number | null = null;
   private turnStartOperation: object | null = null;
+  private wakeWordStandbyRequested = false;
+  private wakeWordStartInFlight = false;
 
   constructor(options: VoiceSocketOptions = {}) {
     this.adapter = options.adapter ?? nativeVoiceSocketAdapter;
@@ -658,7 +696,15 @@ export class VoiceSocket {
     this.reconnectDelaysMs =
       options.reconnectDelaysMs ?? DEFAULT_RECONNECT_DELAYS_MS;
     this.continuousListening = options.continuousListening ?? true;
+    this.handsFreeWakeWordRestart =
+      options.handsFreeWakeWordRestart ?? false;
     this.autoStartSession = options.autoStartSession ?? true;
+    this.defaultSpeechEndGraceMs =
+      options.speechEndGraceMs ?? SPEECH_END_COMMIT_GRACE_MS;
+    this.defaultMaxUtteranceDurationMs =
+      options.maxUtteranceDurationMs ?? MAX_UTTERANCE_DURATION_MS;
+    this.currentSpeechEndGraceMs = this.defaultSpeechEndGraceMs;
+    this.currentMaxTurnDurationMs = this.defaultMaxUtteranceDurationMs;
     this.snapshot = {
       ...INITIAL_SNAPSHOT,
       continuousListening: this.continuousListening,
@@ -679,6 +725,9 @@ export class VoiceSocket {
     );
     this.vadUnsubscribe =
       this.adapter.subscribeVad?.(event => this.handleVadEvent(event)) ?? null;
+    this.wakeWordUnsubscribe = this.adapter.subscribeWakeWord?.(event =>
+      this.handleWakeWordEvent(event),
+    ) ?? null;
     this.nativePlaybackDetectorAvailable =
       this.rollout.nativeBargeInDetectorEnabled &&
       isNativeBargeInAuthoritative(this.rollout) &&
@@ -692,7 +741,14 @@ export class VoiceSocket {
       nextState => {
         this.logLifecycle('app_state_changed', { app_state: nextState });
         if (nextState === 'active') {
-          this.reconcile().catch(() => undefined);
+          this.reconcile()
+            .then(() => this.ensureWakeWordStandby())
+            .catch(() => undefined);
+        } else if (this.wakeWordStandbyRequested) {
+          if (this.snapshot.wakeWordStandby) {
+            this.setSnapshot({ wakeWordStandby: false });
+          }
+          this.adapter.stopMicrophone?.().catch(() => undefined);
         }
       },
     );
@@ -753,9 +809,14 @@ export class VoiceSocket {
         this.speechEndCommitDeadlineMs === null
           ? this.pausedSpeechEndCommitDelayMs
           : Math.max(0, this.speechEndCommitDeadlineMs - this.now());
+      const maxDurationRemaining =
+        this.maxTurnDurationDeadlineMs === null
+          ? this.pausedMaxDurationRemainingMs
+          : Math.max(0, this.maxTurnDurationDeadlineMs - this.now());
       this.clearAutoListenTimer();
-      this.clearSpeechEndCommitTimer();
+      this.clearTurnTimers();
       this.pausedSpeechEndCommitDelayMs = speechEndDelay;
+      this.pausedMaxDurationRemainingMs = maxDurationRemaining;
       this.sileroSpeechSegmentStartedAtMs = null;
       this.sileroSpeechSegmentStartedDuringGuard = false;
     } else if (this.turnPauseStartedAtMs !== null) {
@@ -765,6 +826,9 @@ export class VoiceSocket {
       this.turnPauseStartedAtMs = null;
     }
     this.setSnapshot({ assistantVisible: visible });
+    if (!visible && this.snapshot.wakeWordStandby) {
+      this.setSnapshot({ wakeWordStandby: false });
+    }
     try {
       if (this.adapter.setInteractionActive) {
         // Native calls retain their order; stale promise results never replace
@@ -790,9 +854,20 @@ export class VoiceSocket {
         if (speechEndDelay !== null && this.snapshot.turn === 'recording') {
           this.scheduleSpeechEndCommit(speechEndDelay);
         }
+        const maxDurationRemaining = this.pausedMaxDurationRemainingMs;
+        this.pausedMaxDurationRemainingMs = null;
+        if (
+          maxDurationRemaining !== null &&
+          ['starting', 'recording', 'speech_detected'].includes(
+            this.snapshot.turn,
+          )
+        ) {
+          this.scheduleMaxTurnDuration(maxDurationRemaining);
+        }
         this.maybeStartVoiceConfirmationTurn();
         this.scheduleContinuousListen(true);
       }
+      this.ensureWakeWordStandby();
       this.pauseHadInteraction = false;
     } catch (error) {
       if (version === this.visibilityVersion && epoch === this.sessionEpoch) {
@@ -873,7 +948,7 @@ export class VoiceSocket {
       // attempt after this explicit teardown. Its epoch checks make it stale.
       this.connectPromise = null;
       this.clearAutoListenTimer();
-      this.clearSpeechEndCommitTimer();
+      this.clearTurnTimers();
       this.invalidateSessionState(
         'manual_retry_cleanup',
         'disconnected',
@@ -1013,22 +1088,29 @@ export class VoiceSocket {
       return;
     const operation = {};
     this.turnStartOperation = operation;
+    this.wakeWordStandbyRequested = false;
+    if (this.snapshot.wakeWordStandby) {
+      this.setSnapshot({ wakeWordStandby: false });
+    }
     const expectedEpoch = this.sessionEpoch;
     try {
       await this.ensureReadySessionForTurn();
       if (expectedEpoch !== this.sessionEpoch || this.explicitStop) return;
       options = {
         ...options,
-        autoCommitOnSpeechEnd:
-          options.autoCommitOnSpeechEnd ?? this.continuousListening,
+        autoCommitOnSpeechEnd: options.autoCommitOnSpeechEnd ?? true,
       };
+      this.currentSpeechEndGraceMs =
+        options.speechEndGraceMs ?? this.defaultSpeechEndGraceMs;
+      this.currentMaxTurnDurationMs =
+        options.maxDurationMs ?? this.defaultMaxUtteranceDurationMs;
       if (['speaking', 'paused'].includes(this.snapshot.ttsPlaybackState)) {
         throw new Error(
           'Wait for playback-aware speech confirmation before starting a turn.',
         );
       }
       this.clearAutoListenTimer();
-      this.clearSpeechEndCommitTimer();
+      this.clearTurnTimers();
       if (['failed', 'cancelled', 'completed'].includes(this.snapshot.turn)) {
         this.retireCurrentTurnCorrelation();
         this.setSnapshot({
@@ -1092,16 +1174,20 @@ export class VoiceSocket {
       }
       this.sileroSpeechSegmentStartedAtMs = null;
       this.sileroSpeechSegmentStartedDuringGuard = false;
-      this.autoCommitBargeInTurn = Boolean(options.autoCommitOnSpeechEnd);
+      this.autoCommitOnSpeechEnd = Boolean(options.autoCommitOnSpeechEnd);
+      this.autoCommitBargeInTurn = this.autoCommitOnSpeechEnd;
       this.bargeInReplacementTurn = Boolean(options.bargeInReplacement);
       this.bargeInSpeechEndedPending = false;
       this.bargeInCommitInFlight = false;
+      this.speechEverDetectedInTurn = false;
+      this.turnCommitInFlight = false;
       if (!options.autoCommitOnSpeechEnd) {
         this.bargeInTurnId = null;
       }
       this.turnStartedAtMs = this.now();
       this.turnPauseStartedAtMs = this.assistantVisible ? null : this.now();
       this.speechEndedAtMs = null;
+      this.scheduleMaxTurnDuration(this.currentMaxTurnDurationMs);
       emitLatencyTrace({
         sessionId: this.snapshot.sessionId,
         turnId: null,
@@ -1135,8 +1221,12 @@ export class VoiceSocket {
         this.logLifecycle('stale_turn_start_error_ignored');
         return;
       }
+      this.clearTurnTimers();
       this.turnStartedAtMs = null;
       this.autoCommitBargeInTurn = false;
+      this.autoCommitOnSpeechEnd = false;
+      this.speechEverDetectedInTurn = false;
+      this.turnCommitInFlight = false;
       this.bargeInSpeechEndedPending = false;
       this.setSnapshot({ followUpQueued: false });
       this.markCurrentTranscriptError(error);
@@ -1152,16 +1242,29 @@ export class VoiceSocket {
   }
 
   async commitTurn(options: VoiceTurnCommitOptions = {}): Promise<void> {
+    if (this.turnCommitInFlight) {
+      console.info('VOICE_TURN_COMMIT_ALREADY_IN_FLIGHT', {
+        turnId: this.snapshot.turnId,
+      });
+      return;
+    }
     if (
       !['starting', 'recording', 'speech_detected'].includes(this.snapshot.turn)
     ) {
+      if (['committing', 'waiting'].includes(this.snapshot.turn)) {
+        return;
+      }
       throw new Error('There is no active voice turn to finish.');
     }
+    this.turnCommitInFlight = true;
     if (options.suppressAutoListen) {
       this.clearAutoListenTimer();
       this.autoListenSuppressed = true;
+      this.wakeWordStandbyRequested =
+        this.handsFreeWakeWordRestart &&
+        Boolean(this.adapter.subscribeWakeWord);
     }
-    this.clearSpeechEndCommitTimer();
+    this.clearTurnTimers();
     const expectedEpoch = this.sessionEpoch;
 
     const durationMs = Math.max(
@@ -1209,6 +1312,10 @@ export class VoiceSocket {
       throw new Error(
         this.snapshot.error ?? 'Unable to finish the voice turn.',
       );
+    } finally {
+      this.turnCommitInFlight = false;
+      this.autoCommitBargeInTurn = false;
+      this.autoCommitOnSpeechEnd = false;
     }
   }
 
@@ -1217,7 +1324,11 @@ export class VoiceSocket {
       return;
     }
     this.clearAutoListenTimer();
-    this.clearSpeechEndCommitTimer();
+    this.clearTurnTimers();
+    this.autoCommitBargeInTurn = false;
+    this.autoCommitOnSpeechEnd = false;
+    this.speechEverDetectedInTurn = false;
+    this.turnCommitInFlight = false;
     this.autoListenSuppressed = true;
     const turnId = this.snapshot.turnId;
     const responseId = this.snapshot.responseId;
@@ -1519,8 +1630,10 @@ export class VoiceSocket {
     this.explicitStop = true;
     this.allowAutoReconnect = false;
     this.clearAutoListenTimer();
-    this.clearSpeechEndCommitTimer();
+    this.clearTurnTimers();
     this.clearReconnectTimer();
+    this.wakeWordStandbyRequested = false;
+    this.setSnapshot({ wakeWordStandby: false });
     this.setSnapshot({ session: 'ending', error: null });
     try {
       this.handleStatus(await this.adapter.endSession(reason));
@@ -1538,8 +1651,9 @@ export class VoiceSocket {
     this.explicitStop = true;
     this.allowAutoReconnect = false;
     this.clearAutoListenTimer();
-    this.clearSpeechEndCommitTimer();
+    this.clearTurnTimers();
     this.clearReconnectTimer();
+    this.wakeWordStandbyRequested = false;
     try {
       this.handleStatus(await this.adapter.disconnect());
     } finally {
@@ -1557,7 +1671,7 @@ export class VoiceSocket {
     this.explicitStop = true;
     this.allowAutoReconnect = false;
     this.clearAutoListenTimer();
-    this.clearSpeechEndCommitTimer();
+    this.clearTurnTimers();
     this.clearReconnectTimer();
     this.hadConnected = false;
 
@@ -1587,6 +1701,7 @@ export class VoiceSocket {
     if (this.adapter.stopMicrophone) {
       operations.push(this.adapter.stopMicrophone());
     }
+    this.wakeWordStandbyRequested = false;
     await Promise.allSettled(operations);
     this.resetToDisconnected();
   }
@@ -1600,6 +1715,8 @@ export class VoiceSocket {
     this.eventUnsubscribe = null;
     this.vadUnsubscribe?.();
     this.vadUnsubscribe = null;
+    this.wakeWordUnsubscribe?.();
+    this.wakeWordUnsubscribe = null;
     this.bargeInUnsubscribe?.();
     this.bargeInUnsubscribe = null;
     this.nativePlaybackDetectorAvailable = false;
@@ -2345,7 +2462,7 @@ export class VoiceSocket {
         if (this.snapshot.turn !== 'committing') {
           this.ensureTranscriptPlaceholder('listening');
         }
-        if (this.autoCommitBargeInTurn) {
+        if (this.autoCommitOnSpeechEnd) {
           this.bargeInTurnId = event.turnId;
           if (this.bargeInReplacementTurn) {
             emitLatencyTrace({
@@ -2363,9 +2480,9 @@ export class VoiceSocket {
             });
             this.bargeInReplacementTurn = false;
           }
-          if (this.bargeInSpeechEndedPending && !this.bargeInCommitInFlight) {
+          if (this.bargeInSpeechEndedPending && !this.turnCommitInFlight) {
             this.bargeInSpeechEndedPending = false;
-            this.scheduleSpeechEndCommit();
+            this.scheduleSpeechEndCommit(this.currentSpeechEndGraceMs);
           }
         }
         break;
@@ -2375,9 +2492,18 @@ export class VoiceSocket {
         this.markCurrentTranscriptPhase('transcribing');
         this.setSnapshot({ turn: 'waiting', speechDetected: false });
         break;
+      case 'assistant.text.final':
+        if (event.route === 'CONTROL') {
+          this.suppressAutoListenForWakeWord();
+        }
+        this.setSnapshot({
+          turn: 'waiting',
+          speechDetected: false,
+          waitPhrase: null,
+        });
+        break;
       case 'assistant.response.started':
       case 'assistant.request.started':
-      case 'assistant.text.final':
       case 'llm.response.completed':
         if (
           event.type === 'assistant.response.started' &&
@@ -2549,6 +2675,9 @@ export class VoiceSocket {
         }
         break;
       case 'server.turn.completed':
+        if (event.suppressAutoListen) {
+          this.suppressAutoListenForWakeWord();
+        }
         this.applyConversationEvent({
           type: 'turn.completed',
           sessionId: event.sessionId,
@@ -2614,11 +2743,12 @@ export class VoiceSocket {
       case 'llm.response.failed':
         this.turnStartedAtMs = null;
         this.clearAutoListenTimer();
-        this.clearSpeechEndCommitTimer();
+        this.clearTurnTimers();
         this.autoListenSuppressed = true;
         this.autoCommitBargeInTurn = false;
-        this.bargeInSpeechEndedPending = false;
-        this.bargeInCommitInFlight = false;
+        this.autoCommitOnSpeechEnd = false;
+        this.speechEverDetectedInTurn = false;
+        this.turnCommitInFlight = false;
         this.retireCorrelation(
           null,
           event.turnId ?? this.snapshot.turnId,
@@ -2807,7 +2937,9 @@ export class VoiceSocket {
       waitPhrase: null,
     });
     this.setSnapshot({ turn: 'idle' });
-    if (
+    if (this.wakeWordStandbyRequested && this.autoListenSuppressed) {
+      this.ensureWakeWordStandby();
+    } else if (
       this.continuousListening &&
       !this.autoListenSuppressed &&
       !this.confirmationAwaitingVoice
@@ -2823,6 +2955,7 @@ export class VoiceSocket {
       !this.assistantVisible ||
       !this.continuousListening ||
       this.autoListenSuppressed ||
+      this.wakeWordStandbyRequested ||
       this.confirmationAwaitingVoice ||
       this.confirmationTurnStartInFlight ||
       this.snapshot.connection !== 'connected' ||
@@ -2838,6 +2971,7 @@ export class VoiceSocket {
       if (
         !this.assistantVisible ||
         this.autoListenSuppressed ||
+        this.wakeWordStandbyRequested ||
         this.snapshot.turn !== 'idle' ||
         this.snapshot.session !== 'ready' ||
         this.snapshot.connection !== 'connected' ||
@@ -2861,6 +2995,13 @@ export class VoiceSocket {
     }
   }
 
+  private suppressAutoListenForWakeWord(): void {
+    this.autoListenSuppressed = true;
+    this.clearAutoListenTimer();
+    this.wakeWordStandbyRequested =
+      this.handsFreeWakeWordRestart && Boolean(this.adapter.subscribeWakeWord);
+  }
+
   private clearSpeechEndCommitTimer(): void {
     this.speechEndCommitDeadlineMs = null;
     this.pausedSpeechEndCommitDelayMs = null;
@@ -2870,9 +3011,63 @@ export class VoiceSocket {
     }
   }
 
-  private scheduleSpeechEndCommit(delayMs = SPEECH_END_COMMIT_GRACE_MS): void {
+  private clearMaxTurnDurationTimer(): void {
+    this.maxTurnDurationDeadlineMs = null;
+    this.pausedMaxDurationRemainingMs = null;
+    if (this.maxTurnDurationTimer) {
+      clearTimeout(this.maxTurnDurationTimer);
+      this.maxTurnDurationTimer = null;
+    }
+  }
+
+  private clearTurnTimers(): void {
     this.clearSpeechEndCommitTimer();
-    if (!this.assistantVisible || !this.autoCommitBargeInTurn) {
+    this.clearMaxTurnDurationTimer();
+  }
+
+  private scheduleMaxTurnDuration(durationMs: number): void {
+    this.clearMaxTurnDurationTimer();
+    if (!this.assistantVisible || durationMs <= 0) {
+      return;
+    }
+    this.maxTurnDurationDeadlineMs = this.now() + durationMs;
+    this.maxTurnDurationTimer = setTimeout(() => {
+      this.maxTurnDurationTimer = null;
+      this.maxTurnDurationDeadlineMs = null;
+      if (
+        !this.assistantVisible ||
+        !['starting', 'recording', 'speech_detected'].includes(
+          this.snapshot.turn,
+        )
+      ) {
+        return;
+      }
+      console.warn('VOICE_TURN_MAX_DURATION_EXCEEDED', {
+        turnId: this.snapshot.turnId,
+        maxDurationMs: this.currentMaxTurnDurationMs,
+        speechEverDetected: this.speechEverDetectedInTurn,
+        timestampMs: this.now(),
+      });
+      if (!this.speechEverDetectedInTurn) {
+        this.cancelTurn('no_speech_timeout')
+          .then(() => {
+            this.wakeWordStandbyRequested =
+              this.handsFreeWakeWordRestart &&
+              Boolean(this.adapter.subscribeWakeWord);
+            this.ensureWakeWordStandby();
+          })
+          .catch(() => undefined);
+        return;
+      }
+      this.commitTurn().catch(() => undefined);
+    }, durationMs);
+  }
+
+  private scheduleSpeechEndCommit(
+    delayMs = this.currentSpeechEndGraceMs,
+  ): void {
+    this.clearSpeechEndCommitTimer();
+    if (!this.assistantVisible || !this.autoCommitOnSpeechEnd) {
       return;
     }
     this.speechEndCommitDeadlineMs = this.now() + delayMs;
@@ -2881,7 +3076,7 @@ export class VoiceSocket {
       this.speechEndCommitDeadlineMs = null;
       if (
         !this.assistantVisible ||
-        !this.autoCommitBargeInTurn ||
+        !this.autoCommitOnSpeechEnd ||
         this.snapshot.turn !== 'recording' ||
         this.snapshot.speechDetected
       ) {
@@ -3242,6 +3437,120 @@ export class VoiceSocket {
     }
   }
 
+  private handleWakeWordEvent(input: unknown): void {
+    if (
+      !this.snapshot.wakeWordStandby ||
+      !this.wakeWordStandbyRequested ||
+      this.snapshot.turn !== 'idle'
+    ) {
+      return;
+    }
+    const event = input as Partial<WakeWordDetectionEvent> | null;
+    if (
+      !event ||
+      event.event !== 'WAKE_WORD_DETECTED' ||
+      event.modelName !== 'hey_mycroft'
+    ) {
+      return;
+    }
+
+    this.logLifecycle('wake_word_detected', {
+      model_name: event.modelName,
+      confidence: event.confidence,
+    });
+    this.wakeWordStandbyRequested = false;
+    this.setSnapshot({ wakeWordStandby: false });
+    this.startTurn({
+      preserveMicrophone: true,
+      autoCommitOnSpeechEnd: true,
+    }).catch(error => {
+      this.setSnapshot({ error: safeVoiceError(error) });
+      this.wakeWordStandbyRequested = true;
+      this.ensureWakeWordStandby();
+    });
+  }
+
+  private ensureWakeWordStandby(): void {
+    if (
+      !this.handsFreeWakeWordRestart ||
+      !this.adapter.subscribeWakeWord ||
+      !this.wakeWordStandbyRequested ||
+      !this.started ||
+      !this.assistantVisible ||
+      this.appState.currentState !== 'active' ||
+      this.snapshot.connection !== 'connected' ||
+      this.snapshot.heartbeat !== 'healthy' ||
+      this.snapshot.session !== 'ready' ||
+      this.snapshot.turn !== 'idle' ||
+      this.snapshot.ttsPlaybackState !== 'idle' ||
+      this.confirmationAwaitingVoice ||
+      this.wakeWordStartInFlight ||
+      this.snapshot.wakeWordStandby
+    ) {
+      return;
+    }
+
+    this.wakeWordStartInFlight = true;
+    const expectedEpoch = this.sessionEpoch;
+    Promise.resolve()
+      .then(() => this.adapter.requestMicrophonePermission?.())
+      .then(permission => {
+        if (
+          permission &&
+          !['granted', 'authorized', 'limited'].includes(
+            permission.toLowerCase(),
+          )
+        ) {
+          throw new Error('Microphone permission is required for wake-word standby.');
+        }
+        if (
+          expectedEpoch !== this.sessionEpoch ||
+          !this.wakeWordStandbyRequested ||
+          !this.assistantVisible ||
+          this.appState.currentState !== 'active' ||
+          this.snapshot.turn !== 'idle' ||
+          this.snapshot.session !== 'ready'
+        ) {
+          return false;
+        }
+        return Promise.resolve(this.adapter.getMicrophoneStatus?.())
+          .then(microphone => {
+            if (
+              microphone?.isRecording ||
+              microphone?.state?.toUpperCase() === 'RECORDING'
+            ) {
+              return true;
+            }
+            return Promise.resolve(this.adapter.startMicrophone?.()).then(
+              () => true,
+            );
+          });
+      })
+      .then(started => {
+        if (!started) return;
+        if (
+          expectedEpoch === this.sessionEpoch &&
+          this.wakeWordStandbyRequested &&
+          this.assistantVisible &&
+          this.appState.currentState === 'active' &&
+          this.snapshot.turn === 'idle' &&
+          this.snapshot.session === 'ready'
+        ) {
+          this.setSnapshot({ wakeWordStandby: true, error: null });
+          this.logLifecycle('wake_word_standby_started');
+        }
+      })
+      .catch(error => {
+        this.setSnapshot({ error: safeVoiceError(error) });
+        this.logLifecycle('wake_word_standby_failed', {
+          error: safeVoiceError(error),
+        });
+      })
+      .finally(() => {
+        this.wakeWordStartInFlight = false;
+      });
+  }
+
   private handleVadEvent(input: unknown): void {
     if (!this.assistantVisible) return;
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
@@ -3595,14 +3904,16 @@ export class VoiceSocket {
         eventType === 'SILERO_VAD_SPEECH_STARTED'
       ) {
         this.clearSpeechEndCommitTimer();
+        this.speechEverDetectedInTurn = true;
         this.bargeInSpeechEndedPending = false;
         this.speechEndedAtMs = null;
       }
       if (
-        this.autoCommitBargeInTurn &&
+        this.autoCommitOnSpeechEnd &&
         (eventType === 'VAD_SPEECH_STOPPED' ||
           eventType === 'SILERO_VAD_SPEECH_STOPPED')
       ) {
+        this.speechEverDetectedInTurn = true;
         this.bargeInSpeechEndedPending = true;
         this.speechEndedAtMs = this.now();
         console.info('BARGE_IN_SPEECH_END', {
@@ -3618,6 +3929,7 @@ export class VoiceSocket {
       eventType === 'SILERO_VAD_SPEECH_STARTED'
     ) {
       this.clearSpeechEndCommitTimer();
+      this.speechEverDetectedInTurn = true;
       this.speechEndedAtMs = null;
       if (
         !['starting', 'recording', 'speech_detected'].includes(
@@ -3645,19 +3957,19 @@ export class VoiceSocket {
       this.markCurrentTranscriptSpeechEnded();
       this.markCurrentTranscriptPhase('listening');
       this.setSnapshot({ turn: 'recording', speechDetected: false });
-      if (this.autoCommitBargeInTurn) {
+      if (this.autoCommitOnSpeechEnd && this.speechEverDetectedInTurn) {
         console.info('BARGE_IN_SPEECH_END', {
           turnId: this.snapshot.turnId,
           timestampMs: this.speechEndedAtMs,
-          commit_grace_ms: SPEECH_END_COMMIT_GRACE_MS,
+          commit_grace_ms: this.currentSpeechEndGraceMs,
         });
-        this.scheduleSpeechEndCommit();
+        this.scheduleSpeechEndCommit(this.currentSpeechEndGraceMs);
       }
     }
   }
 
   private async commitBargeInTurn(): Promise<void> {
-    if (this.bargeInCommitInFlight || !this.autoCommitBargeInTurn) {
+    if (this.bargeInCommitInFlight || this.turnCommitInFlight) {
       return;
     }
     this.bargeInCommitInFlight = true;
@@ -3674,6 +3986,7 @@ export class VoiceSocket {
       });
     } finally {
       this.autoCommitBargeInTurn = false;
+      this.autoCommitOnSpeechEnd = false;
       this.bargeInCommitInFlight = false;
     }
   }
@@ -4040,12 +4353,15 @@ export class VoiceSocket {
 
   private suppressAudioForTransportFailure(reason: string): void {
     this.clearAutoListenTimer();
-    this.clearSpeechEndCommitTimer();
+    this.clearTurnTimers();
     this.autoListenSuppressed = true;
     this.sileroSpeechSegmentStartedAtMs = null;
     this.sileroSpeechSegmentStartedDuringGuard = false;
     this.bargeInSpeechEndedPending = false;
     this.autoCommitBargeInTurn = false;
+    this.autoCommitOnSpeechEnd = false;
+    this.speechEverDetectedInTurn = false;
+    this.turnCommitInFlight = false;
     this.bargeInReplacementTurn = false;
     console.info('TRANSPORT_UNHEALTHY_AUDIO_SUPPRESSED', {
       reason,
@@ -4087,7 +4403,7 @@ export class VoiceSocket {
     const responseId = this.snapshot.responseId;
     this.retireCorrelation(sessionId, turnId, responseId);
     this.clearAutoListenTimer();
-    this.clearSpeechEndCommitTimer();
+    this.clearTurnTimers();
     this.sessionStartInFlight = false;
     this.turnStartedAtMs = null;
     this.speechEndedAtMs = null;
@@ -4096,6 +4412,9 @@ export class VoiceSocket {
     this.bargeInInFlight = false;
     this.pendingNativeBargeInResponseId = null;
     this.autoCommitBargeInTurn = false;
+    this.autoCommitOnSpeechEnd = false;
+    this.speechEverDetectedInTurn = false;
+    this.turnCommitInFlight = false;
     this.bargeInReplacementTurn = false;
     this.bargeInSpeechEndedPending = false;
     this.bargeInCommitInFlight = false;
@@ -4211,18 +4530,14 @@ export class VoiceSocket {
       });
       return;
     }
-    if (this.snapshot.reconnectAttempt >= this.reconnectDelaysMs.length) {
-      this.setSnapshot({
-        connection: 'failed',
-        error: 'Voice connection could not be restored. Retry when ready.',
-      });
-      return;
-    }
-
     this.allowAutoReconnect = true;
     this.sessionStartInFlight = false;
     const reconnectAttempt = this.snapshot.reconnectAttempt + 1;
-    const delayMs = this.reconnectDelaysMs[reconnectAttempt - 1] ?? 2_000;
+    const delayIndex = Math.min(
+      reconnectAttempt - 1,
+      this.reconnectDelaysMs.length - 1,
+    );
+    const delayMs = this.reconnectDelaysMs[delayIndex] ?? 2_000;
     this.setSnapshot({
       connection: 'reconnecting',
       reconnectAttempt,
@@ -4266,7 +4581,11 @@ export class VoiceSocket {
     this.pauseHadInteraction = false;
     this.sessionEpoch += 1;
     this.clearAutoListenTimer();
-    this.clearSpeechEndCommitTimer();
+    this.clearTurnTimers();
+    this.autoCommitBargeInTurn = false;
+    this.autoCommitOnSpeechEnd = false;
+    this.speechEverDetectedInTurn = false;
+    this.turnCommitInFlight = false;
     this.clearConversationState();
     this.retireCorrelation(
       this.snapshot.sessionId,
@@ -4278,6 +4597,8 @@ export class VoiceSocket {
     this.responseServerCompleted = false;
     this.ttsPlaybackTerminal = true;
     this.autoListenSuppressed = false;
+    this.wakeWordStandbyRequested = false;
+    this.wakeWordStartInFlight = false;
     this.bargeInInFlight = false;
     this.pendingNativeBargeInResponseId = null;
     this.confirmationAwaitingVoice = false;
@@ -4294,6 +4615,7 @@ export class VoiceSocket {
       turnId: null,
       responseId: null,
       confirmationAwaitingVoice: false,
+      wakeWordStandby: false,
       ttsPlaybackState: 'idle',
       ttsResponseId: null,
       ttsError: null,
