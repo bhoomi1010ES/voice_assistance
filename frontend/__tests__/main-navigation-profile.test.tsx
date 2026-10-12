@@ -124,7 +124,7 @@ async function renderAuthenticated(
 }
 
 test.each(['memory', 'tasks', 'settings'])(
-  'VIS-NAV %s navigation updates the engine and return does not reconnect',
+  'VIS-NAV %s navigation updates the engine without opening the gateway',
   async route => {
     const fetchImpl = jest
       .fn()
@@ -145,7 +145,7 @@ test.each(['memory', 'tasks', 'settings'])(
       renderer.root.findByProps({ testID: 'tab-assistant' }).props.onPress();
     });
     expect(socket.setAssistantVisible).toHaveBeenLastCalledWith(true);
-    expect(socket.connect).toHaveBeenCalledTimes(1);
+    expect(socket.connect).not.toHaveBeenCalled();
     await act(async () => {
       renderer.unmount();
     });

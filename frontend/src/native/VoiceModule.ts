@@ -860,6 +860,7 @@ type NativeVoiceModule = {
   getDiagnostics: () => Promise<VoiceDiagnostics>;
   startMicrophone: () => Promise<MicrophoneStatus>;
   stopMicrophone: () => Promise<MicrophoneStatus>;
+  setWakeWordOnly: (enabled: boolean) => Promise<boolean>;
   setAudioCaptureSource: (
     source: AudioCaptureSource,
   ) => Promise<MicrophoneStatus>;
@@ -1182,6 +1183,10 @@ export async function stopVoicePlayback(): Promise<VoiceGatewayStatus> {
   return requireNativeVoiceModule().stopVoicePlayback();
 }
 
+export async function setWakeWordOnly(enabled: boolean): Promise<boolean> {
+  return requireNativeVoiceModule().setWakeWordOnly(enabled);
+}
+
 export async function setVoiceInteractionActive(
   active: boolean,
 ): Promise<VoiceGatewayStatus> {
@@ -1275,15 +1280,18 @@ export function subscribeVoiceVadEvent(
   return () => subscriptions.forEach(subscription => subscription.remove());
 }
 
-/** Subscribes to local wake-word detections; the event contains metadata only. */
+/** Subscribes to local wake detections and detector/capture errors. */
 export function subscribeVoiceWakeWordEvent(
-  listener: (event: WakeWordDetectionEvent) => void,
+  listener: (event: unknown) => void,
 ): () => void {
-  const subscription = DeviceEventEmitter.addListener(
+  const subscriptions = [
     'WAKE_WORD_DETECTED',
-    listener,
+    'WAKE_ENGINE_ERROR',
+    'AUDIO_ENGINE_ERROR',
+  ].map(eventName =>
+    DeviceEventEmitter.addListener(eventName, listener),
   );
-  return () => subscription.remove();
+  return () => subscriptions.forEach(subscription => subscription.remove());
 }
 
 /** Subscribes to native playback-aware barge-in decisions. */

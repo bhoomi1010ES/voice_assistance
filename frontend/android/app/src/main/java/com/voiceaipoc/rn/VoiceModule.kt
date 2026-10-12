@@ -66,6 +66,8 @@ class VoiceModule(
     private var interactionCaptureCutoffNs = 0L
     @Volatile
     private var resumeMicrophoneAfterPause = false
+    @Volatile
+    private var wakeWordOnly = true
     private val rolloutConfig = VoiceRolloutConfig.fromBuildConfig()
     private val audioConfig = AudioConfig(
         enableAcousticEchoCancellation = rolloutConfig.platformAecEnabled,
@@ -275,7 +277,11 @@ class VoiceModule(
         pcmDataCallback = AudioEngine.PcmDataCallback { buffer, samplesRead, _, _, _ ->
             // The transport copies the reusable frame immediately. PCM stays
             // native and is never sent through the React Native bridge.
-            voiceGateway.offerPcmFrame(buffer, samplesRead)
+            if (wakeWordOnly) {
+                voiceGateway.rememberWakeWordPcmFrame(buffer, samplesRead)
+            } else {
+                voiceGateway.offerPcmFrame(buffer, samplesRead)
+            }
         },
         vadEventListener = object : VadEngine.Listener {
             override fun onSpeechStarted(event: VadEngine.Event) {
@@ -377,7 +383,18 @@ class VoiceModule(
                 emitEvent(EVENT_AUDIO_ENGINE_ERROR, status)
             }
         },
-    ).also { audioEngineReference = it }
+    ).also {
+        it.setWakeWordOnly(true)
+        audioEngineReference = it
+    }
+
+    @ReactMethod
+    @Synchronized
+    fun setWakeWordOnly(enabled: Boolean, promise: Promise) {
+        wakeWordOnly = enabled
+        audioEngine.setWakeWordOnly(enabled)
+        promise.resolve(enabled)
+    }
 
     override fun getName(): String = NAME
 

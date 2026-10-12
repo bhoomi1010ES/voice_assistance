@@ -52,6 +52,7 @@ class PcmSendQueue(
     private val pendingCapacity: Int = maxOf(capacity, PENDING_TURN_CAPACITY)
     private val pendingFrames = ArrayDeque<PendingFrame>(pendingCapacity)
     private val preRollFrames = ArrayDeque<PreRollFrame>(PRE_ROLL_CAPACITY)
+    private val wakePreRollFrames = ArrayDeque<PreRollFrame>(WAKE_PRE_ROLL_CAPACITY)
     private val pendingPreRollFrames = ArrayDeque<PreRollFrame>(PRE_ROLL_CAPACITY)
     private var nextSequenceNo = 0L
     private var generation = 0L
@@ -73,6 +74,7 @@ class PcmSendQueue(
         frames.clear()
         pendingFrames.clear()
         preRollFrames.clear()
+        wakePreRollFrames.clear()
         pendingPreRollFrames.clear()
         pendingPreRollFrames.addAll(preRoll)
         nextSequenceNo = 0L
@@ -119,14 +121,34 @@ class PcmSendQueue(
         true
     }
 
+    /** One second of local wake audio covers a question spoken immediately after detection. */
+    fun rememberForWakeWord(
+        buffer: ShortArray,
+        samplesRead: Int,
+        timestampMs: Long,
+    ): Boolean = synchronized(lock) {
+        val payload = encode(buffer, samplesRead) ?: return@synchronized false
+        if (wakePreRollFrames.size >= WAKE_PRE_ROLL_CAPACITY) {
+            wakePreRollFrames.removeFirst()
+        }
+        wakePreRollFrames.addLast(PreRollFrame(timestampMs, payload))
+        true
+    }
+
     fun takePreRoll(): List<PreRollFrame> = synchronized(lock) {
-        val snapshot = preRollFrames.toList()
+        val snapshot = if (wakePreRollFrames.isNotEmpty()) {
+            wakePreRollFrames.toList()
+        } else {
+            preRollFrames.toList()
+        }
         preRollFrames.clear()
+        wakePreRollFrames.clear()
         snapshot
     }
 
     fun clearPreRoll() = synchronized(lock) {
         preRollFrames.clear()
+        wakePreRollFrames.clear()
     }
 
     fun offer(buffer: ShortArray, samplesRead: Int, timestampMs: Long): Boolean = synchronized(lock) {
@@ -266,6 +288,7 @@ class PcmSendQueue(
         const val DEFAULT_CAPACITY = 100
         const val PENDING_TURN_CAPACITY = 250
         const val PRE_ROLL_CAPACITY = 8
+        const val WAKE_PRE_ROLL_CAPACITY = 50
         const val FRAME_SAMPLES = 320
         const val BYTES_PER_SAMPLE = 2
     }

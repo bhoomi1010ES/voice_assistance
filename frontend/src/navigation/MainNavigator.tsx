@@ -39,9 +39,6 @@ export function MainNavigator() {
     socket.setAssistantVisible(route === 'assistant').catch(() => undefined);
   }, [route, socket]);
 
-  useEffect(() => {
-    socket.connect().catch(() => undefined);
-  }, [socket]);
   const [tasksInitialPage, setTasksInitialPage] = useState<
     'tasks' | 'reminders'
   >('tasks');

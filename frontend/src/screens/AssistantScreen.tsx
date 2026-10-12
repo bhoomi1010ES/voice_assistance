@@ -240,6 +240,12 @@ export function AssistantScreen() {
     if (voiceConfirmationPending) {
       return Promise.resolve();
     }
+    if (socketState.voiceLifecycle === 'WAKE_WORD_WAITING') {
+      return Promise.resolve();
+    }
+    if (socketState.voiceLifecycle === 'ERROR_RECOVERY') {
+      return socket.retry();
+    }
     if (socketState.connection !== 'connected') {
       return socketState.connection === 'disconnected'
         ? socket.connect()
@@ -320,7 +326,8 @@ export function AssistantScreen() {
         </View>
 
         {/* Real-time Connection Status Badge (visible when error or not connected) */}
-        {isConnectionError || socketState.connection !== 'connected' ? (
+        {(isConnectionError || socketState.connection !== 'connected') &&
+        socketState.voiceLifecycle !== 'WAKE_WORD_WAITING' ? (
           <ConnectionStatusBadge
             connection={socketState.connection}
             isError={isConnectionError}
@@ -392,8 +399,10 @@ export function AssistantScreen() {
             socketState.wakeWordStandby
           }
           primaryStatus={
-            socketState.wakeWordStandby
+            socketState.voiceLifecycle === 'WAKE_WORD_WAITING'
               ? strings.assistant.waitingForWakeWord
+              : socketState.voiceLifecycle === 'ERROR_RECOVERY'
+              ? strings.assistant.tryAgain
               : socketState.turn === 'failed'
               ? strings.assistant.tryAgain
               : ['recording', 'speech_detected'].includes(socketState.turn)
@@ -405,8 +414,10 @@ export function AssistantScreen() {
               : strings.assistant.tapToSpeak
           }
           subStatus={
-            socketState.wakeWordStandby
+            socketState.voiceLifecycle === 'WAKE_WORD_WAITING'
               ? strings.assistant.wakeWordOnDevice
+              : socketState.voiceLifecycle === 'ERROR_RECOVERY'
+              ? socketState.error ?? strings.assistant.turnFailed
               : socketState.turn === 'failed'
               ? socketState.transcriptError?.message ??
                 strings.assistant.turnFailed
@@ -608,7 +619,8 @@ export function AssistantScreen() {
         </View>
 
         {/* Fallback secondary control buttons with preserved testIDs */}
-        {socketState.connection === 'disconnected' ? (
+        {socketState.connection === 'disconnected' &&
+        socketState.voiceLifecycle !== 'WAKE_WORD_WAITING' ? (
           <ActionButton
             disabled={busy}
             label={strings.assistant.connect}
@@ -689,6 +701,12 @@ function voiceControlLabel(
   snapshot: VoiceSocketSnapshot,
   messages: ConversationMessage[],
 ): string {
+  if (snapshot.voiceLifecycle === 'ERROR_RECOVERY') {
+    return strings.assistant.retry;
+  }
+  if (snapshot.voiceLifecycle === 'WAKE_WORD_WAITING') {
+    return strings.assistant.waitingForWakeWord;
+  }
   if (snapshot.connection !== 'connected') {
     return snapshot.connection === 'disconnected'
       ? strings.assistant.connect

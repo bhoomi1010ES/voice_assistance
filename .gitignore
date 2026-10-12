@@ -86,6 +86,7 @@ frontend/android/app/google-services.json
 # Local work records
 /docs/*
 !/docs/
+!/docs/20261012_172446_wake_word_gateway_lifecycle_.md
 !/docs/20260918_110210_phase0-baseline.md
 !/docs/20260918_111832_phase0-oppo-physical-profiles.md
 !/docs/phase_1_status_report.md

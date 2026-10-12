@@ -3145,6 +3145,7 @@ class VoiceGateway:
                 response_id=response_id,
                 text=text,
                 route=RouteName.CONTROL,
+                speak=False,
             )
             return {
                 "status": "completed",
@@ -3478,6 +3479,7 @@ class VoiceGateway:
         response_id: uuid.UUID,
         text: str,
         route: RouteName,
+        speak: bool = True,
         tool_name: str | None = None,
         tool_success: bool | None = None,
         memory_evidence_ids: tuple[uuid.UUID, ...] = (),
@@ -3519,12 +3521,13 @@ class VoiceGateway:
         )
         if not self.cancel_guard.can_emit(response_id):
             return
-        await self._speak_text(
-            session_id=session_id,
-            turn_id=turn_id,
-            response_id=response_id,
-            text=text,
-        )
+        if speak:
+            await self._speak_text(
+                session_id=session_id,
+                turn_id=turn_id,
+                response_id=response_id,
+                text=text,
+            )
         if not self.cancel_guard.can_emit(response_id):
             return
         await self._send(

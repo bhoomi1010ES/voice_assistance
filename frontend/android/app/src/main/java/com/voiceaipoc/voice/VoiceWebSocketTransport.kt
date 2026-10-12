@@ -674,6 +674,13 @@ class VoiceWebSocketTransport(
         return accepted
     }
 
+    /** Keep only local pre-roll while waiting for the wake phrase. */
+    fun rememberWakeWordPcmFrame(buffer: ShortArray, samplesRead: Int) {
+        if (interactionActive) {
+            sendQueue.rememberForWakeWord(buffer, samplesRead, SystemClock.elapsedRealtime())
+        }
+    }
+
     fun commitAudio(durationMs: Int): Result {
         val normalizedDuration = durationMs.coerceAtLeast(0)
         val waitForTurnReady: Boolean

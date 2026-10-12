@@ -113,6 +113,27 @@ class PcmSendQueueTest {
     }
 
     @Test
+    fun wakeAudioStaysLocalUntilItIsBoundToTheActivatedTurn() {
+        val queue = PcmSendQueue()
+        repeat(PcmSendQueue.WAKE_PRE_ROLL_CAPACITY + 2) { index ->
+            assertTrue(queue.rememberForWakeWord(
+                ShortArray(PcmSendQueue.FRAME_SAMPLES) { index.toShort() },
+                PcmSendQueue.FRAME_SAMPLES,
+                index.toLong(),
+            ))
+        }
+        assertEquals(0, queue.snapshot().depth)
+        val preRoll = queue.takePreRoll()
+        assertEquals(PcmSendQueue.WAKE_PRE_ROLL_CAPACITY, preRoll.size)
+        assertEquals(2L, preRoll.first().clientTimestampMs)
+        queue.prepareTurn(3, preRoll)
+        assertEquals(0, queue.snapshot().depth)
+        queue.bindTurn("wake-turn", 3)
+        assertEquals(PcmSendQueue.WAKE_PRE_ROLL_CAPACITY, queue.snapshot().depth)
+        assertEquals("wake-turn", queue.poll()?.ownerTurnId)
+    }
+
+    @Test
     fun preRollFramesBecomeAZeroBasedNewTurnSequence() {
         val queue = PcmSendQueue()
         queue.rememberForPreRoll(

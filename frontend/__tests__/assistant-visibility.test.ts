@@ -3,6 +3,7 @@ import {
   VoiceGatewayStatus,
 } from '../src/native/VoiceModule';
 import {
+  SPEECH_END_COMMIT_GRACE_MS,
   VoiceSocket,
   VoiceSocketAdapter,
   VoiceServerEventType,
@@ -543,6 +544,9 @@ test.each([false, true])(
     jest.useFakeTimers();
     const { socket, adapter } = await ready(true, true);
     adapter.vad.forEach(listener =>
+      listener({ event: 'SILERO_VAD_SPEECH_STARTED', timestampMs: Date.now() }),
+    );
+    adapter.vad.forEach(listener =>
       listener({
         event: 'SILERO_VAD_SPEECH_STOPPED',
         speechDurationMs: 500,
@@ -563,7 +567,7 @@ test.each([false, true])(
         }),
       );
     }
-    await jest.advanceTimersByTimeAsync(599);
+    await jest.advanceTimersByTimeAsync(SPEECH_END_COMMIT_GRACE_MS - 301);
     expect(count(adapter, 'commit')).toBe(0);
     await jest.advanceTimersByTimeAsync(1);
     expect(count(adapter, 'commit')).toBe(newSpeech ? 0 : 1);

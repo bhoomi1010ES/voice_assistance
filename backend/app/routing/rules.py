@@ -42,7 +42,10 @@ _CURRENT_TIME_MENTION = re.compile(
     re.I,
 )
 _CONTROL = re.compile(
-    r"^(?:(?:stop|pause|cancel)\s+listening|stop\s+now|pause\s+now)[.!]*$",
+    r"^(?:(?:hey|hi)\s+mycroft[,!\s]+)?"
+    r"(?:(?:please\s+)?(?:can|could|would)\s+you\s+(?:please\s+)?|please\s+)?"
+    r"(?:(?:stop|pause|cancel)\s+listening(?:\s+please)?|stop\s+now|pause\s+now)"
+    r"[.!?]*$",
     re.I,
 )
 _AFFIRMATIVE = {"yes", "yeah", "yep", "okay", "ok", "sure", "confirm"}

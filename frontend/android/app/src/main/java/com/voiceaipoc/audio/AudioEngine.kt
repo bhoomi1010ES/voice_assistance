@@ -197,6 +197,12 @@ class AudioEngine(
 
     private val stateLock = Any()
     @Volatile
+    private var wakeWordOnly = false
+
+    fun setWakeWordOnly(enabled: Boolean) {
+        wakeWordOnly = enabled
+    }
+    @Volatile
     private var latestPlaybackEchoAssessment = FarEndReferenceBuffer.Assessment.stopped()
     private val softwareAecNativeAvailable =
         config.softwareAecMode != AudioConfig.SoftwareAecMode.PLATFORM &&
@@ -298,15 +304,17 @@ class AudioEngine(
             if (processedBySoftwareAec) {
                 softwareAecOutput.copyInto(buffer, 0, 0, samplesRead)
             }
-            vadEngine.processFrame(buffer, samplesRead)
-            sileroVadEngine.offerPcmFrame(
-                buffer,
-                samplesRead,
-                frameSequence = frameSequence,
-                captureStartNs = captureStartNs,
-                captureEndNs = captureEndNs,
-                assessment = latestPlaybackEchoAssessment,
-            )
+            if (!wakeWordOnly) {
+                vadEngine.processFrame(buffer, samplesRead)
+                sileroVadEngine.offerPcmFrame(
+                    buffer,
+                    samplesRead,
+                    frameSequence = frameSequence,
+                    captureStartNs = captureStartNs,
+                    captureEndNs = captureEndNs,
+                    assessment = latestPlaybackEchoAssessment,
+                )
+            }
             wakeWordEngine.offerPcmFrame(buffer, samplesRead)
             pcmDataCallback.onPcmData(
                 buffer,

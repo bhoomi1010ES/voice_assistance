@@ -4,6 +4,7 @@ import json
 import time
 import uuid
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from types import SimpleNamespace
 
 import pytest
@@ -1083,6 +1084,26 @@ async def test_non_memory_route_skips_legacy_retrieval_in_router_canary_path() -
     )
 
     assert result == {"status": "continue_without_memory_retrieval"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("utterance", ["Stop listening", "Stop now"])
+async def test_stop_listening_control_acknowledges_without_tts(utterance: str) -> None:
+    gateway, outbound = _direct_gateway()
+    gateway._speak_text = AsyncMock()
+    response_id = uuid.uuid4()
+    gateway.cancel_guard.activate(response_id)
+
+    result = await gateway._dispatch_structured_route(
+        session_id=uuid.uuid4(),
+        turn_id=uuid.uuid4(),
+        response_id=response_id,
+        transcript=utterance,
+    )
+
+    assert result["suppress_auto_listen"] is True
+    assert any(event["type"] == "assistant.text.final" for event in outbound)
+    gateway._speak_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio

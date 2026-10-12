@@ -8,6 +8,7 @@ import {
   endVoiceSession,
   getMicrophoneStatus,
   getVoiceGatewayStatus,
+  getWakeWordStatus,
   requestMicrophonePermission,
   resolveVoiceConfirmation,
   retryVoiceResponse,
@@ -16,6 +17,7 @@ import {
   selectVoicePlan,
   stopVoicePlayback,
   setVoiceInteractionActive,
+  setWakeWordOnly,
   startMicrophone,
   startVoiceSession,
   startVoiceTurn,
@@ -29,6 +31,7 @@ import {
   VoiceGatewayEvent,
   VoiceGatewayStatus,
   WakeWordDetectionEvent,
+  WakeWordStatus,
 } from '../native/VoiceModule';
 import {
   PlanningActionReceipt,
@@ -169,7 +172,16 @@ export type VoiceTtsPlaybackState =
   | 'completed'
   | 'failed';
 
+export type VoiceLifecycleState =
+  | 'WAKE_WORD_WAITING'
+  | 'ACTIVATING'
+  | 'CONVERSATION_ACTIVE'
+  | 'STOPPING'
+  | 'ERROR_RECOVERY'
+  | 'PAUSED';
+
 export type VoiceSocketSnapshot = {
+  voiceLifecycle: VoiceLifecycleState;
   assistantVisible: boolean;
   interactionPause: 'listening' | 'speaking' | 'processing' | null;
   planning?: PlanningState | null;
@@ -251,8 +263,10 @@ export type VoiceSocketAdapter = {
   endSession: (reason?: string | null) => Promise<VoiceGatewayStatus>;
   getStatus: () => Promise<VoiceGatewayStatus>;
   startMicrophone?: () => Promise<unknown>;
+  setWakeWordOnly?: (enabled: boolean) => Promise<unknown>;
   stopMicrophone?: () => Promise<unknown>;
   getMicrophoneStatus?: () => Promise<{ isRecording?: boolean; state?: string }>;
+  getWakeWordStatus?: () => Promise<WakeWordStatus>;
   requestMicrophonePermission?: () => Promise<string>;
   subscribeVad?: (listener: (event: unknown) => void) => () => void;
   subscribeWakeWord?: (listener: (event: unknown) => void) => () => void;
@@ -299,6 +313,7 @@ export type VoiceTurnCommitOptions = {
 };
 
 const INITIAL_SNAPSHOT: VoiceSocketSnapshot = {
+  voiceLifecycle: 'CONVERSATION_ACTIVE',
   assistantVisible: true,
   interactionPause: null,
   connectionGeneration: 0,
@@ -444,8 +459,10 @@ const nativeVoiceSocketAdapter: VoiceSocketAdapter = {
   endSession: endVoiceSession,
   getStatus: getVoiceGatewayStatus,
   startMicrophone,
+  setWakeWordOnly,
   stopMicrophone,
   getMicrophoneStatus,
+  getWakeWordStatus,
   requestMicrophonePermission,
   subscribeStatus: subscribeVoiceGatewayStatus,
   subscribeEvent: subscribeVoiceGatewayEvent,
@@ -672,6 +689,8 @@ export class VoiceSocket {
   private lastHeartbeatSessionId: string | null = null;
   private notifiedTaskToolCallIds = new Set<string>();
   private assistantVisible = true;
+  private routeVisible = true;
+  private appActive = true;
   private visibilityApplied = false;
   private visibilityVersion = 0;
   private pauseHadInteraction = false;
@@ -679,6 +698,7 @@ export class VoiceSocket {
   private turnStartOperation: object | null = null;
   private wakeWordStandbyRequested = false;
   private wakeWordStartInFlight = false;
+  private lifecycleBeforePause: VoiceLifecycleState = 'WAKE_WORD_WAITING';
 
   constructor(options: VoiceSocketOptions = {}) {
     this.adapter = options.adapter ?? nativeVoiceSocketAdapter;
@@ -686,6 +706,9 @@ export class VoiceSocket {
     this.url = options.url ?? VOICE_GATEWAY_URL;
     this.prepareConnection = options.prepareConnection;
     this.appState = (options.appState ?? AppState) as VoiceAppStateSource;
+    this.appActive =
+      this.appState.currentState !== 'background' &&
+      this.appState.currentState !== 'inactive';
     this.now = options.now ?? (() => Date.now());
     this.connectTimeoutMs =
       options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
@@ -708,7 +731,12 @@ export class VoiceSocket {
     this.snapshot = {
       ...INITIAL_SNAPSHOT,
       continuousListening: this.continuousListening,
+      voiceLifecycle: this.handsFreeWakeWordRestart && this.adapter.subscribeWakeWord
+        ? 'WAKE_WORD_WAITING'
+        : 'CONVERSATION_ACTIVE',
     };
+    this.wakeWordStandbyRequested = this.snapshot.voiceLifecycle === 'WAKE_WORD_WAITING';
+    this.autoListenSuppressed = this.wakeWordStandbyRequested;
   }
 
   start(): void {
@@ -717,6 +745,11 @@ export class VoiceSocket {
     }
 
     this.started = true;
+    if (this.wakeWordStandbyRequested) {
+      this.adapter.setWakeWordOnly?.(true).catch(error =>
+        this.setSnapshot({ error: safeVoiceError(error) }),
+      );
+    }
     this.statusUnsubscribe = this.adapter.subscribeStatus(status =>
       this.handleStatus(status),
     );
@@ -740,15 +773,14 @@ export class VoiceSocket {
       'change',
       nextState => {
         this.logLifecycle('app_state_changed', { app_state: nextState });
+        this.appActive = nextState === 'active';
         if (nextState === 'active') {
-          this.reconcile()
+          this.applyAssistantVisibility(this.routeVisible)
+            .then(() => this.reconcile())
             .then(() => this.ensureWakeWordStandby())
             .catch(() => undefined);
-        } else if (this.wakeWordStandbyRequested) {
-          if (this.snapshot.wakeWordStandby) {
-            this.setSnapshot({ wakeWordStandby: false });
-          }
-          this.adapter.stopMicrophone?.().catch(() => undefined);
+        } else {
+          this.applyAssistantVisibility(false).catch(() => undefined);
         }
       },
     );
@@ -758,6 +790,8 @@ export class VoiceSocket {
     );
     if (this.desiredConnection) {
       this.reconcile().catch(() => undefined);
+    } else if (this.wakeWordStandbyRequested) {
+      this.ensureWakeWordStandby();
     }
   }
 
@@ -775,14 +809,21 @@ export class VoiceSocket {
     return this.snapshot;
   }
 
-  /** Navigation suspends resources, never session/turn ownership or requests. */
+  /** Navigation and app backgrounding share one resource gate. */
   async setAssistantVisible(visible: boolean): Promise<void> {
+    this.routeVisible = visible;
+    return this.applyAssistantVisibility(visible && this.appActive);
+  }
+
+  private async applyAssistantVisibility(visible: boolean): Promise<void> {
     if (this.visibilityApplied && this.assistantVisible === visible) return;
     this.visibilityApplied = true;
     this.assistantVisible = visible;
     const version = ++this.visibilityVersion;
     const epoch = this.sessionEpoch;
     if (!visible) {
+      this.lifecycleBeforePause = this.snapshot.voiceLifecycle;
+      this.setSnapshot({ voiceLifecycle: 'PAUSED' });
       this.pauseHadInteraction = Boolean(
         this.turnStartOperation ||
           this.autoListenTimer ||
@@ -824,6 +865,9 @@ export class VoiceSocket {
         this.turnStartedAtMs += this.now() - this.turnPauseStartedAtMs;
       }
       this.turnPauseStartedAtMs = null;
+    }
+    if (visible && this.snapshot.voiceLifecycle === 'PAUSED') {
+      this.setSnapshot({ voiceLifecycle: this.lifecycleBeforePause });
     }
     this.setSnapshot({ assistantVisible: visible });
     if (!visible && this.snapshot.wakeWordStandby) {
@@ -933,6 +977,16 @@ export class VoiceSocket {
   }
 
   async retry(): Promise<void> {
+    if (
+      this.handsFreeWakeWordRestart &&
+      this.snapshot.voiceLifecycle === 'ERROR_RECOVERY' &&
+      !this.desiredConnection
+    ) {
+      this.wakeWordStandbyRequested = true;
+      this.setSnapshot({ voiceLifecycle: 'WAKE_WORD_WAITING', error: null });
+      this.ensureWakeWordStandby();
+      return;
+    }
     if (this.retryPromise) {
       this.logLifecycle('retry_ignored_in_flight');
       return this.retryPromise;
@@ -1082,6 +1136,9 @@ export class VoiceSocket {
 
   async startTurn(options: VoiceTurnStartOptions = {}): Promise<void> {
     if (
+      this.snapshot.voiceLifecycle === 'WAKE_WORD_WAITING' ||
+      this.snapshot.voiceLifecycle === 'STOPPING' ||
+      this.snapshot.voiceLifecycle === 'ERROR_RECOVERY' ||
       (!this.assistantVisible && !options.bargeInReplacement) ||
       this.turnStartOperation
     )
@@ -1153,6 +1210,8 @@ export class VoiceSocket {
       ) {
         throw new Error('Microphone permission is required for a voice turn.');
       }
+      await this.adapter.setWakeWordOnly?.(false);
+      if (expectedEpoch !== this.sessionEpoch) return;
       if (!options.preserveMicrophone) {
         await this.stopMicrophoneSafely();
         if (expectedEpoch !== this.sessionEpoch) {
@@ -1215,6 +1274,9 @@ export class VoiceSocket {
         return;
       }
       this.handleStatus(status);
+      if (this.snapshot.voiceLifecycle === 'ACTIVATING') {
+        this.setSnapshot({ voiceLifecycle: 'CONVERSATION_ACTIVE' });
+      }
       this.ensureTranscriptPlaceholder('listening');
     } catch (error) {
       if (expectedEpoch !== this.sessionEpoch) {
@@ -1235,6 +1297,9 @@ export class VoiceSocket {
         speechDetected: false,
         error: safeVoiceError(error),
       });
+      if (this.snapshot.voiceLifecycle === 'ACTIVATING') {
+        this.setSnapshot({ voiceLifecycle: 'ERROR_RECOVERY' });
+      }
       throw new Error(this.snapshot.error ?? 'Unable to start the voice turn.');
     } finally {
       if (this.turnStartOperation === operation) this.turnStartOperation = null;
@@ -1931,13 +1996,20 @@ export class VoiceSocket {
         return;
       }
       if (statusGeneration > this.snapshot.connectionGeneration) {
-        this.invalidateSessionState(
-          'connection_generation_changed',
-          'connecting',
-          null,
-          false,
-        );
-        this.setSnapshot({ connectionGeneration: statusGeneration });
+        if (
+          this.snapshot.voiceLifecycle === 'ACTIVATING' &&
+          this.snapshot.session === 'idle'
+        ) {
+          this.setSnapshot({ connectionGeneration: statusGeneration });
+        } else {
+          this.invalidateSessionState(
+            'connection_generation_changed',
+            'connecting',
+            null,
+            false,
+          );
+          this.setSnapshot({ connectionGeneration: statusGeneration });
+        }
       }
     }
     if (
@@ -1963,6 +2035,17 @@ export class VoiceSocket {
         'TURN_STARTING',
         'STREAMING_AUDIO',
       ].includes(nativeState);
+
+    if (
+      this.handsFreeWakeWordRestart &&
+      !this.desiredConnection &&
+      (this.snapshot.voiceLifecycle === 'WAKE_WORD_WAITING' ||
+        this.snapshot.voiceLifecycle === 'STOPPING') &&
+      connected
+    ) {
+      this.adapter.disconnect().catch(() => undefined);
+      return;
+    }
 
     if (connected) {
       const connectionBecameConnected =
@@ -1990,8 +2073,15 @@ export class VoiceSocket {
           ? { session: 'ready' as VoiceSessionState }
           : {}),
         ...(status.sessionId ? { sessionId: status.sessionId } : {}),
-        ...(status.turnId ? { turnId: status.turnId } : {}),
-        ...(status.responseId ? { responseId: status.responseId } : {}),
+        ...(this.snapshot.voiceLifecycle === 'CONVERSATION_ACTIVE' ||
+        this.snapshot.voiceLifecycle === 'ACTIVATING' ||
+        (this.snapshot.voiceLifecycle === 'PAUSED' &&
+          this.lifecycleBeforePause === 'CONVERSATION_ACTIVE')
+          ? {
+              ...(status.turnId ? { turnId: status.turnId } : {}),
+              ...(status.responseId ? { responseId: status.responseId } : {}),
+            }
+          : {}),
       });
       if (this.desiredSession && !status.sessionStarted) {
         this.setSnapshot({ session: 'starting', error: null });
@@ -2008,13 +2098,22 @@ export class VoiceSocket {
             lastHeartbeatAtMs: null,
           });
         }
-        this.scheduleContinuousListen();
+        if (this.wakeWordStandbyRequested) this.ensureWakeWordStandby();
+        else this.scheduleContinuousListen();
       }
       this.logLifecycle('native_status', { native_state: nativeState });
       return;
     }
 
     if (nativeState === 'ERROR') {
+      if (
+        this.handsFreeWakeWordRestart &&
+        !this.desiredConnection &&
+        this.snapshot.voiceLifecycle === 'WAKE_WORD_WAITING'
+      ) {
+        this.setSnapshot({ connection: 'disconnected', session: 'idle' });
+        return;
+      }
       if (isAuthenticationExpiredError(status.lastError)) {
         this.handleAuthenticationExpired();
         return;
@@ -2035,6 +2134,22 @@ export class VoiceSocket {
     }
 
     if (nativeState === 'DISCONNECTED' || nativeState === 'CLOSING') {
+      if (
+        this.handsFreeWakeWordRestart &&
+        (this.snapshot.voiceLifecycle === 'STOPPING' ||
+          this.snapshot.voiceLifecycle === 'WAKE_WORD_WAITING') &&
+        !this.desiredConnection
+      ) {
+        this.setSnapshot({
+          connection: 'disconnected',
+          session: 'idle',
+          heartbeat: 'unknown',
+          sessionId: null,
+          turnId: null,
+          responseId: null,
+        });
+        return;
+      }
       if (this.explicitStop || !this.desiredConnection) {
         this.resetToDisconnected();
         return;
@@ -2230,7 +2345,8 @@ export class VoiceSocket {
       this.logLifecycle('session_heartbeat', {
         heartbeat_session_id: event.sessionId,
       });
-      this.scheduleContinuousListen();
+      if (this.wakeWordStandbyRequested) this.ensureWakeWordStandby();
+      else this.scheduleContinuousListen();
       return;
     }
 
@@ -2304,7 +2420,10 @@ export class VoiceSocket {
           this.invalidateSessionState('session_id_replaced', 'connecting');
         }
         this.sessionStartInFlight = false;
-        if (this.snapshot.turn !== 'failed') {
+        if (
+          this.snapshot.turn !== 'failed' &&
+          this.snapshot.voiceLifecycle === 'CONVERSATION_ACTIVE'
+        ) {
           this.autoListenSuppressed = false;
         }
         console.info('TRANSPORT_HEALTHY_AUDIO_RESUMED', {
@@ -2342,7 +2461,8 @@ export class VoiceSocket {
         this.logLifecycle('session_ready', {
           ready_session_id: event.sessionId,
         });
-        this.scheduleContinuousListen();
+        if (this.wakeWordStandbyRequested) this.ensureWakeWordStandby();
+        else this.scheduleContinuousListen();
         break;
       case 'server.conversation.reset':
         this.clearConversationState();
@@ -2494,7 +2614,8 @@ export class VoiceSocket {
         break;
       case 'assistant.text.final':
         if (event.route === 'CONTROL') {
-          this.suppressAutoListenForWakeWord();
+          this.enterWakeWordWaiting().catch(() => undefined);
+          break;
         }
         this.setSnapshot({
           turn: 'waiting',
@@ -2676,7 +2797,15 @@ export class VoiceSocket {
         break;
       case 'server.turn.completed':
         if (event.suppressAutoListen) {
-          this.suppressAutoListenForWakeWord();
+          this.applyConversationEvent({
+            type: 'turn.completed',
+            sessionId: event.sessionId,
+            turnId: event.turnId,
+            responseId: event.responseId,
+            timestampMs: event.timestampMs,
+          });
+          this.enterWakeWordWaiting().catch(() => undefined);
+          break;
         }
         this.applyConversationEvent({
           type: 'turn.completed',
@@ -2938,7 +3067,7 @@ export class VoiceSocket {
     });
     this.setSnapshot({ turn: 'idle' });
     if (this.wakeWordStandbyRequested && this.autoListenSuppressed) {
-      this.ensureWakeWordStandby();
+      this.enterWakeWordWaiting().catch(() => undefined);
     } else if (
       this.continuousListening &&
       !this.autoListenSuppressed &&
@@ -2953,6 +3082,7 @@ export class VoiceSocket {
   private scheduleContinuousListen(preserveMicrophone = false): void {
     if (
       !this.assistantVisible ||
+      this.snapshot.voiceLifecycle !== 'CONVERSATION_ACTIVE' ||
       !this.continuousListening ||
       this.autoListenSuppressed ||
       this.wakeWordStandbyRequested ||
@@ -2970,6 +3100,7 @@ export class VoiceSocket {
       this.autoListenTimer = null;
       if (
         !this.assistantVisible ||
+        this.snapshot.voiceLifecycle !== 'CONVERSATION_ACTIVE' ||
         this.autoListenSuppressed ||
         this.wakeWordStandbyRequested ||
         this.snapshot.turn !== 'idle' ||
@@ -3000,6 +3131,76 @@ export class VoiceSocket {
     this.clearAutoListenTimer();
     this.wakeWordStandbyRequested =
       this.handsFreeWakeWordRestart && Boolean(this.adapter.subscribeWakeWord);
+  }
+
+  private async enterWakeWordWaiting(): Promise<void> {
+    if (
+      !this.handsFreeWakeWordRestart ||
+      !this.adapter.subscribeWakeWord ||
+      this.snapshot.voiceLifecycle === 'STOPPING' ||
+      this.snapshot.voiceLifecycle === 'WAKE_WORD_WAITING'
+    ) return;
+
+    const expectedEpoch = ++this.sessionEpoch;
+    this.turnStartOperation = null;
+    this.clearAutoListenTimer();
+    this.clearTurnTimers();
+    this.autoListenSuppressed = true;
+    this.wakeWordStandbyRequested = false;
+    this.retireCorrelation(
+      this.snapshot.sessionId,
+      this.snapshot.turnId,
+      this.snapshot.responseId,
+    );
+    this.setSnapshot({
+      voiceLifecycle: 'STOPPING',
+      turn: 'idle',
+      turnId: null,
+      responseId: null,
+      speechDetected: false,
+      ttsPlaybackState: 'idle',
+      ttsResponseId: null,
+      followUpQueued: false,
+      wakeWordStandby: false,
+    });
+    try {
+      await this.adapter.setWakeWordOnly?.(true);
+      if (expectedEpoch !== this.sessionEpoch || this.explicitStop) return;
+      const results = await Promise.allSettled([
+        this.adapter.stopPlayback?.() ?? Promise.resolve(),
+        this.adapter.abortAll?.('stop_listening') ?? Promise.resolve(),
+      ]);
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      if (expectedEpoch !== this.sessionEpoch || this.explicitStop) return;
+      this.desiredConnection = false;
+      this.desiredSession = false;
+      this.allowAutoReconnect = false;
+      this.explicitStop = true;
+      this.hadConnected = false;
+      this.clearReconnectTimer();
+      this.connectPromise = null;
+      await this.adapter.disconnect();
+      if (expectedEpoch !== this.sessionEpoch) return;
+      this.setSnapshot({
+        connection: 'disconnected',
+        session: 'idle',
+        heartbeat: 'unknown',
+        sessionId: null,
+        turnId: null,
+        responseId: null,
+      });
+      this.wakeWordStandbyRequested = true;
+      this.setSnapshot({ voiceLifecycle: 'WAKE_WORD_WAITING' });
+      this.ensureWakeWordStandby();
+    } catch (error) {
+      if (expectedEpoch !== this.sessionEpoch) return;
+      await this.stopMicrophoneSafely();
+      this.setSnapshot({
+        voiceLifecycle: 'ERROR_RECOVERY',
+        error: safeVoiceError(error),
+      });
+    }
   }
 
   private clearSpeechEndCommitTimer(): void {
@@ -3050,12 +3251,7 @@ export class VoiceSocket {
       });
       if (!this.speechEverDetectedInTurn) {
         this.cancelTurn('no_speech_timeout')
-          .then(() => {
-            this.wakeWordStandbyRequested =
-              this.handsFreeWakeWordRestart &&
-              Boolean(this.adapter.subscribeWakeWord);
-            this.ensureWakeWordStandby();
-          })
+          .then(() => this.enterWakeWordWaiting())
           .catch(() => undefined);
         return;
       }
@@ -3438,9 +3634,34 @@ export class VoiceSocket {
   }
 
   private handleWakeWordEvent(input: unknown): void {
+    if (input && typeof input === 'object' && !Array.isArray(input)) {
+      const type = (input as { event?: unknown }).event;
+      if (
+        (type === 'WAKE_ENGINE_ERROR' || type === 'AUDIO_ENGINE_ERROR') &&
+        (this.snapshot.voiceLifecycle === 'CONVERSATION_ACTIVE' ||
+          this.snapshot.voiceLifecycle === 'ACTIVATING')
+      ) {
+        this.enterWakeWordWaiting().catch(() => undefined);
+        return;
+      }
+      if (
+        (type === 'WAKE_ENGINE_ERROR' || type === 'AUDIO_ENGINE_ERROR') &&
+        this.snapshot.voiceLifecycle === 'WAKE_WORD_WAITING'
+      ) {
+        this.wakeWordStandbyRequested = false;
+        this.setSnapshot({
+          voiceLifecycle: 'ERROR_RECOVERY',
+          wakeWordStandby: false,
+          error: 'Voice wake-word capture stopped. Retry to restore it.',
+        });
+        this.stopMicrophoneSafely().catch(() => undefined);
+        return;
+      }
+    }
     if (
       !this.snapshot.wakeWordStandby ||
       !this.wakeWordStandbyRequested ||
+      this.snapshot.voiceLifecycle !== 'WAKE_WORD_WAITING' ||
       this.snapshot.turn !== 'idle'
     ) {
       return;
@@ -3459,15 +3680,41 @@ export class VoiceSocket {
       confidence: event.confidence,
     });
     this.wakeWordStandbyRequested = false;
-    this.setSnapshot({ wakeWordStandby: false });
-    this.startTurn({
-      preserveMicrophone: true,
-      autoCommitOnSpeechEnd: true,
-    }).catch(error => {
-      this.setSnapshot({ error: safeVoiceError(error) });
-      this.wakeWordStandbyRequested = true;
-      this.ensureWakeWordStandby();
-    });
+    this.setSnapshot({ wakeWordStandby: false, voiceLifecycle: 'ACTIVATING' });
+    Promise.resolve()
+      .then(() =>
+        this.snapshot.connection === 'connected'
+          ? undefined
+          : this.connect(),
+      )
+      .then(() => {
+        if (this.snapshot.voiceLifecycle !== 'ACTIVATING') return;
+        return this.startTurn({
+          preserveMicrophone: true,
+          includePreRoll: true,
+          autoCommitOnSpeechEnd: true,
+        });
+      })
+      .catch(error => {
+        if (
+          this.snapshot.voiceLifecycle !== 'ACTIVATING' &&
+          this.snapshot.voiceLifecycle !== 'ERROR_RECOVERY'
+        ) return;
+        this.desiredConnection = false;
+        this.desiredSession = false;
+        this.allowAutoReconnect = false;
+        this.explicitStop = true;
+        this.wakeWordStandbyRequested = true;
+        this.autoListenSuppressed = true;
+        this.setSnapshot({
+          voiceLifecycle: 'WAKE_WORD_WAITING',
+          connection: 'disconnected',
+          session: 'idle',
+          error: safeVoiceError(error),
+        });
+        this.adapter.disconnect().catch(() => undefined);
+        this.ensureWakeWordStandby();
+      });
   }
 
   private ensureWakeWordStandby(): void {
@@ -3475,12 +3722,10 @@ export class VoiceSocket {
       !this.handsFreeWakeWordRestart ||
       !this.adapter.subscribeWakeWord ||
       !this.wakeWordStandbyRequested ||
+      this.snapshot.voiceLifecycle !== 'WAKE_WORD_WAITING' ||
       !this.started ||
       !this.assistantVisible ||
-      this.appState.currentState !== 'active' ||
-      this.snapshot.connection !== 'connected' ||
-      this.snapshot.heartbeat !== 'healthy' ||
-      this.snapshot.session !== 'ready' ||
+      !this.appActive ||
       this.snapshot.turn !== 'idle' ||
       this.snapshot.ttsPlaybackState !== 'idle' ||
       this.confirmationAwaitingVoice ||
@@ -3493,6 +3738,7 @@ export class VoiceSocket {
     this.wakeWordStartInFlight = true;
     const expectedEpoch = this.sessionEpoch;
     Promise.resolve()
+      .then(() => this.adapter.setWakeWordOnly?.(true))
       .then(() => this.adapter.requestMicrophonePermission?.())
       .then(permission => {
         if (
@@ -3507,9 +3753,9 @@ export class VoiceSocket {
           expectedEpoch !== this.sessionEpoch ||
           !this.wakeWordStandbyRequested ||
           !this.assistantVisible ||
-          this.appState.currentState !== 'active' ||
+          !this.appActive ||
           this.snapshot.turn !== 'idle' ||
-          this.snapshot.session !== 'ready'
+          this.snapshot.voiceLifecycle !== 'WAKE_WORD_WAITING'
         ) {
           return false;
         }
@@ -3524,6 +3770,14 @@ export class VoiceSocket {
             return Promise.resolve(this.adapter.startMicrophone?.()).then(
               () => true,
             );
+          })
+          .then(async started => {
+            if (!started) return false;
+            const detector = await this.adapter.getWakeWordStatus?.();
+            if (detector && (!detector.available || !detector.running)) {
+              throw new Error('Voice wake-word detector is unavailable.');
+            }
+            return true;
           });
       })
       .then(started => {
@@ -3531,17 +3785,28 @@ export class VoiceSocket {
         if (
           expectedEpoch === this.sessionEpoch &&
           this.wakeWordStandbyRequested &&
+          this.snapshot.voiceLifecycle === 'WAKE_WORD_WAITING' &&
           this.assistantVisible &&
-          this.appState.currentState === 'active' &&
-          this.snapshot.turn === 'idle' &&
-          this.snapshot.session === 'ready'
+          this.appActive &&
+          this.snapshot.turn === 'idle'
         ) {
           this.setSnapshot({ wakeWordStandby: true, error: null });
           this.logLifecycle('wake_word_standby_started');
         }
       })
       .catch(error => {
-        this.setSnapshot({ error: safeVoiceError(error) });
+        if (
+          expectedEpoch !== this.sessionEpoch ||
+          !this.wakeWordStandbyRequested ||
+          this.snapshot.voiceLifecycle !== 'WAKE_WORD_WAITING'
+        ) return;
+        this.wakeWordStandbyRequested = false;
+        this.setSnapshot({
+          voiceLifecycle: 'ERROR_RECOVERY',
+          wakeWordStandby: false,
+          error: safeVoiceError(error),
+        });
+        this.stopMicrophoneSafely().catch(() => undefined);
         this.logLifecycle('wake_word_standby_failed', {
           error: safeVoiceError(error),
         });
@@ -4596,8 +4861,9 @@ export class VoiceSocket {
     this.turnStartedAtMs = null;
     this.responseServerCompleted = false;
     this.ttsPlaybackTerminal = true;
-    this.autoListenSuppressed = false;
-    this.wakeWordStandbyRequested = false;
+    this.wakeWordStandbyRequested =
+      this.handsFreeWakeWordRestart && Boolean(this.adapter.subscribeWakeWord);
+    this.autoListenSuppressed = this.wakeWordStandbyRequested;
     this.wakeWordStartInFlight = false;
     this.bargeInInFlight = false;
     this.pendingNativeBargeInResponseId = null;
@@ -4606,6 +4872,9 @@ export class VoiceSocket {
     this.confirmationTurnStartInFlight = false;
     this.lastHeartbeatSessionId = null;
     this.setSnapshot({
+      voiceLifecycle: this.wakeWordStandbyRequested
+        ? 'WAKE_WORD_WAITING'
+        : 'CONVERSATION_ACTIVE',
       connection: 'disconnected',
       session: 'idle',
       turn: 'idle',
