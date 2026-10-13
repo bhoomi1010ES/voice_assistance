@@ -61,6 +61,7 @@ from app.planning.service import (
 )
 from app.routing.formatters import format_structured_read_answer
 from app.routing.models import RouteName, RouterMode, RouterRuntimeContext
+from app.routing.rules import MAX_TRANSCRIPT_CHARACTERS, classify_transcript
 from app.routing.service import DecisionRouterService
 from app.services.audit import record_audit
 from app.services.auth import (
@@ -3965,6 +3966,57 @@ class VoiceGateway:
         scope = self._confirmation_scope(session_id)
         pending = await store.get(scope)
         if pending is None:
+            return None
+
+        # Voice controls must remain usable while an old confirmation is still
+        # retained for replay protection. In particular, "stop listening"
+        # begins with a negative confirmation word, but it is a session control
+        # and must reach the normal router so auto-listening is suppressed.
+        is_control = len(transcript) <= MAX_TRANSCRIPT_CHARACTERS and (
+            classify_transcript(transcript).route == RouteName.CONTROL
+        )
+        if is_control:
+            status = pending.status
+            if status in {"PENDING", "APPROVED"} and await store.cancel_scope(scope):
+                status = "CANCELLED"
+                await self._send_tool_status(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    response_id=response_id,
+                    tool_call_id=pending.tool_call_id,
+                    tool_name=pending.tool_name,
+                    status="cancelled",
+                    confirmation_id=pending.confirmation_id,
+                )
+                try:
+                    await self._record_confirmation_turn(
+                        turn_id,
+                        pending,
+                        status=status,
+                        resolution="REJECTED",
+                        execution_count=0,
+                        final_response="Stopped listening.",
+                    )
+                except Exception:  # noqa: BLE001 - cancellation must not block stop control
+                    LOGGER.exception(
+                        "Could not persist confirmation cancellation for stop control",
+                        extra={
+                            "event": "voice.confirmation.stop_control_record_failed",
+                            "confirmation_id": str(pending.confirmation_id),
+                            "turn_id": str(turn_id),
+                        },
+                    )
+            if status != "PENDING":
+                await self._send(
+                    server_event(
+                        "confirmation.resolved",
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        response_id=response_id,
+                        confirmation_id=pending.confirmation_id,
+                        status=status,
+                    )
+                )
             return None
 
         resolution = resolve_confirmation(transcript)
