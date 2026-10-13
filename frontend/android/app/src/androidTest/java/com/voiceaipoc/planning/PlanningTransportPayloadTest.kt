@@ -82,6 +82,9 @@ class PlanningTransportPayloadTest {
             override fun save(accessToken: String, refreshToken: String) = Unit
             override fun read(): StoredAuthTokens? = null
             override fun clear() = Unit
+            override fun saveDeviceId(deviceId: String) = Unit
+            override fun readDeviceId(): String? = null
+            override fun clearDeviceId() = Unit
         }
         val listener = object : VoiceWebSocketTransport.Listener {
             override fun onStatus(status: VoiceWebSocketTransport.Status) = Unit

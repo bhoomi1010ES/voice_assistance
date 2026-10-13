@@ -749,6 +749,8 @@ export type VoiceGatewayStatus = {
 };
 
 export type VoiceGatewayEvent = {
+  route?: string | null;
+  suppressAutoListen?: boolean | null;
   planningJson?: string | null;
   planningActionsJson?: string | null;
   requestEventId?: string | null;

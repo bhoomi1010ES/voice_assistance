@@ -1093,6 +1093,8 @@ class VoiceModule(
             putString("planningJson", eventPayload?.planningJson)
             putString("planningActionsJson", eventPayload?.planningActionsJson)
             putString("requestEventId", eventPayload?.requestEventId)
+            putString("route", eventPayload?.route)
+            eventPayload?.suppressAutoListen?.let { putBoolean("suppressAutoListen", it) }
             if (sessionId == null) putNull("sessionId") else putString("sessionId", sessionId)
             if (turnId == null) putNull("turnId") else putString("turnId", turnId)
             if (responseId == null) putNull("responseId") else putString("responseId", responseId)

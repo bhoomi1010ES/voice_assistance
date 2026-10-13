@@ -232,6 +232,7 @@ describe('wake word conversation lifecycle', () => {
     adapter.emit('server.turn.completed', {
       turnId: 'turn-1',
       responseId: 'response-1',
+      suppressAutoListen: false,
     });
     await new Promise<void>(resolve => setTimeout(() => resolve(), 0));
     await flush();
@@ -289,6 +290,36 @@ describe('wake word conversation lifecycle', () => {
     await flush();
     expect(adapter.calls.filter(call => call === 'connect')).toHaveLength(2);
     expect(adapter.calls.filter(call => call === 'turn:true')).toHaveLength(2);
+    await socket.dispose();
+  });
+
+  test('completion stop signal disconnects even when the control acknowledgement was missed', async () => {
+    const { adapter, socket } = await ready();
+    adapter.detect();
+    await flush();
+    adapter.emit('server.turn.ready', {
+      turnId: 'turn-1',
+      responseId: 'response-1',
+    });
+    adapter.emit('server.turn.completed', {
+      turnId: 'turn-1',
+      responseId: 'response-1',
+      suppressAutoListen: true,
+    });
+    await flush();
+    await new Promise<void>(resolve => setTimeout(() => resolve(), 0));
+    expect(adapter.calls).toContain('playbackStop');
+    expect(adapter.calls).toContain('abort');
+    expect(adapter.calls.filter(call => call === 'disconnect')).toHaveLength(1);
+    expect(adapter.calls.filter(call => call.startsWith('turn:'))).toHaveLength(1);
+    expect(adapter.wakeOnly).toBe(true);
+    expect(socket.getSnapshot()).toMatchObject({
+      voiceLifecycle: 'WAKE_WORD_WAITING',
+      connection: 'disconnected',
+      session: 'idle',
+      turn: 'idle',
+      sessionId: null,
+    });
     await socket.dispose();
   });
 

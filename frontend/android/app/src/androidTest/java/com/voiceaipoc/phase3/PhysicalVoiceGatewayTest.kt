@@ -375,6 +375,9 @@ class PhysicalVoiceGatewayTest {
         }
 
         override fun clear() = Unit
+        override fun saveDeviceId(deviceId: String) = Unit
+        override fun readDeviceId(): String? = null
+        override fun clearDeviceId() = Unit
     }
 
     companion object {

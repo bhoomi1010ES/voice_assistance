@@ -118,6 +118,8 @@ class VoiceWebSocketTransport(
         val errorCode: String? = null,
         val retryable: Boolean? = null,
         val stopReason: String? = null,
+        val route: String? = null,
+        val suppressAutoListen: Boolean? = null,
     )
 
     interface Listener {
@@ -1961,7 +1963,8 @@ class VoiceWebSocketTransport(
             eventType == "confirmation.required" ||
             eventType == "confirmation.resolved"
         val isPlanning = eventType.startsWith("server.planning.") || eventType == "server.session.ready"
-        if (!isTranscript && !isAssistant && !isError && !isTool && !isPlanning) {
+        val isTurnCompletion = eventType == "server.turn.completed"
+        if (!isTranscript && !isAssistant && !isError && !isTool && !isPlanning && !isTurnCompletion) {
             return null
         }
 
@@ -1997,6 +2000,8 @@ class VoiceWebSocketTransport(
             null
         }
         return ServerEventPayload(
+            route = (json.opt("route") as? String)?.takeIf { it.isNotBlank() && it.length <= 32 },
+            suppressAutoListen = json.opt("suppress_auto_listen") as? Boolean,
             planningJson = json.optJSONObject("planning")?.toString()?.takeIf { it.length <= 4096 },
             planningActionsJson = (
                 json.optJSONArray("actions")?.toString()
